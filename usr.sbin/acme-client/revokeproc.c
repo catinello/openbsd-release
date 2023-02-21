@@ -239,6 +239,7 @@ revokeproc(int fd, const char *certfile, int force,
 				goto out;
 			}
 			force = 2;
+			continue;
 		}
 		if (found[j]++) {
 			if (revocate) {
