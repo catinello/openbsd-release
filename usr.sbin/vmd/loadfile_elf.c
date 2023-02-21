@@ -401,6 +401,7 @@ push_bootargs(bios_memmap_t *memmap, size_t n, bios_bootmac_t *bootmac)
 	i = memmap_sz / sizeof(int);
 
 	/* Serial console device, COM1 @ 0x3f8 */
+	memset(&consdev, 0, sizeof(consdev));
 	consdev.consdev = makedev(8, 0);	/* com1 @ 0x3f8 */
 	consdev.conspeed = 115200;
 	consdev.consaddr = 0x3f8;
