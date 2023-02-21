@@ -665,8 +665,9 @@ vmd_check_vmh(struct vm_dump_header *vmh)
 				    code, leaf);
 				return (-1);
 			}
-			if ((vmh->vmh_cpuids[i].c & c & VMM_SEFF0ECX_MASK) !=
-			    (vmh->vmh_cpuids[i].c & VMM_SEFF0ECX_MASK)) {
+#define VMM_SEFF0ECX_MASK_T (SEFF0ECX_UMIP)
+			if ((vmh->vmh_cpuids[i].c & c & VMM_SEFF0ECX_MASK_T) !=
+			    (vmh->vmh_cpuids[i].c & VMM_SEFF0ECX_MASK_T)) {
 				log_debug("%s: incompatible cpu features "
 				    "code: 0x%x leaf: 0x%x  reg: d", __func__,
 				    code, leaf);
