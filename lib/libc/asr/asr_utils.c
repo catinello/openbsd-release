@@ -123,7 +123,7 @@ dname_expand(const unsigned char *data, size_t len, size_t offset,
 
 	for (; (n = data[offset]); ) {
 		if ((n & 0xc0) == 0xc0) {
-			if (offset + 2 > len)
+			if (offset + 1 >= len)
 				return (-1);
 			ptr = 256 * (n & ~0xc0) + data[offset + 1];
 			if (ptr >= start)
@@ -133,7 +133,7 @@ dname_expand(const unsigned char *data, size_t len, size_t offset,
 			offset = start = ptr;
 			continue;
 		}
-		if (offset + n + 1 > len)
+		if (offset + n + 1 >= len)
 			return (-1);
 
 		if (dname_check_label(data + offset + 1, n) == -1)

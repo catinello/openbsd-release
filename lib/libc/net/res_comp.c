@@ -82,6 +82,9 @@ dn_expand(const u_char *msg, const u_char *eomorig, const u_char *comp_dn,
 	char *eom;
 	int len = -1, checked = 0;
 
+	if (comp_dn < msg || comp_dn >= eomorig)
+		return (-1);
+
 	dn = exp_dn;
 	cp = comp_dn;
 	if (length > HOST_NAME_MAX)
@@ -91,6 +94,9 @@ dn_expand(const u_char *msg, const u_char *eomorig, const u_char *comp_dn,
 	 * fetch next label in domain name
 	 */
 	while ((n = *cp++)) {
+		if (cp >= eomorig)	/* out of range */
+			return (-1);
+
 		/*
 		 * Check for indirection
 		 */
