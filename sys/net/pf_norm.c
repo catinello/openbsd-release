@@ -1,4 +1,4 @@
-/*	$OpenBSD: pf_norm.c,v 1.224 2022/08/22 20:35:39 bluhm Exp $ */
+/*	$OpenBSD: pf_norm.c,v 1.226 2022/11/06 18:05:05 dlg Exp $ */
 
 /*
  * Copyright 2001 Niels Provos <provos@citi.umich.edu>
@@ -1099,6 +1099,16 @@ no_fragment:
 #endif /* INET6 */
 
 int
+pf_normalize_tcp_alloc(struct pf_state_peer *src)
+{
+	src->scrub = pool_get(&pf_state_scrub_pl, PR_NOWAIT | PR_ZERO);
+	if (src->scrub == NULL)
+		return (ENOMEM);
+
+	return (0);
+}
+
+int
 pf_normalize_tcp(struct pf_pdesc *pd)
 {
 	struct tcphdr	*th = &pd->hdr.tcp;
@@ -1165,10 +1175,8 @@ pf_normalize_tcp_init(struct pf_pdesc *pd, struct pf_state_peer *src)
 
 	KASSERT(src->scrub == NULL);
 
-	src->scrub = pool_get(&pf_state_scrub_pl, PR_NOWAIT);
-	if (src->scrub == NULL)
+	if (pf_normalize_tcp_alloc(src) != 0)
 		return (1);
-	memset(src->scrub, 0, sizeof(*src->scrub));
 
 	switch (pd->af) {
 	case AF_INET: {
@@ -1646,14 +1654,21 @@ pf_scrub(struct mbuf *m, u_int16_t flags, sa_family_t af, u_int8_t min_ttl,
 #ifdef INET6
 	struct ip6_hdr		*h6 = mtod(m, struct ip6_hdr *);
 #endif	/* INET6 */
+	u_int16_t		 old;
 
 	/* Clear IP_DF if no-df was requested */
-	if (flags & PFSTATE_NODF && af == AF_INET && h->ip_off & htons(IP_DF))
+	if (flags & PFSTATE_NODF && af == AF_INET && h->ip_off & htons(IP_DF)) {
+		old = h->ip_off;
 		h->ip_off &= htons(~IP_DF);
+		pf_cksum_fixup(&h->ip_sum, old, h->ip_off, 0);
+	}
 
 	/* Enforce a minimum ttl, may cause endless packet loops */
-	if (min_ttl && af == AF_INET && h->ip_ttl < min_ttl)
+	if (min_ttl && af == AF_INET && h->ip_ttl < min_ttl) {
+		old = h->ip_ttl;
 		h->ip_ttl = min_ttl;
+		pf_cksum_fixup(&h->ip_sum, old, h->ip_ttl, 0);
+	}
 #ifdef INET6
 	if (min_ttl && af == AF_INET6 && h6->ip6_hlim < min_ttl)
 		h6->ip6_hlim = min_ttl;
@@ -1661,8 +1676,15 @@ pf_scrub(struct mbuf *m, u_int16_t flags, sa_family_t af, u_int8_t min_ttl,
 
 	/* Enforce tos */
 	if (flags & PFSTATE_SETTOS) {
-		if (af == AF_INET)
+		if (af == AF_INET) {
+			/*
+			 * ip_tos is 8 bit field at offset 1. Use 16 bit value
+			 * at offset 0.
+			 */
+			old = *(u_int16_t *)h;
 			h->ip_tos = tos | (h->ip_tos & IPTOS_ECN_MASK);
+			pf_cksum_fixup(&h->ip_sum, old, *(u_int16_t *)h, 0);
+		}
 #ifdef INET6
 		if (af == AF_INET6) {
 			/* drugs are unable to explain such idiocy */
@@ -1674,6 +1696,9 @@ pf_scrub(struct mbuf *m, u_int16_t flags, sa_family_t af, u_int8_t min_ttl,
 
 	/* random-id, but not for fragments */
 	if (flags & PFSTATE_RANDOMID && af == AF_INET &&
-	    !(h->ip_off & ~htons(IP_DF)))
+	    !(h->ip_off & ~htons(IP_DF))) {
+		old = h->ip_id;
 		h->ip_id = htons(ip_randomid());
+		pf_cksum_fixup(&h->ip_sum, old, h->ip_id, 0);
+	}
 }

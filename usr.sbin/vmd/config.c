@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.65 2022/05/08 14:44:54 dv Exp $	*/
+/*	$OpenBSD: config.c,v 1.68 2023/02/22 10:04:45 mbuhl Exp $	*/
 
 /*
  * Copyright (c) 2015 Reyk Floeter <reyk@openbsd.org>
@@ -97,12 +97,6 @@ config_init(struct vmd *env)
 		    sizeof(*env->vmd_switches))) == NULL)
 			return (-1);
 		TAILQ_INIT(env->vmd_switches);
-	}
-	if (what & CONFIG_USERS) {
-		if ((env->vmd_users = calloc(1,
-		    sizeof(*env->vmd_users))) == NULL)
-			return (-1);
-		TAILQ_INIT(env->vmd_users);
 	}
 
 	return (0);
@@ -218,7 +212,7 @@ config_getreset(struct vmd *env, struct imsg *imsg)
 int
 config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 {
-	int diskfds[VMM_MAX_DISKS_PER_VM][VM_MAX_BASE_PER_DISK];
+	int diskfds[VM_MAX_DISKS_PER_VM][VM_MAX_BASE_PER_DISK];
 	struct vmd_if		*vif;
 	struct vmop_create_params *vmc = &vm->vm_params;
 	struct vm_create_params	*vcp = &vmc->vmc_params;
@@ -236,13 +230,6 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 	if (vm->vm_state & VM_STATE_RUNNING) {
 		log_warnx("%s: vm is already running", __func__);
 		return (EALREADY);
-	}
-
-	/* increase the user reference counter and check user limits */
-	if (vm->vm_user != NULL && user_get(vm->vm_user->usr_id.uid) != NULL) {
-		user_inc(vcp, vm->vm_user, 1);
-		if (user_checklimit(vm->vm_user, vcp) == -1)
-			return (EPERM);
 	}
 
 	/*
@@ -277,7 +264,7 @@ config_setvm(struct privsep *ps, struct vmd_vm *vm, uint32_t peerid, uid_t uid)
 	}
 	vm->vm_start_tv = tv;
 
-	for (i = 0; i < VMM_MAX_DISKS_PER_VM; i++)
+	for (i = 0; i < VM_MAX_DISKS_PER_VM; i++)
 		for (j = 0; j < VM_MAX_BASE_PER_DISK; j++)
 			diskfds[i][j] = -1;
 
@@ -560,7 +547,7 @@ int
 config_getvm(struct privsep *ps, struct imsg *imsg)
 {
 	struct vmop_create_params	 vmc;
-	struct vmd_vm			*vm;
+	struct vmd_vm			*vm = NULL;
 
 	IMSG_SIZE_CHECK(imsg, &vmc);
 	memcpy(&vmc, imsg->data, sizeof(vmc));

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ypbind.c,v 1.76 2022/07/17 03:12:20 deraadt Exp $ */
+/*	$OpenBSD: ypbind.c,v 1.78 2023/03/08 04:43:15 guenther Exp $ */
 
 /*
  * Copyright (c) 1992, 1993, 1996, 1997, 1998 Theo de Raadt <deraadt@openbsd.org>
@@ -118,7 +118,6 @@ u_int32_t unique_xid(struct _dom_binding *ypdb);
  * declare sun's interface insufficient and roll our own.
  */
 
-/*ARGSUSED*/
 static void *
 ypbindproc_null_2x(SVCXPRT *transp, void *argp, CLIENT *clnt)
 {
@@ -128,7 +127,6 @@ ypbindproc_null_2x(SVCXPRT *transp, void *argp, CLIENT *clnt)
 	return (void *)&res;
 }
 
-/*ARGSUSED*/
 static struct ypbind_resp *
 ypbindproc_domain_2x(SVCXPRT *transp, domainname *argp, CLIENT *clnt)
 {
@@ -211,7 +209,6 @@ ypbindproc_domain_2x(SVCXPRT *transp, domainname *argp, CLIENT *clnt)
 	return &res;
 }
 
-/*ARGSUSED*/
 static bool_t *
 ypbindproc_setdom_2x(SVCXPRT *transp, struct ypbind_setdom *argp, CLIENT *clnt)
 {
@@ -995,7 +992,7 @@ rpc_received(char *dom, struct sockaddr_in *raddrp, int force)
 		return;
 	}
 
-	/* syncronously ask for the matching ypserv TCP port number */
+	/* synchronously ask for the matching ypserv TCP port number */
 	ypserv_udp = raddrp->sin_port;
 	ypserv_tcp = pmap_getport(raddrp, YPPROG,
 	    YPVERS, IPPROTO_TCP);

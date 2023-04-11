@@ -1,4 +1,4 @@
-/*	$OpenBSD: aplpmu.c,v 1.5 2022/04/06 18:59:26 naddy Exp $	*/
+/*	$OpenBSD: aplpmu.c,v 1.7 2022/12/12 18:45:01 kettenis Exp $	*/
 /*
  * Copyright (c) 2021 Mark Kettenis <kettenis@openbsd.org>
  *
@@ -121,6 +121,7 @@ aplpmu_attach(struct device *parent, struct device *self, void *aux)
 		sc->sc_todr.cookie = sc;
 		sc->sc_todr.todr_gettime = aplpmu_gettime;
 		sc->sc_todr.todr_settime = aplpmu_settime;
+		sc->sc_todr.todr_quality = 0;
 		todr_attach(&sc->sc_todr);
 
 		aplpmu_sc = sc;
@@ -211,7 +212,7 @@ aplpmu_nvmem_read(void *cookie, bus_addr_t addr, void *data, bus_size_t size)
 	struct aplpmu_nvmem *an = cookie;
 	struct aplpmu_softc *sc = an->an_sc;
 
-	if (addr >= an->an_size || addr + size > an->an_size)
+	if (addr >= an->an_size || size > an->an_size - addr)
 		return EINVAL;
 
 	return spmi_cmd_read(sc->sc_tag, sc->sc_sid, SPMI_CMD_EXT_READL,
@@ -225,7 +226,7 @@ aplpmu_nvmem_write(void *cookie, bus_addr_t addr, const void *data,
 	struct aplpmu_nvmem *an = cookie;
 	struct aplpmu_softc *sc = an->an_sc;
 
-	if (addr >= an->an_size || addr + size > an->an_size)
+	if (addr >= an->an_size || size > an->an_size - addr)
 		return EINVAL;
 
 	return spmi_cmd_write(sc->sc_tag, sc->sc_sid, SPMI_CMD_EXT_WRITEL,

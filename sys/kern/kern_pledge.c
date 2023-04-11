@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_pledge.c,v 1.295 2022/09/05 16:37:47 mbuhl Exp $	*/
+/*	$OpenBSD: kern_pledge.c,v 1.304 2023/02/19 18:46:46 anton Exp $	*/
 
 /*
  * Copyright (c) 2015 Nicholas Marriott <nicm@openbsd.org>
@@ -112,6 +112,7 @@ const uint64_t pledge_syscalls[SYS_MAXSYSCALL] = {
 	[SYS_sendsyslog] = PLEDGE_ALWAYS,	/* stack protector reporting */
 	[SYS_thrkill] = PLEDGE_ALWAYS,		/* raise, abort, stack pro */
 	[SYS_utrace] = PLEDGE_ALWAYS,		/* ltrace(1) from ld.so */
+	[SYS_pinsyscall] = PLEDGE_ALWAYS,
 
 	/* "getting" information about self is considered safe */
 	[SYS_getuid] = PLEDGE_STDIO,
@@ -150,6 +151,7 @@ const uint64_t pledge_syscalls[SYS_MAXSYSCALL] = {
 	[SYS_minherit] = PLEDGE_STDIO,
 	[SYS_mmap] = PLEDGE_STDIO,
 	[SYS_mprotect] = PLEDGE_STDIO,
+	[SYS_mimmutable] = PLEDGE_STDIO,
 	[SYS_mquery] = PLEDGE_STDIO,
 	[SYS_munmap] = PLEDGE_STDIO,
 	[SYS_msync] = PLEDGE_STDIO,
@@ -172,18 +174,6 @@ const uint64_t pledge_syscalls[SYS_MAXSYSCALL] = {
 	[SYS_ftruncate] = PLEDGE_STDIO,
 	[SYS_lseek] = PLEDGE_STDIO,
 	[SYS_fpathconf] = PLEDGE_STDIO,
-
-#if 1
-	[SYS_pad_mquery] = PLEDGE_STDIO,
-	[SYS_pad_mmap] = PLEDGE_STDIO,
-	[SYS_pad_pread] = PLEDGE_STDIO,
-	[SYS_pad_preadv] = PLEDGE_STDIO,
-	[SYS_pad_pwrite] = PLEDGE_STDIO,
-	[SYS_pad_pwritev] = PLEDGE_STDIO,
-	[SYS_pad_ftruncate] = PLEDGE_STDIO,
-	[SYS_pad_lseek] = PLEDGE_STDIO,
-	[SYS_pad_truncate] = PLEDGE_WPATH,
-#endif
 
 	/*
 	 * Address selection required a network pledge ("inet",
@@ -279,6 +269,8 @@ const uint64_t pledge_syscalls[SYS_MAXSYSCALL] = {
 	[SYS___thrwakeup] = PLEDGE_STDIO,
 	[SYS___threxit] = PLEDGE_STDIO,
 	[SYS___thrsigdivert] = PLEDGE_STDIO,
+	[SYS_getthrname] = PLEDGE_STDIO,
+	[SYS_setthrname] = PLEDGE_STDIO,
 
 	[SYS_fork] = PLEDGE_PROC,
 	[SYS_vfork] = PLEDGE_PROC,
@@ -429,8 +421,7 @@ parsepledges(struct proc *p, const char *kname, const char *promises, u_int64_t 
 	int error;
 
 	rbuf = malloc(MAXPATHLEN, M_TEMP, M_WAITOK);
-	error = copyinstr(promises, rbuf, MAXPATHLEN,
-	    &rbuflen);
+	error = copyinstr(promises, rbuf, MAXPATHLEN, &rbuflen);
 	if (error) {
 		free(rbuf, M_TEMP, MAXPATHLEN);
 		return (error);
@@ -942,7 +933,7 @@ pledge_sysctl(struct proc *p, int miblen, int *mib, void *new)
 	if (miblen >= 3 &&			/* ntpd(8) to read sensors */
 	    mib[0] == CTL_HW && mib[1] == HW_SENSORS)
 		return (0);
-	
+
 	if (miblen == 6 &&		/* if_nameindex() */
 	    mib[0] == CTL_NET && mib[1] == PF_ROUTE &&
 	    mib[2] == 0 && mib[3] == 0 && mib[4] == NET_RT_IFNAMES)
@@ -963,6 +954,7 @@ pledge_sysctl(struct proc *p, int miblen, int *mib, void *new)
 			case KERN_NGROUPS:	/* kern.ngroups */
 			case KERN_SYSVSHM:	/* kern.sysvshm */
 			case KERN_POSIX1:	/* kern.posix1version */
+			case KERN_AUTOCONF_SERIAL:	/* kern.autoconf_serial */
 				return (0);
 			}
 			break;
@@ -1372,6 +1364,12 @@ pledge_sockopt(struct proc *p, int set, int level, int optname)
 			return (0);
 		}
 		break;
+	case IPPROTO_TCP:
+		switch (optname) {
+		case TCP_NODELAY:
+			return (0);
+		}
+		break;
 	}
 
 	if ((pledge & PLEDGE_WROUTE)) {
@@ -1424,7 +1422,6 @@ pledge_sockopt(struct proc *p, int set, int level, int optname)
 	switch (level) {
 	case IPPROTO_TCP:
 		switch (optname) {
-		case TCP_NODELAY:
 		case TCP_MD5SIG:
 		case TCP_SACK_ENABLE:
 		case TCP_MAXSEG:

@@ -1,4 +1,4 @@
-/*	$OpenBSD: loader.c,v 1.195 2022/01/08 06:49:41 guenther Exp $ */
+/*	$OpenBSD: loader.c,v 1.212 2023/02/20 00:51:57 gnezdo Exp $ */
 
 /*
  * Copyright (c) 1998 Per Fogelstrom, Opsycon AB
@@ -30,6 +30,7 @@
 
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/exec.h>
 #ifdef __i386__
 # include <machine/vmparam.h>
@@ -219,9 +220,13 @@ _dl_clean_boot(void)
 	extern char boot_data_start[], boot_data_end[];
 #endif
 
-	_dl_munmap(boot_text_start, boot_text_end - boot_text_start);
+	_dl_mmap(boot_text_start, boot_text_end - boot_text_start,
+	    PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
+	_dl_mimmutable(boot_text_start, boot_text_end - boot_text_start);
 #if 0	/* XXX breaks boehm-gc?!? */
-	_dl_munmap(boot_data_start, boot_data_end - boot_data_start);
+	_dl_mmap(boot_data_start, boot_data_end - boot_data_start,
+	    PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
+	_dl_mimmutable(boot_data_start, boot_data_end - boot_data_start);
 #endif
 }
 #endif /* DO_CLEAN_BOOT */
@@ -247,7 +252,7 @@ _dl_dopreload(char *paths)
 	dp = paths;
 	while ((cp = _dl_strsep(&dp, ":")) != NULL) {
 		shlib = _dl_load_shlib(cp, _dl_objects, OBJTYPE_LIB,
-		    _dl_objects->obj_flags);
+		    _dl_objects->obj_flags, 1);
 		if (shlib == NULL)
 			_dl_die("can't preload library '%s'", cp);
 		_dl_add_object(shlib);
@@ -312,11 +317,11 @@ _dl_setup_env(const char *argv0, char **envp)
 int
 _dl_load_dep_libs(elf_object_t *object, int flags, int booting)
 {
-	elf_object_t *dynobj;
+	elf_object_t *dynobj, *obj;
 	Elf_Dyn *dynp;
 	unsigned int loop;
 	int libcount;
-	int depflags;
+	int depflags, nodelete = 0;
 
 	dynobj = object;
 	while (dynobj) {
@@ -325,6 +330,8 @@ _dl_load_dep_libs(elf_object_t *object, int flags, int booting)
 
 		/* propagate DF_1_NOW to deplibs (can be set by dynamic tags) */
 		depflags = flags | (dynobj->obj_flags & DF_1_NOW);
+		if (booting || object->nodelete)
+			nodelete = 1;
 
 		for (dynp = dynobj->load_dyn; dynp->d_tag; dynp++) {
 			if (dynp->d_tag == DT_NEEDED) {
@@ -375,7 +382,7 @@ _dl_load_dep_libs(elf_object_t *object, int flags, int booting)
 				DL_DEB(("loading: %s required by %s\n", libname,
 				    dynobj->load_name));
 				depobj = _dl_load_shlib(libname, dynobj,
-				    OBJTYPE_LIB, depflags);
+				    OBJTYPE_LIB, depflags, nodelete);
 				if (depobj == 0) {
 					if (booting) {
 						_dl_die(
@@ -404,6 +411,21 @@ _dl_load_dep_libs(elf_object_t *object, int flags, int booting)
 
 	_dl_cache_grpsym_list_setup(object);
 
+	for (obj = _dl_objects; booting && obj != NULL; obj = obj->next) {
+		char *soname = (char *)obj->Dyn.info[DT_SONAME];
+		struct sym_res sr;
+
+		if (!soname || _dl_strncmp(soname, "libc.so.", 8))
+			continue;
+		sr = _dl_find_symbol("execve",
+		    SYM_SEARCH_SELF|SYM_PLT|SYM_WARNNOTFOUND, NULL, obj);
+		if (sr.sym)
+			_dl_pinsyscall(SYS_execve,
+			    (void *)sr.obj->obj_base + sr.sym->st_value,
+			    sr.sym->st_size);
+		_dl_memset(&sr, 0, sizeof sr);
+		break;
+	}
 	return(0);
 }
 
@@ -432,6 +454,8 @@ _dl_self_relro(long loff)
 		case PT_GNU_RELRO:
 			_dl_mprotect((void *)(phdp->p_vaddr + loff),
 			    phdp->p_memsz, PROT_READ);
+			_dl_mimmutable((void *)(phdp->p_vaddr + loff),
+			    phdp->p_memsz);
 			break;
 		}
 	}
@@ -561,6 +585,7 @@ _dl_boot(const char **argv, char **envp, const long dyn_loff, long *dl_data)
 	}
 	exe_obj->load_list = load_list;
 	exe_obj->obj_flags |= DF_1_GLOBAL;
+	exe_obj->nodelete = 1;
 	exe_obj->load_size = maxva - minva;
 	exe_obj->relro_addr = relro_addr;
 	exe_obj->relro_size = relro_size;
@@ -616,9 +641,17 @@ _dl_boot(const char **argv, char **envp, const long dyn_loff, long *dl_data)
 	 */
 	map_link = NULL;
 #ifdef __mips__
-	if (exe_obj->Dyn.info[DT_MIPS_RLD_MAP - DT_LOPROC + DT_NUM] != 0)
-		map_link = (struct r_debug **)(exe_obj->Dyn.info[
-		    DT_MIPS_RLD_MAP - DT_LOPROC + DT_NUM] + exe_loff);
+	for (dynp = exe_obj->load_dyn; dynp->d_tag; dynp++) {
+		if (dynp->d_tag == DT_MIPS_RLD_MAP_REL) {
+			map_link = (struct r_debug **)
+			    (dynp->d_un.d_ptr + (Elf_Addr)dynp);
+			break;
+		} else if (dynp->d_tag == DT_MIPS_RLD_MAP) {
+			map_link = (struct r_debug **)
+			    (dynp->d_un.d_ptr + exe_loff);
+			break;
+		}
+	}
 #endif
 	if (map_link == NULL) {
 		for (dynp = exe_obj->load_dyn; dynp->d_tag; dynp++) {
@@ -748,6 +781,18 @@ _dl_rtld(elf_object_t *object)
 		}
 	}
 
+	/* 
+	 * TEXTREL binaries are loaded without immutable on un-writeable sections.
+	 * After text relocations are finished, these regions can become
+	 * immutable.  OPENBSD_MUTABLE section always overlaps writeable LOADs,
+	 * so don't be afraid.
+	 */
+	if (object->dyn.textrel) {
+		for (llist = object->load_list; llist != NULL; llist = llist->next)
+			if ((llist->prot & PROT_WRITE) == 0)
+				_dl_mimmutable(llist->start, llist->size);
+	}
+
 	if (fails == 0)
 		object->status |= STAT_RELOC_DONE;
 
@@ -788,6 +833,10 @@ _dl_relro(elf_object_t *object)
 		DL_DEB(("protect RELRO [0x%lx,0x%lx) in %s\n",
 		    addr, addr + object->relro_size, object->load_name));
 		_dl_mprotect((void *)addr, object->relro_size, PROT_READ);
+
+		/* if library will never be unloaded, RELRO can be immutable */
+		if (object->nodelete)
+			_dl_mimmutable((void *)addr, object->relro_size);
 	}
 }
 
@@ -812,8 +861,10 @@ _dl_call_init_recurse(elf_object_t *object, int initfirst)
 	if (initfirst && (object->obj_flags & DF_1_INITFIRST) == 0)
 		return;
 
-	if (!initfirst)
+	if (!initfirst) {
 		_dl_relro(object);
+		_dl_apply_immutable(object);
+	}
 
 	if (object->dyn.init) {
 		DL_DEB(("doing ctors obj %p @%p: [%s]\n",
@@ -832,8 +883,10 @@ _dl_call_init_recurse(elf_object_t *object, int initfirst)
 			    environ, &_dl_cb_cb);
 	}
 
-	if (initfirst)
+	if (initfirst) {
 		_dl_relro(object);
+		_dl_apply_immutable(object);
+	}
 
 	object->status |= STAT_INIT_DONE;
 }
@@ -980,3 +1033,88 @@ _dl_rreloc(elf_object_t *object)
 	}
 }
 
+void
+_dl_push_range(struct range_vector *v, vaddr_t s, vaddr_t e)
+{
+	int i = v->count;
+
+	if (i == nitems(v->slice)) {
+		_dl_die("too many ranges");
+	}
+	/* Skips the empty ranges (s == e). */
+	if (s < e) {
+		v->slice[i].start = s;
+		v->slice[i].end = e;
+		v->count++;
+	} else if (s > e) {
+		_dl_die("invalid range");
+	}
+}
+
+void
+_dl_push_range_size(struct range_vector *v, vaddr_t s, vsize_t size)
+{
+	_dl_push_range(v, s, s + size);
+}
+
+/*
+ * Finds the truly immutable ranges by taking mutable ones out.  Implements
+ * interval difference of imut and mut. Interval splitting necessitates
+ * intermediate storage and complex double buffering.
+ */
+void
+_dl_apply_immutable(elf_object_t *object)
+{
+	struct range_vector acc[2];  /* flips out to avoid copying */
+	struct addr_range *m, *im;
+	int i, j, imut, in, out;
+
+	if (object->obj_type != OBJTYPE_LIB)
+		return;
+
+	for (imut = 0; imut < object->imut.count; imut++) {
+		im = &object->imut.slice[imut];
+		out = 0;
+		acc[out].count = 0;
+		_dl_push_range(&acc[out], im->start, im->end);
+
+		for (i = 0; i < object->mut.count; i++) {
+			m = &object->mut.slice[i];
+			in = out;
+			out = 1 - in;
+			acc[out].count = 0;
+			for (j = 0; j < acc[in].count; j++) {
+				const vaddr_t ms = m->start, me = m->end;
+				const vaddr_t is = acc[in].slice[j].start,
+				    ie = acc[in].slice[j].end;
+				if (ie <= ms || me <= is) {
+					/* is .. ie .. ms .. me -> is .. ie */
+					/* ms .. me .. is .. ie -> is .. ie */
+					_dl_push_range(&acc[out], is, ie);
+				} else if (ms <= is && ie <= me) {
+					/* PROVIDED: ms < ie && is < me */
+					/* ms .. is .. ie .. me -> [] */
+					;
+				} else if (ie <= me) {
+					/* is .. ms .. ie .. me -> is .. ms */
+					_dl_push_range(&acc[out], is, ms);
+				} else if (is < ms) {
+					/* is .. ms .. me .. ie -> is .. ms */
+					_dl_push_range(&acc[out], is, ms);
+					_dl_push_range(&acc[out], me, ie);
+				} else {
+					/* ms .. is .. me .. ie -> me .. ie */
+					_dl_push_range(&acc[out], me, ie);
+				}
+			}
+		}
+
+		/* and now, install immutability for objects */
+		for (i = 0; i < acc[out].count; i++) {
+			const struct addr_range *ar = &acc[out].slice[i];
+			_dl_mimmutable((void *)ar->start, ar->end - ar->start);
+		}
+
+	}
+
+}

@@ -1,4 +1,4 @@
-/*	$OpenBSD: resolve.h,v 1.101 2022/08/20 14:11:31 sthen Exp $ */
+/*	$OpenBSD: resolve.h,v 1.104 2023/01/29 20:30:56 gnezdo Exp $ */
 
 /*
  * Copyright (c) 1998 Per Fogelstrom, Opsycon AB
@@ -76,6 +76,16 @@ struct object_vector {
 	elf_object_t 	**vec;
 };
 void	object_vec_grow(struct object_vector *_vec, int _more);
+
+struct addr_range {
+	vaddr_t start;
+	vaddr_t end;
+};
+
+struct range_vector {
+	struct addr_range slice[40];
+	int count;
+};
 
 /*
  *  Structure describing a loaded object.
@@ -163,6 +173,7 @@ struct elf_object {
 #define	OBJTYPE_LIB	3
 #define	OBJTYPE_DLO	4
 	int		obj_flags;	/* c.f. <sys/exec_elf.h> DF_1_* */
+	int		nodelete;
 
 	/* shared by ELF and GNU hash */
 	u_int32_t	nbuckets;
@@ -231,6 +242,9 @@ struct elf_object {
 
 	/* nonzero if trace enabled for this object */
 	int traced;
+
+	struct range_vector imut;
+	struct range_vector mut;
 };
 
 struct dep_node {
@@ -256,8 +270,10 @@ void	_dl_remove_object(elf_object_t *object);
 void	_dl_cleanup_objects(void);
 
 void _dl_handle_already_loaded(elf_object_t *_object, int _flags);
-elf_object_t *_dl_load_shlib(const char *, elf_object_t *, int, int);
-elf_object_t *_dl_tryload_shlib(const char *libname, int type, int flags);
+elf_object_t *_dl_load_shlib(const char *, elf_object_t *,
+    int, int, int nodelete);
+elf_object_t *_dl_tryload_shlib(const char *libname, int type,
+    int flags, int nodelete);
 
 int _dl_md_reloc(elf_object_t *object, int rel, int relsz);
 int _dl_md_reloc_got(elf_object_t *object, int lazy);
@@ -315,6 +331,10 @@ void _dl_run_all_dtors(void);
 int	_dl_match_file(struct sod *sodp, const char *name, int namelen);
 char	*_dl_find_shlib(struct sod *sodp, char **searchpath, int nohints);
 void	_dl_load_list_free(struct load_list *load_list);
+
+void _dl_find_immutables(int type, elf_object_t *object, Elf_Ehdr *);
+void _dl_push_range_size(struct range_vector *v, vaddr_t start, vsize_t len);
+void _dl_apply_immutable(elf_object_t *object);
 
 typedef void lock_cb(int);
 void	_dl_thread_kern_go(lock_cb *);

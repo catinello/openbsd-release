@@ -1,4 +1,4 @@
-/* $OpenBSD: key-string.c,v 1.69 2022/02/16 18:55:05 nicm Exp $ */
+/* $OpenBSD: key-string.c,v 1.71 2023/01/16 11:26:14 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -460,6 +460,10 @@ out:
 			strlcat(out, "I", sizeof out);
 		if (saved & KEYC_BUILD_MODIFIERS)
 			strlcat(out, "B", sizeof out);
+		if (saved & KEYC_EXTENDED)
+			strlcat(out, "E", sizeof out);
+		if (saved & KEYC_SENT)
+			strlcat(out, "S", sizeof out);
 		strlcat(out, "]", sizeof out);
 	}
 	return (out);

@@ -1,4 +1,4 @@
-/* $OpenBSD: format.c,v 1.309 2022/07/19 06:46:57 nicm Exp $ */
+/* $OpenBSD: format.c,v 1.311 2023/02/07 10:21:01 nicm Exp $ */
 
 /*
  * Copyright (c) 2011 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -103,6 +103,7 @@ format_job_cmp(struct format_job *fj1, struct format_job *fj2)
 #define FORMAT_SESSION_NAME 0x8000
 #define FORMAT_CHARACTER 0x10000
 #define FORMAT_COLOUR 0x20000
+#define FORMAT_CLIENTS 0x40000
 
 /* Limit on recursion. */
 #define FORMAT_LOOP_LIMIT 100
@@ -3575,7 +3576,32 @@ found:
 	return (found);
 }
 
-/* Remove escaped characters from string. */
+/* Unescape escaped characters. */
+static char *
+format_unescape(const char *s)
+{
+	char	*out, *cp;
+	int	 brackets = 0;
+
+	cp = out = xmalloc(strlen(s) + 1);
+	for (; *s != '\0'; s++) {
+		if (*s == '#' && s[1] == '{')
+			brackets++;
+		if (brackets == 0 &&
+		    *s == '#' &&
+		    strchr(",#{}:", s[1]) != NULL) {
+			*cp++ = *++s;
+ 			continue;
+		}
+		if (*s == '}')
+			brackets--;
+		*cp++ = *s;
+	}
+	*cp = '\0';
+	return (out);
+}
+
+/* Remove escaped characters. */
 static char *
 format_strip(const char *s)
 {
@@ -3722,7 +3748,7 @@ format_build_modifiers(struct format_expand_state *es, const char **s,
 			cp++;
 
 		/* Check single character modifiers with no arguments. */
-		if (strchr("labcdnwETSWP<>", cp[0]) != NULL &&
+		if (strchr("labcdnwETSWPL<>", cp[0]) != NULL &&
 		    format_is_end(cp[1])) {
 			format_add_modifier(&list, count, cp, 1, NULL, 0);
 			cp++;
@@ -4050,6 +4076,40 @@ format_loop_panes(struct format_expand_state *es, const char *fmt)
 	return (value);
 }
 
+/* Loop over clients. */
+static char *
+format_loop_clients(struct format_expand_state *es, const char *fmt)
+{
+	struct format_tree		*ft = es->ft;
+	struct client			*c = ft->client;
+	struct cmdq_item		*item = ft->item;
+	struct format_tree		*nft;
+	struct format_expand_state	 next;
+	char				*expanded, *value;
+	size_t				 valuelen;
+
+	value = xcalloc(1, 1);
+	valuelen = 1;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		format_log(es, "client loop: %s", c->name);
+		nft = format_create(c, item, 0, ft->flags);
+		format_defaults(nft, c, ft->s, ft->wl, ft->wp);
+		format_copy_state(&next, es, 0);
+		next.ft = nft;
+		expanded = format_expand1(&next, fmt);
+		format_free(nft);
+
+		valuelen += strlen(expanded);
+		value = xrealloc(value, valuelen);
+
+		strlcat(value, expanded, valuelen);
+		free(expanded);
+	}
+
+	return (value);
+}
+
 static char *
 format_replace_expression(struct format_modifier *mexp,
     struct format_expand_state *es, const char *copy)
@@ -4324,6 +4384,9 @@ format_replace(struct format_expand_state *es, const char *key, size_t keylen,
 			case 'P':
 				modifiers |= FORMAT_PANES;
 				break;
+			case 'L':
+				modifiers |= FORMAT_CLIENTS;
+				break;
 			}
 		} else if (fm->size == 2) {
 			if (strcmp(fm->modifier, "||") == 0 ||
@@ -4338,7 +4401,8 @@ format_replace(struct format_expand_state *es, const char *key, size_t keylen,
 
 	/* Is this a literal string? */
 	if (modifiers & FORMAT_LITERAL) {
-		value = xstrdup(copy);
+		format_log(es, "literal string is '%s'", copy);
+		value = format_unescape(copy);
 		goto done;
 	}
 
@@ -4377,6 +4441,10 @@ format_replace(struct format_expand_state *es, const char *key, size_t keylen,
 			goto fail;
 	} else if (modifiers & FORMAT_PANES) {
 		value = format_loop_panes(es, copy);
+		if (value == NULL)
+			goto fail;
+	} else if (modifiers & FORMAT_CLIENTS) {
+		value = format_loop_clients(es, copy);
 		if (value == NULL)
 			goto fail;
 	} else if (modifiers & FORMAT_WINDOW_NAME) {

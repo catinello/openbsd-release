@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.656 2022/08/25 17:25:25 cheloha Exp $	*/
+/*	$OpenBSD: machdep.c,v 1.663 2023/01/30 10:49:05 jsg Exp $	*/
 /*	$NetBSD: machdep.c,v 1.214 1996/11/10 03:16:17 thorpej Exp $	*/
 
 /*-
@@ -70,19 +70,15 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/signalvar.h>
-#include <sys/kernel.h>
 #include <sys/proc.h>
 #include <sys/user.h>
 #include <sys/exec.h>
 #include <sys/buf.h>
 #include <sys/reboot.h>
 #include <sys/conf.h>
-#include <sys/timeout.h>
 #include <sys/malloc.h>
-#include <sys/mbuf.h>
 #include <sys/msgbuf.h>
 #include <sys/mount.h>
-#include <sys/vnode.h>
 #include <sys/device.h>
 #include <sys/extent.h>
 #include <sys/sysctl.h>
@@ -103,11 +99,9 @@
 #include <machine/cpu_full.h>
 #include <machine/cpufunc.h>
 #include <machine/cpuvar.h>
-#include <machine/gdt.h>
 #include <machine/kcore.h>
 #include <machine/pio.h>
 #include <machine/psl.h>
-#include <machine/reg.h>
 #include <machine/specialreg.h>
 #include <machine/biosvar.h>
 #include <machine/pte.h>
@@ -116,11 +110,8 @@
 #endif /* MULTIPROCESSOR */
 
 #include <dev/isa/isareg.h>
-#include <dev/isa/isavar.h>
 #include <dev/ic/i8042reg.h>
-#include <dev/ic/mc146818reg.h>
 #include <i386/isa/isa_machdep.h>
-#include <i386/isa/nvram.h>
 
 #include "acpi.h"
 #if NACPI > 0
@@ -134,8 +125,6 @@
 
 #ifdef DDB
 #include <machine/db_machdep.h>
-#include <ddb/db_access.h>
-#include <ddb/db_sym.h>
 #include <ddb/db_extern.h>
 #endif
 
@@ -147,13 +136,6 @@ extern struct proc *npxproc;
 #endif
 
 #include "bios.h"
-#include "com.h"
-
-#if NCOM > 0
-#include <sys/termios.h>
-#include <dev/ic/comreg.h>
-#include <dev/ic/comvar.h>
-#endif /* NCOM > 0 */
 
 #ifdef HIBERNATE
 #include <machine/hibernate_var.h>
@@ -285,11 +267,6 @@ int allowaperture = 0;
 
 int has_rdrand;
 int has_rdseed;
-
-#include "pvbus.h"
-#if NPVBUS > 0
-#include <dev/pv/pvvar.h>
-#endif
 
 void	winchip_cpu_setup(struct cpu_info *);
 void	amd_family5_setperf_setup(struct cpu_info *);
@@ -1038,6 +1015,7 @@ const struct cpu_cpuid_feature cpu_seff0_ecxfeatures[] = {
 	{ SEFF0ECX_UMIP,	"UMIP" },
 	{ SEFF0ECX_AVX512VBMI,	"AVX512VBMI" },
 	{ SEFF0ECX_PKU,		"PKU" },
+	{ SEFF0ECX_WAITPKG,	"WAITPKG" },
 };
 
 const struct cpu_cpuid_feature cpu_seff0_edxfeatures[] = {
@@ -2858,7 +2836,7 @@ dumpsys(void)
  */
 void
 setregs(struct proc *p, struct exec_package *pack, u_long stack,
-    register_t *retval)
+    struct ps_strings *arginfo)
 {
 	struct pcb *pcb = &p->p_addr->u_pcb;
 	struct pmap *pmap = vm_map_pmap(&p->p_vmspace->vm_map);
@@ -2906,8 +2884,6 @@ setregs(struct proc *p, struct exec_package *pack, u_long stack,
 	tf->tf_eflags = PSL_USERSET;
 	tf->tf_esp = stack;
 	tf->tf_ss = GSEL(GUDATA_SEL, SEL_UPL);
-
-	retval[1] = 0;
 }
 
 /*
@@ -3975,12 +3951,22 @@ cpu_rnd_messybits(void)
 	return (ts.tv_nsec ^ (ts.tv_sec << 20));
 }
 
+int i386_delay_quality;
+
 void
 delay_init(void(*fn)(int), int fn_quality)
 {
-	static int cur_quality = 0;
-	if (fn_quality > cur_quality) {
+	if (fn_quality > i386_delay_quality) {
 		delay_func = fn;
-		cur_quality = fn_quality;
+		i386_delay_quality = fn_quality;
+	}
+}
+
+void
+delay_fini(void (*fn)(int))
+{
+	if (delay_func == fn) {
+		delay_func = i8254_delay;
+		i386_delay_quality = 0;
 	}
 }

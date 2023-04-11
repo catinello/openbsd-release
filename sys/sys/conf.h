@@ -1,4 +1,4 @@
-/*	$OpenBSD: conf.h,v 1.159 2022/09/02 20:06:56 miod Exp $	*/
+/*	$OpenBSD: conf.h,v 1.161 2023/01/14 12:11:11 kettenis Exp $	*/
 /*	$NetBSD: conf.h,v 1.33 1996/05/03 20:03:32 christos Exp $	*/
 
 /*-
@@ -358,7 +358,7 @@ extern struct cdevsw cdevsw[];
 	dev_init(c,n,open), dev_init(c,n,close), (dev_type_read((*))) enodev, \
 	(dev_type_write((*))) enodev, dev_init(c,n,ioctl), \
 	(dev_type_stop((*))) enodev, 0, \
-	(dev_type_mmap((*))) enodev }
+	(dev_type_mmap((*))) enodev, 0, D_CLONE }
 
 /* open, close, read, write, ioctl, kqfilter */
 #define	cdev_usbdev_init(c,n) { \
@@ -480,6 +480,13 @@ extern struct cdevsw cdevsw[];
 	(dev_type_write((*))) enodev, dev_init(c,n,ioctl), \
 	(dev_type_stop((*))) enodev, 0, (dev_type_mmap((*))) enodev, \
 	0, 0, seltrue_kqfilter }
+
+/* open, close, ioctl */
+#define cdev_efi_init(c,n) { \
+	dev_init(c,n,open), dev_init(c,n,close), (dev_type_read((*))) enodev, \
+	(dev_type_write((*))) enodev, dev_init(c,n,ioctl), \
+	(dev_type_stop((*))) enodev, 0, \
+	(dev_type_mmap((*))) enodev }
 
 /* open, close, ioctl, mmap */
 #define cdev_kcov_init(c,n) { \
@@ -632,6 +639,7 @@ cdev_decl(amdmsr);
 cdev_decl(fuse);
 cdev_decl(pvbus);
 cdev_decl(ipmi);
+cdev_decl(efi);
 cdev_decl(kcov);
 
 #endif

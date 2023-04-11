@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.33 2022/09/19 20:54:02 tobhe Exp $	*/
+/*	$OpenBSD: control.c,v 1.37 2023/03/08 04:43:06 guenther Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -55,10 +55,10 @@ static struct privsep_proc procs[] = {
 	{ "ca",		PROC_CERT, control_dispatch_ca },
 };
 
-pid_t
+void
 control(struct privsep *ps, struct privsep_proc *p)
 {
-	return (proc_run(ps, p, procs, nitems(procs), control_run, NULL));
+	proc_run(ps, p, procs, nitems(procs), control_run, NULL);
 }
 
 void
@@ -69,15 +69,15 @@ control_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 	 * stdio - for malloc and basic I/O including events.
 	 * unix - for the control socket.
 	 */
-	if (pledge("stdio unix", NULL) == -1)
+	if (pledge("stdio unix recvfd", NULL) == -1)
 		fatal("pledge");
 }
 
 int
 control_init(struct privsep *ps, struct control_sock *cs)
 {
-	struct iked		*env = ps->ps_env;
-	struct sockaddr_un	 sun;
+	struct iked		*env = iked_env;
+	struct sockaddr_un	 s_un;
 	int			 fd;
 	mode_t			 old_umask, mode;
 
@@ -89,9 +89,9 @@ control_init(struct privsep *ps, struct control_sock *cs)
 		return (-1);
 	}
 
-	sun.sun_family = AF_UNIX;
-	if (strlcpy(sun.sun_path, cs->cs_name,
-	    sizeof(sun.sun_path)) >= sizeof(sun.sun_path)) {
+	s_un.sun_family = AF_UNIX;
+	if (strlcpy(s_un.sun_path, cs->cs_name,
+	    sizeof(s_un.sun_path)) >= sizeof(s_un.sun_path)) {
 		log_warn("%s: %s name too long", __func__, cs->cs_name);
 		close(fd);
 		return (-1);
@@ -112,7 +112,7 @@ control_init(struct privsep *ps, struct control_sock *cs)
 		mode = S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP;
 	}
 
-	if (bind(fd, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
+	if (bind(fd, (struct sockaddr *)&s_un, sizeof(s_un)) == -1) {
 		log_warn("%s: bind: %s", __func__, cs->cs_name);
 		close(fd);
 		(void)umask(old_umask);
@@ -152,23 +152,22 @@ control_listen(struct control_sock *cs)
 	return (0);
 }
 
-/* ARGSUSED */
 void
 control_accept(int listenfd, short event, void *arg)
 {
 	struct control_sock	*cs = arg;
 	int			 connfd;
 	socklen_t		 len;
-	struct sockaddr_un	 sun;
+	struct sockaddr_un	 s_un;
 	struct ctl_conn		*c;
 
 	event_add(&cs->cs_ev, NULL);
 	if ((event & EV_TIMEOUT))
 		return;
 
-	len = sizeof(sun);
+	len = sizeof(s_un);
 	if ((connfd = accept4(listenfd,
-	    (struct sockaddr *)&sun, &len, SOCK_NONBLOCK)) == -1) {
+	    (struct sockaddr *)&s_un, &len, SOCK_NONBLOCK)) == -1) {
 		/*
 		 * Pause accept if we are out of file descriptors, or
 		 * libevent will haunt us here too.
@@ -239,7 +238,6 @@ control_close(int fd, struct control_sock *cs)
 	free(c);
 }
 
-/* ARGSUSED */
 void
 control_dispatch_imsg(int fd, short event, void *arg)
 {

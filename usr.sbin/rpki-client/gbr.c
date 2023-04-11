@@ -1,4 +1,4 @@
-/*	$OpenBSD: gbr.c,v 1.16 2022/05/11 21:19:06 job Exp $ */
+/*	$OpenBSD: gbr.c,v 1.26 2023/03/12 11:46:35 tb Exp $ */
 /*
  * Copyright (c) 2020 Claudio Jeker <claudio@openbsd.org>
  *
@@ -15,11 +15,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <assert.h>
 #include <err.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -49,16 +45,18 @@ gbr_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 	struct parse	 p;
 	size_t		 cmsz;
 	unsigned char	*cms;
+	time_t		 signtime = 0;
 
 	memset(&p, 0, sizeof(struct parse));
 	p.fn = fn;
 
-	cms = cms_parse_validate(x509, fn, der, len, gbr_oid, &cmsz);
+	cms = cms_parse_validate(x509, fn, der, len, gbr_oid, &cmsz, &signtime);
 	if (cms == NULL)
 		return NULL;
 
 	if ((p.res = calloc(1, sizeof(*p.res))) == NULL)
 		err(1, NULL);
+	p.res->signtime = signtime;
 	if ((p.res->vcard = strndup(cms, cmsz)) == NULL)
 		err(1, NULL);
 	free(cms);
@@ -67,13 +65,21 @@ gbr_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	if (!x509_get_aki(*x509, fn, &p.res->aki))
 		goto out;
+	if (!x509_get_sia(*x509, fn, &p.res->sia))
+		goto out;
 	if (!x509_get_ski(*x509, fn, &p.res->ski))
 		goto out;
-	if (p.res->aia == NULL || p.res->aki == NULL || p.res->ski == NULL) {
+	if (p.res->aia == NULL || p.res->aki == NULL || p.res->sia == NULL ||
+	    p.res->ski == NULL) {
 		warnx("%s: RFC 6487 section 4.8: "
-		    "missing AIA, AKI or SKI X509 extension", fn);
+		    "missing AIA, AKI, SIA or SKI X509 extension", fn);
 		goto out;
 	}
+
+	if (!x509_get_notbefore(*x509, fn, &p.res->notbefore))
+		goto out;
+	if (!x509_get_notafter(*x509, fn, &p.res->notafter))
+		goto out;
 
 	if (!x509_inherits(*x509)) {
 		warnx("%s: RFC 3779 extension not set to inherit", fn);
@@ -101,6 +107,7 @@ gbr_free(struct gbr *p)
 		return;
 	free(p->aia);
 	free(p->aki);
+	free(p->sia);
 	free(p->ski);
 	free(p->vcard);
 	free(p);

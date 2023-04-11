@@ -1,4 +1,4 @@
-/*	$OpenBSD: cut.c,v 1.26 2019/02/07 19:11:23 tobias Exp $	*/
+/*	$OpenBSD: cut.c,v 1.28 2023/03/08 04:43:10 guenther Exp $	*/
 /*	$NetBSD: cut.c,v 1.9 1995/09/02 05:59:23 jtc Exp $	*/
 
 /*
@@ -104,7 +104,6 @@ main(int argc, char *argv[])
 		case 's':
 			sflag = 1;
 			break;
-		case '?':
 		default:
 			usage();
 		}
@@ -228,7 +227,6 @@ get_list(char *list)
 		memset(positions + 1, '1', autostart);
 }
 
-/* ARGSUSED */
 void
 b_cut(FILE *fp, char *fname)
 {

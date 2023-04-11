@@ -1,4 +1,4 @@
-/*	$OpenBSD: bcopyinout.S,v 1.9 2018/08/06 18:39:13 kettenis Exp $	*/
+/*	$OpenBSD: bcopyinout.S,v 1.11 2023/01/31 15:18:54 deraadt Exp $	*/
 /*	$NetBSD: bcopyinout.S,v 1.13 2003/10/31 16:54:05 scw Exp $	*/
 
 /*
@@ -48,10 +48,10 @@
 
 #ifdef MULTIPROCESSOR
 .Lcpu_info:
-	.word	_C_LABEL(cpu_info)
+	.word	cpu_info
 #else
 .Lcpu_info_primary:
-	.word _C_LABEL(cpu_info_primary)
+	.word cpu_info_primary
 #endif
 
 #define SAVE_REGS	stmfd	sp!, {r4-r11}
@@ -67,7 +67,7 @@
  * We save/restore r4-r11:
  * r4-r11 are scratch
  */
-ENTRY(copyin)
+ENTRY(_copyin)
 	/* Quick exit if length is zero */	
 	teq	r2, #0
 	moveq	r0, #0

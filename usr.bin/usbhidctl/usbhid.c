@@ -1,4 +1,4 @@
-/*	$OpenBSD: usbhid.c,v 1.18 2021/12/15 11:21:35 mestre Exp $	*/
+/*	$OpenBSD: usbhid.c,v 1.20 2023/03/07 17:43:59 guenther Exp $	*/
 /*      $NetBSD: usbhid.c,v 1.22 2002/02/20 20:30:42 christos Exp $ */
 
 /*
@@ -439,7 +439,6 @@ setreport(struct Sreport *report, int hidfd, int repindex)
 	}
 }
 
-/* ARGSUSED1 */
 static int
 varop_value(struct hid_item *item, struct Susbvar *var,
 	    u_int32_t const *collist, size_t collen, u_char *buf)
@@ -448,7 +447,6 @@ varop_value(struct hid_item *item, struct Susbvar *var,
 	return 0;
 }
 
-/* ARGSUSED1 */
 static int
 varop_display(struct hid_item *item, struct Susbvar *var,
 	      u_int32_t const *collist, size_t collen, u_char *buf)
@@ -481,7 +479,6 @@ varop_display(struct hid_item *item, struct Susbvar *var,
 	return 0;
 }
 
-/* ARGSUSED1 */
 static int
 varop_modify(struct hid_item *item, struct Susbvar *var,
 	     u_int32_t const *collist, size_t collen, u_char *buf)
@@ -535,7 +532,6 @@ reportitem(char const *label, struct hid_item const *item, unsigned int mflags)
 	printf("\n");
 }
 
-/* ARGSUSED1 */
 static int
 varop_report(struct hid_item *item, struct Susbvar *var,
 	     u_int32_t const *collist, size_t collen, u_char *buf)
@@ -776,7 +772,7 @@ main(int argc, char **argv)
 	wflag = aflag = nflag = verbose = rflag = Rflag = lflag = 0;
 	dev = NULL;
 	table = NULL;
-	while ((ch = getopt(argc, argv, "?af:lnRrt:vw")) != -1) {
+	while ((ch = getopt(argc, argv, "af:lnRrt:vw")) != -1) {
 		switch (ch) {
 		case 'a':
 			aflag = 1;
@@ -805,7 +801,6 @@ main(int argc, char **argv)
 		case 'w':
 			wflag = 1;
 			break;
-		case '?':
 		default:
 			usage();
 			/* NOTREACHED */

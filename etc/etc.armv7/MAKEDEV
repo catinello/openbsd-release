@@ -3,8 +3,8 @@
 # THIS FILE AUTOMATICALLY GENERATED.  DO NOT EDIT.
 # generated from:
 #
-#	OpenBSD: etc.armv7/MAKEDEV.md,v 1.21 2021/11/11 09:47:32 claudio Exp 
-#	OpenBSD: MAKEDEV.common,v 1.114 2021/11/11 09:47:32 claudio Exp 
+#	OpenBSD: etc.armv7/MAKEDEV.md,v 1.22 2022/11/09 19:35:23 krw Exp 
+#	OpenBSD: MAKEDEV.common,v 1.120 2023/01/28 11:04:47 phessler Exp 
 #	OpenBSD: MAKEDEV.mi,v 1.83 2016/09/11 03:06:31 deraadt Exp 
 #	OpenBSD: MAKEDEV.sub,v 1.14 2005/02/07 06:14:18 david Exp 
 #
@@ -72,7 +72,7 @@
 #	gpio*	General Purpose Input/Output
 #	hotplug	devices hot plugging
 #	pci*	PCI bus devices
-#	pf*	Packet Filter
+#	pf	Packet Filter
 #	pppx*	PPP Multiplexer
 #	pppac*	PPP Access Concentrator
 #	radio*	FM tuner devices
@@ -283,7 +283,7 @@ pppx*)
 	M pppx$U c 103 $U 600
 	;;
 
-pf*)
+pf)
 	M pf c 46 0 600
 	;;
 
@@ -404,8 +404,9 @@ wskbd[0-9]*)
 wscons)
 	R wsmouse0 wsmouse1 wsmouse2 wsmouse3 wsmouse4 wsmouse5
 	R wsmouse6 wsmouse7 wsmouse8 wsmouse9 wskbd0 wskbd1 wskbd2
-	R wskbd3 wsmux ttyCcfg ttyC0 ttyC1 ttyC2 ttyC3 ttyC4 ttyC5
-	R ttyC6 ttyC7 ttyC8 ttyC9 ttyCa ttyCb
+	R wskbd3 wskbd4 wskbd5 wskbd6 wskbd7 wskbd8 wskbd9 wsmux
+	R ttyCcfg ttyC0 ttyC1 ttyC2 ttyC3 ttyC4 ttyC5 ttyC6 ttyC7
+	R ttyC8 ttyC9 ttyCa ttyCb
 	;;
 
 tty[C-J]*)

@@ -1,4 +1,4 @@
-/*	$OpenBSD: usbhidaction.c,v 1.25 2022/08/02 09:07:34 mestre Exp $ */
+/*	$OpenBSD: usbhidaction.c,v 1.27 2023/03/08 04:43:12 guenther Exp $ */
 /*      $NetBSD: usbhidaction.c,v 1.7 2002/01/18 14:38:59 augustss Exp $ */
 
 /*
@@ -71,7 +71,6 @@ struct command *parse_conf(const char *, report_desc_t, int, int);
 void docmd(struct command *, int, const char *, int, char **);
 void freecommands(struct command *);
 
-/* ARGSUSED */
 static void
 sighup(int signo)
 {
@@ -111,7 +110,6 @@ main(int argc, char **argv)
 			demon = 0;
 			verbose++;
 			break;
-		case '?':
 		default:
 			usage();
 		}

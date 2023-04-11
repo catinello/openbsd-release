@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_rib.c,v 1.249 2022/09/12 10:03:17 claudio Exp $ */
+/*	$OpenBSD: rde_rib.c,v 1.255 2023/02/09 13:43:23 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org>
@@ -147,7 +147,7 @@ rib_new(char *name, u_int rtableid, uint16_t flags)
 
 	if (id >= rib_size) {
 		if ((ribs = recallocarray(ribs, id, id + 8,
-		    sizeof(struct rib))) == NULL)
+		    sizeof(struct rib *))) == NULL)
 			fatal(NULL);
 		rib_size = id + 8;
 	}
@@ -442,7 +442,7 @@ rib_dump_r(struct rib_context *ctx)
 			struct bgpd_addr addr;
 			pt_getaddr(re->prefix, &addr);
 			if (prefix_compare(&ctx->ctx_subtree, &addr,
-			   ctx->ctx_subtreelen) != 0)
+			    ctx->ctx_subtreelen) != 0)
 				/* left subtree, walk is done */
 				break;
 		}
@@ -636,6 +636,8 @@ path_compare(struct rde_aspath *a, struct rde_aspath *b)
 	if (a->pftableid < b->pftableid)
 		return (-1);
 
+	/* no need to check aspa_state or aspa_generation */
+
 	r = aspath_compare(a->aspath, b->aspath);
 	if (r > 0)
 		return (1);
@@ -740,7 +742,7 @@ path_copy(struct rde_aspath *dst, const struct rde_aspath *src)
 	return (dst);
 }
 
-/* initialize or pepare an aspath for use */
+/* initialize or prepare an aspath for use */
 struct rde_aspath *
 path_prep(struct rde_aspath *asp)
 {
@@ -955,7 +957,7 @@ prefix_adjout_match(struct rde_peer *peer, struct bgpd_addr *addr)
 int
 prefix_update(struct rib *rib, struct rde_peer *peer, uint32_t path_id,
     uint32_t path_id_tx, struct filterstate *state, struct bgpd_addr *prefix,
-    int prefixlen, uint8_t vstate)
+    int prefixlen)
 {
 	struct rde_aspath	*asp, *nasp = &state->aspath;
 	struct rde_community	*comm, *ncomm = &state->communities;
@@ -973,7 +975,7 @@ prefix_update(struct rib *rib, struct rde_peer *peer, uint32_t path_id,
 		    path_compare(nasp, prefix_aspath(p)) == 0) {
 			/* no change, update last change */
 			p->lastchange = getmonotime();
-			p->validation_state = vstate;
+			p->validation_state = state->vstate;
 			return (0);
 		}
 	}
@@ -997,11 +999,11 @@ prefix_update(struct rib *rib, struct rde_peer *peer, uint32_t path_id,
 	/* If the prefix was found move it else add it to the RIB. */
 	if (p != NULL)
 		return (prefix_move(p, peer, asp, comm, state->nexthop,
-		    state->nhflags, vstate));
+		    state->nhflags, state->vstate));
 	else
 		return (prefix_add(prefix, prefixlen, rib, peer, path_id,
 		    path_id_tx, asp, comm, state->nexthop, state->nhflags,
-		    vstate));
+		    state->vstate));
 }
 
 /*
@@ -1123,14 +1125,14 @@ prefix_add_eor(struct rde_peer *peer, uint8_t aid)
 void
 prefix_adjout_update(struct prefix *p, struct rde_peer *peer,
     struct filterstate *state, struct bgpd_addr *prefix, int prefixlen,
-    uint32_t path_id_tx, uint8_t vstate)
+    uint32_t path_id_tx)
 {
 	struct rde_aspath *asp;
 	struct rde_community *comm;
 
 	if (p == NULL) {
 		p = prefix_alloc();
-		/* initally mark DEAD so code below is skipped */
+		/* initially mark DEAD so code below is skipped */
 		p->flags |= PREFIX_FLAG_ADJOUT | PREFIX_FLAG_DEAD;
 
 		p->pt = pt_get(prefix, prefixlen);
@@ -1160,7 +1162,7 @@ prefix_adjout_update(struct prefix *p, struct rde_peer *peer,
 		    prefix_communities(p)) &&
 		    path_compare(&state->aspath, prefix_aspath(p)) == 0) {
 			/* nothing changed */
-			p->validation_state = vstate;
+			p->validation_state = state->vstate;
 			p->lastchange = getmonotime();
 			p->flags &= ~PREFIX_FLAG_STALE;
 			return;
@@ -1169,16 +1171,16 @@ prefix_adjout_update(struct prefix *p, struct rde_peer *peer,
 		/* if pending update unhook it before it is unlinked */
 		if (p->flags & PREFIX_FLAG_UPDATE) {
 			RB_REMOVE(prefix_tree, &peer->updates[prefix->aid], p);
-			peer->up_nlricnt--;
+			peer->stats.pending_update--;
 		}
 
 		/* unlink prefix so it can be relinked below */
 		prefix_unlink(p);
-		peer->prefix_out_cnt--;
+		peer->stats.prefix_out_cnt--;
 	}
 	if (p->flags & PREFIX_FLAG_WITHDRAW) {
 		RB_REMOVE(prefix_tree, &peer->withdraws[prefix->aid], p);
-		peer->up_wcnt--;
+		peer->stats.pending_withdraw--;
 	}
 
 	/* nothing needs to be done for PREFIX_FLAG_DEAD and STALE */
@@ -1205,15 +1207,15 @@ prefix_adjout_update(struct prefix *p, struct rde_peer *peer,
 	}
 
 	prefix_link(p, NULL, p->pt, peer, 0, p->path_id_tx, asp, comm,
-	    state->nexthop, state->nhflags, vstate);
-	peer->prefix_out_cnt++;
+	    state->nexthop, state->nhflags, state->vstate);
+	peer->stats.prefix_out_cnt++;
 
 	if (p->flags & PREFIX_FLAG_MASK)
 		fatalx("%s: bad flags %x", __func__, p->flags);
 	p->flags |= PREFIX_FLAG_UPDATE;
 	if (RB_INSERT(prefix_tree, &peer->updates[prefix->aid], p) != NULL)
 		fatalx("%s: RB tree invariant violated", __func__);
-	peer->up_nlricnt++;
+	peer->stats.pending_update++;
 }
 
 /*
@@ -1237,12 +1239,12 @@ prefix_adjout_withdraw(struct prefix *p)
 	/* pending update just got withdrawn */
 	if (p->flags & PREFIX_FLAG_UPDATE) {
 		RB_REMOVE(prefix_tree, &peer->updates[p->pt->aid], p);
-		peer->up_nlricnt--;
+		peer->stats.pending_update--;
 	}
 	/* unlink prefix if it was linked (not a withdraw or dead) */
 	if ((p->flags & (PREFIX_FLAG_WITHDRAW | PREFIX_FLAG_DEAD)) == 0) {
 		prefix_unlink(p);
-		peer->prefix_out_cnt--;
+		peer->stats.prefix_out_cnt--;
 	}
 
 	/* nothing needs to be done for PREFIX_FLAG_DEAD and STALE */
@@ -1252,7 +1254,7 @@ prefix_adjout_withdraw(struct prefix *p)
 	p->flags |= PREFIX_FLAG_WITHDRAW;
 	if (RB_INSERT(prefix_tree, &peer->withdraws[p->pt->aid], p) != NULL)
 		fatalx("%s: RB tree invariant violated", __func__);
-	peer->up_wcnt++;
+	peer->stats.pending_withdraw++;
 }
 
 void
@@ -1271,16 +1273,16 @@ prefix_adjout_destroy(struct prefix *p)
 
 	if (p->flags & PREFIX_FLAG_WITHDRAW) {
 		RB_REMOVE(prefix_tree, &peer->withdraws[p->pt->aid], p);
-		peer->up_wcnt--;
+		peer->stats.pending_withdraw--;
 	}
 	if (p->flags & PREFIX_FLAG_UPDATE) {
 		RB_REMOVE(prefix_tree, &peer->updates[p->pt->aid], p);
-		peer->up_nlricnt--;
+		peer->stats.pending_update--;
 	}
 	/* unlink prefix if it was linked (not a withdraw or dead) */
 	if ((p->flags & (PREFIX_FLAG_WITHDRAW | PREFIX_FLAG_DEAD)) == 0) {
 		prefix_unlink(p);
-		peer->prefix_out_cnt--;
+		peer->stats.prefix_out_cnt--;
 	}
 
 	/* nothing needs to be done for PREFIX_FLAG_DEAD and STALE */
@@ -1342,7 +1344,7 @@ prefix_dump_r(struct rib_context *ctx)
 			struct bgpd_addr addr;
 			pt_getaddr(p->pt, &addr);
 			if (prefix_compare(&ctx->ctx_subtree, &addr,
-			   ctx->ctx_subtreelen) != 0)
+			    ctx->ctx_subtreelen) != 0)
 				/* left subtree, walk is done */
 				break;
 		}

@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_sysctl.c,v 1.406 2022/08/16 13:29:52 visa Exp $	*/
+/*	$OpenBSD: kern_sysctl.c,v 1.411 2023/01/22 12:05:44 mvs Exp $	*/
 /*	$NetBSD: kern_sysctl.c,v 1.17 1996/05/20 17:49:05 mrg Exp $	*/
 
 /*-
@@ -53,6 +53,7 @@
 #include <sys/vnode.h>
 #include <sys/unistd.h>
 #include <sys/buf.h>
+#include <sys/clockintr.h>
 #include <sys/tty.h>
 #include <sys/disklabel.h>
 #include <sys/disk.h>
@@ -125,6 +126,7 @@ extern long numvnodes;
 extern int allowdt;
 extern int audio_record_enable;
 extern int video_record_enable;
+extern int autoconf_serial;
 
 int allowkmem;
 
@@ -340,6 +342,7 @@ const struct sysctl_bounded_args kern_vars[] = {
 #ifdef PTRACE
 	{KERN_GLOBAL_PTRACE, &global_ptrace, 0, 1},
 #endif
+	{KERN_AUTOCONF_SERIAL, &autoconf_serial, SYSCTL_INT_READONLY},
 };
 
 int
@@ -426,6 +429,11 @@ kern_sysctl_dirs(int top_name, int *name, u_int namelen,
 	case KERN_CPUSTATS:
 		return (sysctl_cpustats(name, namelen, oldp, oldlenp,
 		    newp, newlen));
+#ifdef __HAVE_CLOCKINTR
+	case KERN_CLOCKINTR:
+		return sysctl_clockintr(name, namelen, oldp, oldlenp, newp,
+		    newlen);
+#endif
 	default:
 		return (ENOTDIR);	/* overloaded */
 	}
@@ -1176,7 +1184,8 @@ fill_file(struct kinfo_file *kf, struct file *fp, struct filedesc *fdp,
 		}
 
 		kf->so_type = so->so_type;
-		kf->so_state = so->so_state;
+		kf->so_state = so->so_state | so->so_snd.sb_state |
+		    so->so_rcv.sb_state;
 		if (show_pointers)
 			kf->so_pcb = PTRTOINT64(so->so_pcb);
 		else
@@ -2502,6 +2511,7 @@ sysctl_cpustats(int *name, u_int namelen, void *oldp, size_t *oldlenp,
 	if (!found)
 		return (ENOENT);
 
+	memset(&cs, 0, sizeof cs);
 	memcpy(&cs.cs_time, &ci->ci_schedstate.spc_cp_time, sizeof(cs.cs_time));
 	cs.cs_flags = 0;
 	if (cpu_is_online(ci))

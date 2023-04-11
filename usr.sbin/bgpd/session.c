@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.435 2022/08/31 15:51:44 claudio Exp $ */
+/*	$OpenBSD: session.c,v 1.442 2023/03/09 13:12:19 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -258,14 +258,6 @@ session_main(int debug, int verbose)
 				/* new peer that needs init? */
 				if (p->state == STATE_NONE)
 					init_peer(p);
-
-				/* reinit due? */
-				if (p->reconf_action == RECONF_REINIT) {
-					session_stop(p, ERR_CEASE_ADMIN_RESET);
-					if (!p->conf.down)
-						timer_set(&p->timers,
-						    Timer_IdleHold, 0);
-				}
 
 				/* deletion due? */
 				if (p->reconf_action == RECONF_DELETE) {
@@ -580,11 +572,13 @@ init_peer(struct peer *p)
 	if (p->conf.down)
 		timer_stop(&p->timers, Timer_IdleHold); /* no autostart */
 	else
-		timer_set(&p->timers, Timer_IdleHold, 0); /* start ASAP */
+		timer_set(&p->timers, Timer_IdleHold, SESSION_CLEAR_DELAY);
+
+	p->stats.last_updown = getmonotime();
 
 	/*
 	 * on startup, demote if requested.
-	 * do not handle new peers. they must reach ESTABLISHED beforehands.
+	 * do not handle new peers. they must reach ESTABLISHED beforehand.
 	 * peers added at runtime have reconf_action set to RECONF_REINIT.
 	 */
 	if (p->reconf_action != RECONF_REINIT && p->conf.demote_group[0])
@@ -1410,6 +1404,47 @@ session_sendmsg(struct bgp_msg *msg, struct peer *p)
 	return (0);
 }
 
+/*
+ * Translate between internal roles and the value expected by RFC 9234.
+ */
+static uint8_t
+role2capa(enum role role)
+{
+	switch (role) {
+	case ROLE_CUSTOMER:
+		return CAPA_ROLE_CUSTOMER;
+	case ROLE_PROVIDER:
+		return CAPA_ROLE_PROVIDER;
+	case ROLE_RS:
+		return CAPA_ROLE_RS;
+	case ROLE_RS_CLIENT:
+		return CAPA_ROLE_RS_CLIENT;
+	case ROLE_PEER:
+		return CAPA_ROLE_PEER;
+	default:
+		fatalx("Unsupported role for role capability");
+	}
+}
+
+static enum role
+capa2role(uint8_t val)
+{
+	switch (val) {
+	case CAPA_ROLE_PROVIDER:
+		return ROLE_PROVIDER;
+	case CAPA_ROLE_RS:
+		return ROLE_RS;
+	case CAPA_ROLE_RS_CLIENT:
+		return ROLE_RS_CLIENT;
+	case CAPA_ROLE_CUSTOMER:
+		return ROLE_CUSTOMER;
+	case CAPA_ROLE_PEER:
+		return ROLE_PEER;
+	default:
+		return ROLE_NONE;
+	}
+}
+
 void
 session_open(struct peer *p)
 {
@@ -1439,10 +1474,15 @@ session_open(struct peer *p)
 	if (p->capa.ann.refresh)	/* no data */
 		errs += session_capa_add(opb, CAPA_REFRESH, 0);
 
-	/* BGP open policy, RFC 9234 */
-	if (p->capa.ann.role_ena) {
+	/* BGP open policy, RFC 9234, only for ebgp sessions */
+	if (p->conf.ebgp && p->capa.ann.policy &&
+	    p->conf.role != ROLE_NONE &&
+	    (p->capa.ann.mp[AID_INET] || p->capa.ann.mp[AID_INET6] ||
+	    mpcapa == 0)) {
+		uint8_t val;
+		val = role2capa(p->conf.role);
 		errs += session_capa_add(opb, CAPA_ROLE, 1);
-		errs += ibuf_add(opb, &p->capa.ann.role, 1);
+		errs += ibuf_add(opb, &val, 1);
 	}
 
 	/* graceful restart and End-of-RIB marker, RFC 4724 */
@@ -1503,7 +1543,7 @@ session_open(struct peer *p)
 	if (optparamlen == 0) {
 		/* nothing */
 	} else if (optparamlen + 2 >= 255) {
-		/* RFC9072: 2 byte lenght instead of 1 + 3 byte extra header */
+		/* RFC9072: 2 byte length instead of 1 + 3 byte extra header */
 		optparamlen += sizeof(op_type) + 2 + 3;
 		msg.optparamlen = 255;
 		extlen = 1;
@@ -2476,6 +2516,17 @@ parse_notification(struct peer *peer)
 				log_peer_warnx(&peer->conf,
 				    "disabling route refresh capability");
 				break;
+			case CAPA_ROLE:
+				if (peer->capa.ann.policy == 1) {
+					peer->capa.ann.policy = 0;
+					log_peer_warnx(&peer->conf,
+					    "disabling role capability");
+				} else {
+					log_peer_warnx(&peer->conf,
+					    "role capability enforced, "
+					    "not disabling");
+				}
+				break;
 			case CAPA_RESTART:
 				peer->capa.ann.grestart.restart = 0;
 				log_peer_warnx(&peer->conf,
@@ -2614,12 +2665,16 @@ parse_capabilities(struct peer *peer, u_char *d, uint16_t dlen, uint32_t *as)
 		case CAPA_ROLE:
 			if (capa_len != 1) {
 				log_peer_warnx(&peer->conf,
-				    "Bad open policy capability length: "
-				    "%u", capa_len);
+				    "Bad role capability length: %u", capa_len);
 				break;
 			}
-			peer->capa.peer.role_ena = 1;
-			peer->capa.peer.role = *capa_val;
+			if (!peer->conf.ebgp) {
+				log_peer_warnx(&peer->conf,
+				    "Received role capability on iBGP session");
+				break;
+			}
+			peer->capa.peer.policy = 1;
+			peer->remote_role = capa2role(*capa_val);
 			break;
 		case CAPA_RESTART:
 			if (capa_len == 2) {
@@ -2766,7 +2821,7 @@ capa_neg_calc(struct peer *p, uint8_t *suberr)
 	/*
 	 * graceful restart: the peer capabilities are of interest here.
 	 * It is necessary to compare the new values with the previous ones
-	 * and act acordingly. AFI/SAFI that are not part in the MP capability
+	 * and act accordingly. AFI/SAFI that are not part in the MP capability
 	 * are treated as not being present.
 	 * Also make sure that a flush happens if the session stopped
 	 * supporting graceful restart.
@@ -2833,40 +2888,42 @@ capa_neg_calc(struct peer *p, uint8_t *suberr)
 	 * Make sure that the roles match and set the negotiated capability
 	 * to the role of the peer. So the RDE can inject the OTC attribute.
 	 * See RFC 9234, section 4.2.
+	 * These checks should only happen on ebgp sessions.
 	 */
-	if (p->capa.ann.role_ena != 0 && p->capa.peer.role_ena != 0) {
-		switch (p->capa.ann.role) {
-		case CAPA_ROLE_PROVIDER:
-			if (p->capa.peer.role != CAPA_ROLE_CUSTOMER)
+	if (p->capa.ann.policy != 0 && p->capa.peer.policy != 0 &&
+	    p->conf.ebgp) {
+		switch (p->conf.role) {
+		case ROLE_PROVIDER:
+			if (p->remote_role != ROLE_CUSTOMER)
 				goto fail;
 			break;
-		case CAPA_ROLE_RS:
-			if (p->capa.peer.role != CAPA_ROLE_RS_CLIENT)
+		case ROLE_RS:
+			if (p->remote_role != ROLE_RS_CLIENT)
 				goto fail;
 			break;
-		case CAPA_ROLE_RS_CLIENT:
-			if (p->capa.peer.role != CAPA_ROLE_RS)
+		case ROLE_RS_CLIENT:
+			if (p->remote_role != ROLE_RS)
 				goto fail;
 			break;
-		case CAPA_ROLE_CUSTOMER:
-			if (p->capa.peer.role != CAPA_ROLE_PROVIDER)
+		case ROLE_CUSTOMER:
+			if (p->remote_role != ROLE_PROVIDER)
 				goto fail;
 			break;
-		case CAPA_ROLE_PEER:
-			if (p->capa.peer.role != CAPA_ROLE_PEER)
+		case ROLE_PEER:
+			if (p->remote_role != ROLE_PEER)
 				goto fail;
 			break;
 		default:
  fail:
 			log_peer_warnx(&p->conf, "open policy role mismatch: "
-			    "%s vs %s", log_policy(p->capa.ann.role),
-			    log_policy(p->capa.peer.role));
+			    "our role %s, their role %s",
+			    log_policy(p->conf.role),
+			    log_policy(p->remote_role));
 			*suberr = ERR_OPEN_ROLE;
 			return (-1);
 		}
-		p->capa.neg.role_ena = 1;
-		p->capa.neg.role = p->capa.peer.role;
-	} else if (p->capa.ann.role_ena == 2) {
+		p->capa.neg.policy = 1;
+	} else if (p->capa.ann.policy == 2 && p->conf.ebgp) {
 		/* enforce presence of open policy role capability */
 		log_peer_warnx(&p->conf, "open policy role enforced but "
 		    "not present");
@@ -3134,7 +3191,13 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 		case IMSG_CTL_SHOW_TIMER:
 			if (idx != PFD_PIPE_MAIN)
 				fatalx("ctl kroute request not from parent");
-			control_imsg_relay(&imsg);
+			control_imsg_relay(&imsg, NULL);
+			break;
+		case IMSG_CTL_SHOW_NEIGHBOR:
+			if (idx != PFD_PIPE_ROUTE_CTL)
+				fatalx("ctl rib request not from RDE");
+			p = getpeerbyid(conf, imsg.hdr.peerid);
+			control_imsg_relay(&imsg, p);
 			break;
 		case IMSG_CTL_SHOW_RIB:
 		case IMSG_CTL_SHOW_RIB_PREFIX:
@@ -3142,15 +3205,14 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 		case IMSG_CTL_SHOW_RIB_ATTR:
 		case IMSG_CTL_SHOW_RIB_MEM:
 		case IMSG_CTL_SHOW_NETWORK:
-		case IMSG_CTL_SHOW_NEIGHBOR:
 		case IMSG_CTL_SHOW_SET:
 			if (idx != PFD_PIPE_ROUTE_CTL)
 				fatalx("ctl rib request not from RDE");
-			control_imsg_relay(&imsg);
+			control_imsg_relay(&imsg, NULL);
 			break;
 		case IMSG_CTL_END:
 		case IMSG_CTL_RESULT:
-			control_imsg_relay(&imsg);
+			control_imsg_relay(&imsg, NULL);
 			break;
 		case IMSG_UPDATE:
 			if (idx != PFD_PIPE_ROUTE)
@@ -3499,11 +3561,11 @@ int
 imsg_ctl_parent(int type, uint32_t peerid, pid_t pid, void *data,
     uint16_t datalen)
 {
-	return (imsg_compose(ibuf_main, type, peerid, pid, -1, data, datalen));
+	return imsg_compose(ibuf_main, type, peerid, pid, -1, data, datalen);
 }
 
 int
-imsg_ctl_rde(int type, pid_t pid, void *data, uint16_t datalen)
+imsg_ctl_rde(int type, uint32_t peerid, pid_t pid, void *data, uint16_t datalen)
 {
 	if (ibuf_rde_ctl == NULL)
 		return (0);
@@ -3512,7 +3574,7 @@ imsg_ctl_rde(int type, pid_t pid, void *data, uint16_t datalen)
 	 * Use control socket to talk to RDE to bypass the queue of the
 	 * regular imsg socket.
 	 */
-	return (imsg_compose(ibuf_rde_ctl, type, 0, pid, -1, data, datalen));
+	return imsg_compose(ibuf_rde_ctl, type, peerid, pid, -1, data, datalen);
 }
 
 int
@@ -3521,7 +3583,7 @@ imsg_rde(int type, uint32_t peerid, void *data, uint16_t datalen)
 	if (ibuf_rde == NULL)
 		return (0);
 
-	return (imsg_compose(ibuf_rde, type, peerid, 0, -1, data, datalen));
+	return imsg_compose(ibuf_rde, type, peerid, 0, -1, data, datalen);
 }
 
 void

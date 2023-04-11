@@ -1,4 +1,4 @@
-/*	$OpenBSD: mips64_machdep.c,v 1.38 2022/08/22 00:35:06 cheloha Exp $ */
+/*	$OpenBSD: mips64_machdep.c,v 1.41 2023/02/04 19:19:36 cheloha Exp $ */
 
 /*
  * Copyright (c) 2009, 2010, 2012 Miodrag Vallat.
@@ -44,6 +44,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
+#include <sys/clockintr.h>
 #include <sys/proc.h>
 #include <sys/exec.h>
 #include <sys/sysctl.h>
@@ -137,21 +138,21 @@ register_t protosr = SR_FR_32 | SR_XX | SR_UX | SR_KSU_USER | SR_EXL |
  */
 void
 setregs(struct proc *p, struct exec_package *pack, u_long stack,
-    register_t *retval)
+    struct ps_strings *arginfo)
 {
 	struct cpu_info *ci = curcpu();
+	struct trapframe *tf = p->p_md.md_regs;
 
-	bzero((caddr_t)p->p_md.md_regs, sizeof(struct trapframe));
-	p->p_md.md_regs->sp = stack;
-	p->p_md.md_regs->pc = pack->ep_entry & ~3;
-	p->p_md.md_regs->t9 = pack->ep_entry & ~3; /* abicall req */
-	p->p_md.md_regs->sr = protosr | (idle_mask & SR_INT_MASK);
+	memset(tf, 0, sizeof *tf);
+	tf->sp = stack;
+	tf->pc = pack->ep_entry & ~3;
+	tf->t9 = pack->ep_entry & ~3; /* abicall req */
+	tf->sr = protosr | (idle_mask & SR_INT_MASK);
+
 	if (CPU_HAS_FPU(ci))
 		p->p_md.md_flags &= ~MDP_FPUSED;
 	if (ci->ci_fpuproc == p)
 		ci->ci_fpuproc = NULL;
-
-	retval[1] = 0;
 }
 
 int
@@ -250,7 +251,6 @@ u_int cp0_get_timecount(struct timecounter *);
 
 struct timecounter cp0_timecounter = {
 	.tc_get_timecount = cp0_get_timecount,
-	.tc_poll_pps = 0,
 	.tc_counter_mask = 0xffffffff,
 	.tc_frequency = 0,
 	.tc_name = "CP0",
@@ -302,16 +302,15 @@ cp0_calibrate(struct cpu_info *ci)
 }
 
 /*
- * Start the real-time and statistics clocks.
+ * Prepare to start the clock interrupt dispatch cycle.
  */
 void
 cpu_initclocks(void)
 {
 	struct cpu_info *ci = curcpu();
 
-	profhz = hz;
-
 	tick = 1000000 / hz;	/* number of micro-seconds between interrupts */
+	tick_nsec = 1000000000 / hz;
 
 	cp0_calibrate(ci);
 
@@ -331,14 +330,10 @@ cpu_initclocks(void)
 	(*md_startclock)(ci);
 }
 
-/*
- * We assume newhz is either stathz or profhz, and that neither will
- * change after being set up above.  Could recalculate intervals here
- * but that would be a drag.
- */
 void
 setstatclockrate(int newhz)
 {
+	clockintr_setstatclockrate(newhz);
 }
 
 /*

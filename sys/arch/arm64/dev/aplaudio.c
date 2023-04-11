@@ -1,4 +1,4 @@
-/*	$OpenBSD: aplaudio.c,v 1.3 2022/09/02 17:54:42 kettenis Exp $	*/
+/*	$OpenBSD: aplaudio.c,v 1.6 2023/01/14 23:35:09 kettenis Exp $	*/
 /*
  * Copyright (c) 2022 Mark Kettenis <kettenis@openbsd.org>
  * Copyright (c) 2020 Patrick Wildt <patrick@blueri.se>
@@ -36,8 +36,6 @@
 struct aplaudio_softc {
 	struct device		sc_dev;
 
-	uint32_t		sc_mclk_fs;
-
 	struct dai_device	*sc_dai_cpu;
 	struct dai_device	*sc_dai_codec[6];
 };
@@ -55,7 +53,6 @@ void	aplaudio_freem(void *, void *, int);
 int	aplaudio_set_port(void *, mixer_ctrl_t *);
 int	aplaudio_get_port(void *, mixer_ctrl_t *);
 int	aplaudio_query_devinfo(void *, mixer_devinfo_t *);
-int	aplaudio_get_props(void *);
 int	aplaudio_round_blocksize(void *, int);
 size_t	aplaudio_round_buffersize(void *, int, size_t);
 int	aplaudio_trigger_output(void *, void *, void *, int,
@@ -74,7 +71,6 @@ const struct audio_hw_if aplaudio_hw_if = {
 	.set_port = aplaudio_set_port,
 	.get_port = aplaudio_get_port,
 	.query_devinfo = aplaudio_query_devinfo,
-	.get_props = aplaudio_get_props,
 	.round_blocksize = aplaudio_round_blocksize,
 	.round_buffersize = aplaudio_round_buffersize,
 	.trigger_output = aplaudio_trigger_output,
@@ -157,8 +153,6 @@ aplaudio_attach(struct device *parent, struct device *self, void *aux)
 		if (count > 1)
 			aplaudio_set_tdm_slots(sc);
 
-		sc->sc_mclk_fs = OF_getpropint(node, "mclk-fs", 0);
-
 		/* XXX Parameters are missing from the device tree? */
 		fmt = DAI_FORMAT_LJ;
 		pol = 0;
@@ -201,8 +195,18 @@ aplaudio_set_tdm_slots(struct aplaudio_softc *sc)
 		dai = sc->sc_dai_codec[i];
 		if (dai == NULL)
 			continue;
-		if (dai->dd_set_tdm_slot)
-			dai->dd_set_tdm_slot(dai->dd_cookie, i % 2);
+		if (dai->dd_set_tdm_slot) {
+			char prefix[8];
+			int slot = 0;
+
+			if (OF_getprop(dai->dd_node, "sound-name-prefix",
+			    prefix, sizeof(prefix)) > 0) {
+				if (strncmp(prefix, "Right", 5) == 0)
+					slot = 1;
+			}
+
+			dai->dd_set_tdm_slot(dai->dd_cookie, slot);
+		}
 	}
 }
 
@@ -276,24 +280,24 @@ aplaudio_set_params(void *cookie, int setmode, int usemode,
 	int error;
 	int i;
 
-	if (sc->sc_mclk_fs) {
-		if (setmode & AUMODE_PLAY)
-			rate = play->sample_rate * sc->sc_mclk_fs;
-		else
-			rate = rec->sample_rate * sc->sc_mclk_fs;
+	dai = sc->sc_dai_cpu;
+	hwif = dai->dd_hw_if;
+	if (hwif->set_params) {
+		error = hwif->set_params(dai->dd_cookie,
+		    setmode, usemode, play, rec);
+		if (error)
+			return error;
+	}
 
-		for (i = 0; i < nitems(sc->sc_dai_codec); i++) {
-			dai = sc->sc_dai_codec[i];
-			if (dai == NULL)
-				continue;
-			if (dai->dd_set_sysclk) {
-				error = dai->dd_set_sysclk(dai->dd_cookie, rate);
-				if (error)
-					return error;
-			}
-		}
+	if (setmode & AUMODE_PLAY)
+		rate = play->sample_rate * play->channels * play->bps * 8;
+	else
+		rate = rec->sample_rate * rec->channels * rec->bps * 8;
 
-		dai = sc->sc_dai_cpu;
+	for (i = 0; i < nitems(sc->sc_dai_codec); i++) {
+		dai = sc->sc_dai_codec[i];
+		if (dai == NULL)
+			continue;
 		if (dai->dd_set_sysclk) {
 			error = dai->dd_set_sysclk(dai->dd_cookie, rate);
 			if (error)
@@ -302,10 +306,8 @@ aplaudio_set_params(void *cookie, int setmode, int usemode,
 	}
 
 	dai = sc->sc_dai_cpu;
-	hwif = dai->dd_hw_if;
-	if (hwif->set_params) {
-		error = hwif->set_params(dai->dd_cookie,
-		    setmode, usemode, play, rec);
+	if (dai->dd_set_sysclk) {
+		error = dai->dd_set_sysclk(dai->dd_cookie, rate);
 		if (error)
 			return error;
 	}
@@ -399,19 +401,6 @@ aplaudio_query_devinfo(void *cookie, mixer_devinfo_t *dip)
 	}
 
 	return ENXIO;
-}
-
-int
-aplaudio_get_props(void *cookie)
-{
-	struct aplaudio_softc *sc = cookie;
-	struct dai_device *dai = sc->sc_dai_cpu;
-	const struct audio_hw_if *hwif = dai->dd_hw_if;
-
-	if (hwif->get_props)
-		return hwif->get_props(dai->dd_cookie);
-
-	return 0;
 }
 
 int

@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.87 2022/09/19 20:54:02 tobhe Exp $	*/
+/*	$OpenBSD: config.c,v 1.91 2022/12/03 22:34:35 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2019 Tobias Heider <tobias.heider@stusta.de>
@@ -217,10 +217,15 @@ config_free_policy(struct iked *env, struct iked_policy *pol)
 	if (pol->pol_flags & IKED_POLICY_REFCNT)
 		goto remove;
 
+	/*
+	 * Remove policy from the sc_policies list, but increment
+	 * refcount for every SA linked for the policy.
+	 */
+	pol->pol_flags |= IKED_POLICY_REFCNT;
+
 	TAILQ_REMOVE(&env->sc_policies, pol, pol_entry);
 
 	TAILQ_FOREACH(sa, &pol->pol_sapeers, sa_peer_entry) {
-		/* Remove from the policy list, but keep for existing SAs */
 		if (sa->sa_policy == pol)
 			policy_ref(env, pol);
 		else
@@ -945,11 +950,11 @@ config_setocsp(struct iked *env)
 int
 config_getocsp(struct iked *env, struct imsg *imsg)
 {
-	size_t			 have, need;
-	u_int8_t		*ptr;
+	size_t		 have, need;
+	uint8_t		*ptr;
 
 	free(env->sc_ocsp_url);
-	ptr = (u_int8_t *)imsg->data;
+	ptr = (uint8_t *)imsg->data;
 	have = IMSG_DATA_SIZE(imsg);
 
 	/* get tolerate */

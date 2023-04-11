@@ -1,4 +1,4 @@
-/*	$OpenBSD: systm.h,v 1.159 2022/09/03 15:29:44 kettenis Exp $	*/
+/*	$OpenBSD: systm.h,v 1.161 2023/01/31 15:18:56 deraadt Exp $	*/
 /*	$NetBSD: systm.h,v 1.50 1996/06/09 04:55:09 briggs Exp $	*/
 
 /*-
@@ -201,12 +201,14 @@ void	*memmove(void *, const void *, size_t)
 void	*memset(void *, int, size_t)
 		__attribute__ ((__bounded__(__buffer__,1,3)));
 
-int	copystr(const void *, void *, size_t, size_t *)
-		__attribute__ ((__bounded__(__string__,2,3)));
 int	copyinstr(const void *, void *, size_t, size_t *)
+		__attribute__ ((__bounded__(__string__,2,3)));
+int	_copyinstr(const void *, void *, size_t, size_t *)
 		__attribute__ ((__bounded__(__string__,2,3)));
 int	copyoutstr(const void *, void *, size_t, size_t *);
 int	copyin(const void *, void *, size_t)
+		__attribute__ ((__bounded__(__buffer__,2,3)));
+int	_copyin(const void *, void *, size_t)
 		__attribute__ ((__bounded__(__buffer__,2,3)));
 int	copyout(const void *, void *, size_t);
 int	copyin32(const uint32_t *, uint32_t *);

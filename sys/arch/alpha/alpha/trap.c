@@ -1,4 +1,4 @@
-/* $OpenBSD: trap.c,v 1.103 2022/08/29 06:08:03 jsg Exp $ */
+/* $OpenBSD: trap.c,v 1.108 2023/03/08 04:43:07 guenther Exp $ */
 /* $NetBSD: trap.c,v 1.52 2000/05/24 16:48:33 thorpej Exp $ */
 
 /*-
@@ -201,7 +201,6 @@ printtrap(const unsigned long a0, const unsigned long a1,
  * to make the code a bit cleaner and more representative of the
  * Alpha architecture.
  */
-/*ARGSUSED*/
 void
 trap(a0, a1, a2, entry, framep)
 	const unsigned long a0, a1, a2, entry;
@@ -504,7 +503,7 @@ syscall(code, framep)
 {
 	const struct sysent *callp;
 	struct proc *p;
-	int error;
+	int error, indirect = -1;
 	u_int64_t opc;
 	u_long rval[2];
 	u_long args[10];					/* XXX */
@@ -518,11 +517,7 @@ syscall(code, framep)
 
 	switch(code) {
 	case SYS_syscall:
-	case SYS___syscall:
-		/*
-		 * syscall() and __syscall() are handled the same on
-		 * the alpha, as everything is 64-bit aligned, anyway.
-		 */
+		indirect = code;
 		code = framep->tf_regs[FRAME_A0];
 		hidden = 1;
 		break;
@@ -564,12 +559,11 @@ syscall(code, framep)
 	rval[0] = 0;
 	rval[1] = 0;
 
-	error = mi_syscall(p, code, callp, args + hidden, rval);
+	error = mi_syscall(p, code, indirect, callp, args + hidden, rval);
 
 	switch (error) {
 	case 0:
 		framep->tf_regs[FRAME_V0] = rval[0];
-		framep->tf_regs[FRAME_A4] = rval[1];
 		framep->tf_regs[FRAME_A3] = 0;
 		break;
 	case ERESTART:
@@ -604,7 +598,6 @@ child_return(arg)
 	 * Return values in the frame set by cpu_fork().
 	 */
 	framep->tf_regs[FRAME_V0] = 0;
-	framep->tf_regs[FRAME_A4] = 0;
 	framep->tf_regs[FRAME_A3] = 0;
 
 	KERNEL_UNLOCK();
@@ -738,7 +731,7 @@ handle_opdec(p, ucodep)
 	p->p_md.md_tf->tf_regs[FRAME_SP] = alpha_pal_rdusp();
 
 	inst_pc = memaddr = p->p_md.md_tf->tf_regs[FRAME_PC] - 4;
-	if (copyin((caddr_t)inst_pc, &inst, sizeof (inst)) != 0) {
+	if (copyinsn(p, (u_int32_t *)inst_pc, (u_int32_t *)&inst) != 0) {
 		/*
 		 * really, this should never happen, but in case it
 		 * does we handle it.

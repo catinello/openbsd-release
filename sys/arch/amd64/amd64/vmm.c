@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmm.c,v 1.323 2022/09/07 18:44:09 dv Exp $	*/
+/*	$OpenBSD: vmm.c,v 1.337 2023/01/30 14:05:36 dv Exp $	*/
 /*
  * Copyright (c) 2014 Mike Larkin <mlarkin@openbsd.org>
  *
@@ -95,7 +95,6 @@ struct vm {
 
 	struct vcpu_head	 vm_vcpu_list;		/* [v] */
 	uint32_t		 vm_vcpu_ct;		/* [v] */
-	u_int			 vm_vcpus_running;	/* [a] */
 	struct rwlock		 vm_vcpu_lock;
 
 	SLIST_ENTRY(vm)		 vm_link;		/* [V] */
@@ -118,6 +117,7 @@ struct vmm_softc {
 	struct device		sc_dev;		/* [r] */
 
 	/* Suspend/Resume Synchronization */
+	struct rwlock		sc_slock;
 	struct refcnt		sc_refcnt;
 	volatile unsigned int	sc_status;	/* [a] */
 #define VMM_SUSPENDED		(unsigned int) 0
@@ -128,6 +128,7 @@ struct vmm_softc {
 	uint32_t		nr_svm_cpus;	/* [I] */
 	uint32_t		nr_rvi_cpus;	/* [I] */
 	uint32_t		nr_ept_cpus;	/* [I] */
+	uint8_t			pkru_enabled;	/* [I] */
 
 	/* Managed VMs */
 	struct vmlist_head	vm_list;	/* [v] */
@@ -404,10 +405,9 @@ vmm_attach(struct device *parent, struct device *self, void *aux)
 	struct cpu_info *ci;
 	CPU_INFO_ITERATOR cii;
 
+	rw_init(&sc->sc_slock, "vmmslk");
 	sc->sc_status = VMM_ACTIVE;
-
 	refcnt_init(&sc->sc_refcnt);
-	refcnt_rele(&sc->sc_refcnt);
 
 	sc->nr_vmx_cpus = 0;
 	sc->nr_svm_cpus = 0;
@@ -429,6 +429,10 @@ vmm_attach(struct device *parent, struct device *self, void *aux)
 		if (ci->ci_vmm_flags & CI_VMM_EPT)
 			sc->nr_ept_cpus++;
 	}
+
+	sc->pkru_enabled = 0;
+	if (rcr4() & CR4_PKE)
+		sc->pkru_enabled = 1;
 
 	SLIST_INIT(&sc->vm_list);
 	rw_init(&sc->vm_lock, "vm_list");
@@ -505,9 +509,6 @@ vmm_quiesce_vmx(void)
 
 	/* Iterate over each vm... */
 	SLIST_FOREACH(vm, &vmm_softc->vm_list, vm_link) {
-		if ((err = rw_enter(&vm->vm_vcpu_lock, RW_READ | RW_NOSLEEP)))
-			break;
-
 		/* Iterate over each vcpu... */
 		SLIST_FOREACH(vcpu, &vm->vm_vcpu_list, vc_vcpu_link) {
 			err = rw_enter(&vcpu->vc_lock, RW_WRITE | RW_NOSLEEP);
@@ -550,7 +551,6 @@ vmm_quiesce_vmx(void)
 			DPRINTF("%s: cleared vcpu %d for vm %d\n", __func__,
 			    vcpu->vc_id, vm->vm_id);
 		}
-		rw_exit_read(&vm->vm_vcpu_lock);
 		if (err)
 			break;
 	}
@@ -568,20 +568,17 @@ int
 vmm_activate(struct device *self, int act)
 {
 	struct cpu_info		*ci = curcpu();
-	unsigned int		 old_state;
 
 	switch (act) {
 	case DVACT_QUIESCE:
 		/* Block device users as we're suspending operation. */
-		old_state = atomic_cas_uint(&vmm_softc->sc_status, VMM_ACTIVE,
-		    VMM_SUSPENDED);
-		if (old_state != VMM_ACTIVE)
-			DPRINTF("%s: invalid device state on quiesce (%d)\n",
-			    __func__, old_state);
+		rw_enter_write(&vmm_softc->sc_slock);
+		KASSERT(vmm_softc->sc_status == VMM_ACTIVE);
+		vmm_softc->sc_status = VMM_SUSPENDED;
+		rw_exit_write(&vmm_softc->sc_slock);
 
 		/* Wait for any device users to finish. */
-		while (refcnt_read(&vmm_softc->sc_refcnt) > 0)
-			tsleep_nsec(&vmm_softc, PPAUSE, "vmm", MSEC_TO_NSEC(1));
+		refcnt_finalize(&vmm_softc->sc_refcnt, "vmmsusp");
 
 		/* If we're not in vmm mode, nothing to do. */
 		if ((ci->ci_flags & CPUF_VMM) == 0)
@@ -603,14 +600,14 @@ vmm_activate(struct device *self, int act)
 			vmm_start();
 
 		/* Set the device back to active. */
-		old_state = atomic_cas_uint(&vmm_softc->sc_status,
-		    VMM_SUSPENDED, VMM_ACTIVE);
-		if (old_state != VMM_SUSPENDED)
-			DPRINTF("%s: invalid device state on wakeup (%d)\n",
-			    __func__, old_state);
+		rw_enter_write(&vmm_softc->sc_slock);
+		KASSERT(vmm_softc->sc_status == VMM_SUSPENDED);
+		refcnt_init(&vmm_softc->sc_refcnt);
+		vmm_softc->sc_status = VMM_ACTIVE;
+		rw_exit_write(&vmm_softc->sc_slock);
 
 		/* Notify any waiting device users. */
-		wakeup(&vmm_softc);
+		wakeup(&vmm_softc->sc_status);
 		break;
 	}
 
@@ -657,21 +654,19 @@ vmmioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
 
 	KERNEL_UNLOCK();
 
-	refcnt_take(&vmm_softc->sc_refcnt);
-	while (atomic_load_int(&vmm_softc->sc_status) != VMM_ACTIVE) {
-		refcnt_rele(&vmm_softc->sc_refcnt);
-		/* Wait for the signal that we're running again. */
-		ret = tsleep_nsec(&vmm_softc, PWAIT | PCATCH, "vmm",
-		    MSEC_TO_NSEC(1));
-		if (ret != ERESTART && ret != EINTR && ret != EWOULDBLOCK
-		    && ret != 0) {
-			printf("%s: unhandled wakeup (%d) for device\n",
-			    __func__, ret);
-			ret = EBUSY;
+	ret = rw_enter(&vmm_softc->sc_slock, RW_READ | RW_INTR);
+	if (ret != 0)
+		goto out;
+	while (vmm_softc->sc_status != VMM_ACTIVE) {
+		ret = rwsleep_nsec(&vmm_softc->sc_status, &vmm_softc->sc_slock,
+		    PWAIT | PCATCH, "vmmresume", INFSLP);
+		if (ret != 0) {
+			rw_exit(&vmm_softc->sc_slock);
 			goto out;
 		}
-		refcnt_take(&vmm_softc->sc_refcnt);
 	}
+	refcnt_take(&vmm_softc->sc_refcnt);
+	rw_exit(&vmm_softc->sc_slock);
 
 	switch (cmd) {
 	case VMM_IOC_CREATE:
@@ -717,7 +712,7 @@ vmmioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
 		ret = ENOTTY;
 	}
 
-	refcnt_rele(&vmm_softc->sc_refcnt);
+	refcnt_rele_wake(&vmm_softc->sc_refcnt);
 out:
 	KERNEL_LOCK();
 
@@ -784,18 +779,14 @@ vm_find_vcpu(struct vm *vm, uint32_t id)
 	struct vcpu *vcpu;
 
 	if (vm == NULL)
-		return NULL;
+		return (NULL);
 
-	rw_enter_read(&vm->vm_vcpu_lock);
 	SLIST_FOREACH(vcpu, &vm->vm_vcpu_list, vc_vcpu_link) {
-		refcnt_take(&vcpu->vc_refcnt);
 		if (vcpu->vc_id == id)
-			break;
-		refcnt_rele_wake(&vcpu->vc_refcnt);
+			return (vcpu);
 	}
-	rw_exit_read(&vm->vm_vcpu_lock);
 
-	return vcpu;
+	return (NULL);
 }
 
 
@@ -853,8 +844,6 @@ vm_resetcpu(struct vm_resetcpu_params *vrp)
 	}
 	rw_exit_write(&vcpu->vc_lock);
 out:
-	if (vcpu != NULL)
-		refcnt_rele_wake(&vcpu->vc_refcnt);
 	refcnt_rele_wake(&vm->vm_refcnt);
 
 	return (ret);
@@ -878,6 +867,9 @@ vm_intr_pending(struct vm_intr_params *vip)
 {
 	struct vm *vm;
 	struct vcpu *vcpu;
+#ifdef MULTIPROCESSOR
+	struct cpu_info *ci;
+#endif
 	int error, ret = 0;
 
 	/* Find the desired VM */
@@ -895,8 +887,12 @@ vm_intr_pending(struct vm_intr_params *vip)
 	}
 
 	vcpu->vc_intr = vip->vip_intr;
+#ifdef MULTIPROCESSOR
+	ci = READ_ONCE(vcpu->vc_curcpu);
+	if (ci != NULL)
+		x86_send_ipi(ci, X86_IPI_NOP);
+#endif
 
-	refcnt_rele_wake(&vcpu->vc_refcnt);
 out:
 	refcnt_rele_wake(&vm->vm_refcnt);
 	return (ret);
@@ -950,7 +946,6 @@ vm_rwvmparams(struct vm_rwvmparams_params *vpp, int dir) {
 			vmm_init_pvclock(vcpu, vpp->vpp_pvclock_system_gpa);
 		}
 	}
-	refcnt_rele_wake(&vcpu->vc_refcnt);
 out:
 	refcnt_rele_wake(&vm->vm_refcnt);
 	return (ret);
@@ -1011,7 +1006,6 @@ vm_rwregs(struct vm_rwregs_params *vrwp, int dir)
 		ret = EINVAL;
 	}
 	rw_exit_write(&vcpu->vc_lock);
-	refcnt_rele_wake(&vcpu->vc_refcnt);
 out:
 	refcnt_rele_wake(&vm->vm_refcnt);
 	return (ret);
@@ -1177,10 +1171,8 @@ vm_mprotect_ept(struct vm_mprotect_ept_params *vmep)
 	} else
 		ret = EINVAL;
 out:
-	if (vcpu != NULL) {
+	if (vcpu != NULL)
 		rw_exit_write(&vcpu->vc_lock);
-		refcnt_rele_wake(&vcpu->vc_refcnt);
-	}
 out_nolock:
 	refcnt_rele_wake(&vm->vm_refcnt);
 	return (ret);
@@ -1348,7 +1340,6 @@ vm_find(uint32_t id, struct vm **res)
 
 	rw_enter_read(&vmm_softc->vm_lock);
 	SLIST_FOREACH(vm, &vmm_softc->vm_list, vm_link) {
-		refcnt_take(&vm->vm_refcnt);
 		if (vm->vm_id == id) {
 			/*
 			 * In the pledged VM process, only allow to find
@@ -1361,12 +1352,12 @@ vm_find(uint32_t id, struct vm **res)
 			    (vm->vm_creator_pid != p->p_p->ps_pid))
 				ret = EPERM;
 			else {
+				refcnt_take(&vm->vm_refcnt);
 				*res = vm;
 				ret = 0;
 			}
 			break;
 		}
-		refcnt_rele_wake(&vm->vm_refcnt);
 	}
 	rw_exit_read(&vmm_softc->vm_lock);
 
@@ -1640,8 +1631,8 @@ vmx_remote_vmclear(struct cpu_info *ci, struct vcpu *vcpu)
  * The last physical address may not exceed VMM_MAX_VM_MEM_SIZE.
  *
  * Return Values:
- *   The total memory size in MB if the checks were successful
- *   0: One of the memory ranges was invalid, or VMM_MAX_VM_MEM_SIZE was
+ *   The total memory size in bytes if the checks were successful
+ *   0: One of the memory ranges was invalid or VMM_MAX_VM_MEM_SIZE was
  *   exceeded
  */
 size_t
@@ -1652,21 +1643,27 @@ vm_create_check_mem_ranges(struct vm_create_params *vcp)
 	const paddr_t maxgpa = VMM_MAX_VM_MEM_SIZE;
 
 	if (vcp->vcp_nmemranges == 0 ||
-	    vcp->vcp_nmemranges > VMM_MAX_MEM_RANGES)
+	    vcp->vcp_nmemranges > VMM_MAX_MEM_RANGES) {
+		DPRINTF("invalid number of guest memory ranges\n");
 		return (0);
+	}
 
 	for (i = 0; i < vcp->vcp_nmemranges; i++) {
 		vmr = &vcp->vcp_memranges[i];
 
 		/* Only page-aligned addresses and sizes are permitted */
 		if ((vmr->vmr_gpa & PAGE_MASK) || (vmr->vmr_va & PAGE_MASK) ||
-		    (vmr->vmr_size & PAGE_MASK) || vmr->vmr_size == 0)
+		    (vmr->vmr_size & PAGE_MASK) || vmr->vmr_size == 0) {
+			DPRINTF("memory range %zu is not page aligned\n", i);
 			return (0);
+		}
 
 		/* Make sure that VMM_MAX_VM_MEM_SIZE is not exceeded */
 		if (vmr->vmr_gpa >= maxgpa ||
-		    vmr->vmr_size > maxgpa - vmr->vmr_gpa)
+		    vmr->vmr_size > maxgpa - vmr->vmr_gpa) {
+			DPRINTF("exceeded max memory size\n");
 			return (0);
+		}
 
 		/*
 		 * Make sure that all virtual addresses are within the address
@@ -1676,39 +1673,29 @@ vm_create_check_mem_ranges(struct vm_create_params *vcp)
 		 */
 		if (vmr->vmr_va < VM_MIN_ADDRESS ||
 		    vmr->vmr_va >= VM_MAXUSER_ADDRESS ||
-		    vmr->vmr_size >= VM_MAXUSER_ADDRESS - vmr->vmr_va)
+		    vmr->vmr_size >= VM_MAXUSER_ADDRESS - vmr->vmr_va) {
+			DPRINTF("guest va not within range or wraps\n");
 			return (0);
-
-		/*
-		 * Specifying ranges within the PCI MMIO space is forbidden.
-		 * Disallow ranges that start inside the MMIO space:
-		 * [VMM_PCI_MMIO_BAR_BASE .. VMM_PCI_MMIO_BAR_END]
-		 */
-		if (vmr->vmr_gpa >= VMM_PCI_MMIO_BAR_BASE &&
-		    vmr->vmr_gpa <= VMM_PCI_MMIO_BAR_END)
-			return (0);
-
-		/*
-		 * ... and disallow ranges that end inside the MMIO space:
-		 * (VMM_PCI_MMIO_BAR_BASE .. VMM_PCI_MMIO_BAR_END]
-		 */
-		if (vmr->vmr_gpa + vmr->vmr_size > VMM_PCI_MMIO_BAR_BASE &&
-		    vmr->vmr_gpa + vmr->vmr_size <= VMM_PCI_MMIO_BAR_END)
-			return (0);
+		}
 
 		/*
 		 * Make sure that guest physical memory ranges do not overlap
 		 * and that they are ascending.
 		 */
-		if (i > 0 && pvmr->vmr_gpa + pvmr->vmr_size > vmr->vmr_gpa)
+		if (i > 0 && pvmr->vmr_gpa + pvmr->vmr_size > vmr->vmr_gpa) {
+			DPRINTF("guest range %zu overlaps or !ascending\n", i);
 			return (0);
+		}
 
-		memsize += vmr->vmr_size;
+		/*
+		 * No memory is mappable in MMIO ranges, so don't count towards
+		 * the total guest memory size.
+		 */
+		if (vmr->vmr_type != VM_MEM_MMIO)
+			memsize += vmr->vmr_size;
 		pvmr = vmr;
 	}
 
-	if (memsize % (1024 * 1024) != 0)
-		return (0);
 	return (memsize);
 }
 
@@ -1755,10 +1742,6 @@ vm_create(struct vm_create_params *vcp, struct proc *p)
 
 	/* Instantiate and configure the new vm. */
 	vm = pool_get(&vm_pool, PR_WAITOK | PR_ZERO);
-	refcnt_init(&vm->vm_refcnt);	/* Do not release yet. */
-
-	SLIST_INIT(&vm->vm_vcpu_list);
-	rw_init(&vm->vm_vcpu_lock, "vcpu_list");
 
 	vm->vm_creator_pid = p->p_p->ps_pid;
 	vm->vm_nmemranges = vcp->vcp_nmemranges;
@@ -1774,12 +1757,11 @@ vm_create(struct vm_create_params *vcp, struct proc *p)
 	}
 
 	vm->vm_vcpu_ct = 0;
-	vm->vm_vcpus_running = 0;
 
 	/* Initialize each VCPU defined in 'vcp' */
+	SLIST_INIT(&vm->vm_vcpu_list);
 	for (i = 0; i < vcp->vcp_ncpus; i++) {
 		vcpu = pool_get(&vcpu_pool, PR_WAITOK | PR_ZERO);
-		refcnt_init(&vcpu->vc_refcnt);
 
 		vcpu->vc_parent = vm;
 		if ((ret = vcpu_init(vcpu)) != 0) {
@@ -1812,12 +1794,11 @@ vm_create(struct vm_create_params *vcp, struct proc *p)
 	vm->vm_id = vmm_softc->vm_idx;
 	vcp->vcp_id = vm->vm_id;
 
-	/* Update list counts. */
+	/* Publish the vm into the list and update counts. */
+	refcnt_init(&vm->vm_refcnt);
+	SLIST_INSERT_HEAD(&vmm_softc->vm_list, vm, vm_link);
 	vmm_softc->vm_ct++;
 	vmm_softc->vcpu_ct += vm->vm_vcpu_ct;
-
-	/* Publish vm into list, inheriting the reference. */
-	SLIST_INSERT_HEAD(&vmm_softc->vm_list, vm, vm_link);
 
 	rw_exit_write(&vmm_softc->vm_lock);
 
@@ -2231,7 +2212,7 @@ vcpu_readregs_svm(struct vcpu *vcpu, uint64_t regmask,
 	struct vmcb *vmcb = (struct vmcb *)vcpu->vc_control_va;
 
 	if (regmask & VM_RWREGS_GPRS) {
-		gprs[VCPU_REGS_RAX] = vcpu->vc_gueststate.vg_rax;
+		gprs[VCPU_REGS_RAX] = vmcb->v_rax;
 		gprs[VCPU_REGS_RBX] = vcpu->vc_gueststate.vg_rbx;
 		gprs[VCPU_REGS_RCX] = vcpu->vc_gueststate.vg_rcx;
 		gprs[VCPU_REGS_RDX] = vcpu->vc_gueststate.vg_rdx;
@@ -2534,6 +2515,7 @@ vcpu_writeregs_svm(struct vcpu *vcpu, uint64_t regmask,
 		vcpu->vc_gueststate.vg_rbp = gprs[VCPU_REGS_RBP];
 		vcpu->vc_gueststate.vg_rip = gprs[VCPU_REGS_RIP];
 
+		vmcb->v_rax = gprs[VCPU_REGS_RAX];
 		vmcb->v_rip = gprs[VCPU_REGS_RIP];
 		vmcb->v_rsp = gprs[VCPU_REGS_RSP];
 		vmcb->v_rflags = gprs[VCPU_REGS_RFLAGS];
@@ -2701,6 +2683,10 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 
 	/* allow reading TSC */
 	svm_setmsrbr(vcpu, MSR_TSC);
+
+	/* allow reading HWCR and PSTATEDEF to determine TSC frequency */
+	svm_setmsrbr(vcpu, MSR_HWCR);
+	svm_setmsrbr(vcpu, MSR_PSTATEDEF(0));
 
 	/* Guest VCPU ASID */
 	if (vmm_alloc_vpid(&asid)) {
@@ -3519,7 +3505,7 @@ vcpu_reset_regs_vmx(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	vmx_setmsrbrw(vcpu, MSR_FSBASE);
 	vmx_setmsrbrw(vcpu, MSR_GSBASE);
 	vmx_setmsrbrw(vcpu, MSR_KERNELGSBASE);
-	
+
 	vmx_setmsrbr(vcpu, MSR_MISC_ENABLE);
 	vmx_setmsrbr(vcpu, MSR_TSC);
 
@@ -4055,19 +4041,14 @@ vm_teardown(struct vm **target)
 
 	KERNEL_ASSERT_UNLOCKED();
 
-	refcnt_finalize(&vm->vm_refcnt, "vmteardown");
-
 	/* Free VCPUs */
-	rw_enter_write(&vm->vm_vcpu_lock);
 	SLIST_FOREACH_SAFE(vcpu, &vm->vm_vcpu_list, vc_vcpu_link, tmp) {
-		refcnt_finalize(&vcpu->vc_refcnt, "vcputeardown");
 		SLIST_REMOVE(&vm->vm_vcpu_list, vcpu, vcpu, vc_vcpu_link);
 		vcpu_deinit(vcpu);
 
 		pool_put(&vcpu_pool, vcpu);
 		nvcpu++;
 	}
-	rw_exit_write(&vm->vm_vcpu_lock);
 
 	vm_impl_deinit(vm);
 
@@ -4392,19 +4373,15 @@ vm_get_info(struct vm_info_params *vip)
 		out[i].vir_creator_pid = vm->vm_creator_pid;
 		strlcpy(out[i].vir_name, vm->vm_name, VMM_MAX_NAME_LEN);
 
-		rw_enter_read(&vm->vm_vcpu_lock);
 		for (j = 0; j < vm->vm_vcpu_ct; j++) {
 			out[i].vir_vcpu_state[j] = VCPU_STATE_UNKNOWN;
 			SLIST_FOREACH(vcpu, &vm->vm_vcpu_list,
 			    vc_vcpu_link) {
-				refcnt_take(&vcpu->vc_refcnt);
 				if (vcpu->vc_id == j)
 					out[i].vir_vcpu_state[j] =
 					    vcpu->vc_state;
-				refcnt_rele_wake(&vcpu->vc_refcnt);
 			}
 		}
-		rw_exit_read(&vm->vm_vcpu_lock);
 
 		refcnt_rele_wake(&vm->vm_refcnt);
 		i++;
@@ -4438,8 +4415,6 @@ int
 vm_terminate(struct vm_terminate_params *vtp)
 {
 	struct vm *vm;
-	struct vcpu *vcpu;
-	u_int old, next;
 	int error, nvcpu, vm_id;
 
 	/*
@@ -4449,28 +4424,18 @@ vm_terminate(struct vm_terminate_params *vtp)
 	if (error)
 		return (error);
 
-	/* Stop all vcpu's for the vm. */
-	rw_enter_read(&vm->vm_vcpu_lock);
-	SLIST_FOREACH(vcpu, &vm->vm_vcpu_list, vc_vcpu_link) {
-		refcnt_take(&vcpu->vc_refcnt);
-		do {
-			old = vcpu->vc_state;
-			if (old == VCPU_STATE_RUNNING)
-				next = VCPU_STATE_REQTERM;
-			else if (old == VCPU_STATE_STOPPED)
-				next = VCPU_STATE_TERMINATED;
-			else /* must be REQTERM or TERMINATED */
-				break;
-		} while (old != atomic_cas_uint(&vcpu->vc_state, old, next));
-		refcnt_rele_wake(&vcpu->vc_refcnt);
-	}
-	rw_exit_read(&vm->vm_vcpu_lock);
-
 	/* Pop the vm out of the global vm list. */
 	rw_enter_write(&vmm_softc->vm_lock);
 	SLIST_REMOVE(&vmm_softc->vm_list, vm, vm, vm_link);
 	rw_exit_write(&vmm_softc->vm_lock);
-	refcnt_rele_wake(&vm->vm_refcnt);	/* Drop list reference. */
+
+	/* Drop the vm_list's reference to the vm. */
+	if (refcnt_rele(&vm->vm_refcnt))
+		panic("%s: vm %d(%p) vm_list refcnt drop was the last",
+		    __func__, vm->vm_id, vm);
+
+	/* Wait for our reference (taken from vm_find) is the last active. */
+	refcnt_finalize(&vm->vm_refcnt, __func__);
 
 	vm_id = vm->vm_id;
 	nvcpu = vm->vm_vcpu_ct;
@@ -4538,7 +4503,6 @@ vm_run(struct vm_run_params *vrp)
 		ret = EBUSY;
 		goto out_unlock;
 	}
-	atomic_inc_int(&vm->vm_vcpus_running);
 
 	/*
 	 * We may be returning from userland helping us from the last exit.
@@ -4554,6 +4518,7 @@ vm_run(struct vm_run_params *vrp)
 		}
 	}
 
+	WRITE_ONCE(vcpu->vc_curcpu, curcpu());
 	/* Run the VCPU specified in vrp */
 	if (vcpu->vc_virt_mode == VMM_MODE_VMX ||
 	    vcpu->vc_virt_mode == VMM_MODE_EPT) {
@@ -4562,8 +4527,8 @@ vm_run(struct vm_run_params *vrp)
 		   vcpu->vc_virt_mode == VMM_MODE_RVI) {
 		ret = vcpu_run_svm(vcpu, vrp);
 	}
+	WRITE_ONCE(vcpu->vc_curcpu, NULL);
 
-	atomic_dec_int(&vm->vm_vcpus_running);
 	if (ret == 0 || ret == EAGAIN) {
 		/* If we are exiting, populate exit data so vmd can help. */
 		vrp->vrp_exit_reason = (ret == 0) ? VM_EXIT_NONE
@@ -4583,8 +4548,6 @@ vm_run(struct vm_run_params *vrp)
 out_unlock:
 	rw_exit_write(&vcpu->vc_lock);
 out:
-	if (vcpu != NULL)
-		refcnt_rele_wake(&vcpu->vc_refcnt);
 	refcnt_rele_wake(&vm->vm_refcnt);
 	return (ret);
 }
@@ -5071,10 +5034,20 @@ vcpu_run_vmx(struct vcpu *vcpu, struct vm_run_params *vrp)
 
 		TRACEPOINT(vmm, guest_enter, vcpu, vrp);
 
+		/* Restore any guest PKRU state. */
+		if (vmm_softc->pkru_enabled)
+			wrpkru(vcpu->vc_pkru);
+
 		ret = vmx_enter_guest(&vcpu->vc_control_pa,
 		    &vcpu->vc_gueststate,
 		    (vcpu->vc_vmx_vmcs_state == VMCS_LAUNCHED),
 		    ci->ci_vmm_cap.vcc_vmx.vmx_has_l1_flush_msr);
+
+		/* Restore host PKRU state. */
+		if (vmm_softc->pkru_enabled) {
+			vcpu->vc_pkru = rdpkru(0);
+			wrpkru(PGK_VALUE);
+		}
 
 		bare_lgdt(&gdtr);
 		lidt(&idtr);
@@ -5666,11 +5639,6 @@ vmm_get_guest_memtype(struct vm *vm, paddr_t gpa)
 	int i;
 	struct vm_mem_range *vmr;
 
-	if (gpa >= VMM_PCI_MMIO_BAR_BASE && gpa <= VMM_PCI_MMIO_BAR_END) {
-		DPRINTF("guest mmio access @ 0x%llx\n", (uint64_t)gpa);
-		return (VMM_MEM_TYPE_MMIO);
-	}
-
 	/* XXX Use binary search? */
 	for (i = 0; i < vm->vm_nmemranges; i++) {
 		vmr = &vm->vm_memranges[i];
@@ -5682,8 +5650,11 @@ vmm_get_guest_memtype(struct vm *vm, paddr_t gpa)
 		if (gpa < vmr->vmr_gpa)
 			break;
 
-		if (gpa < vmr->vmr_gpa + vmr->vmr_size)
+		if (gpa < vmr->vmr_gpa + vmr->vmr_size) {
+			if (vmr->vmr_type == VM_MEM_MMIO)
+				return (VMM_MEM_TYPE_MMIO);
 			return (VMM_MEM_TYPE_REGULAR);
+		}
 	}
 
 	DPRINTF("guest memtype @ 0x%llx unknown\n", (uint64_t)gpa);
@@ -7062,9 +7033,16 @@ vmm_handle_cpuid(struct vcpu *vcpu)
 		if (subleaf == 0) {
 			*rax = 0;	/* Highest subleaf supported */
 			*rbx = curcpu()->ci_feature_sefflags_ebx & VMM_SEFF0EBX_MASK;
-#define VMM_SEFF0ECX_MASK_T (SEFF0ECX_UMIP)
-			*rcx = curcpu()->ci_feature_sefflags_ecx & VMM_SEFF0ECX_MASK_T;
+			*rcx = curcpu()->ci_feature_sefflags_ecx & VMM_SEFF0ECX_MASK;
 			*rdx = curcpu()->ci_feature_sefflags_edx & VMM_SEFF0EDX_MASK;
+			/*
+			 * Only expose PKU support if we've detected it in use
+			 * on the host.
+			 */
+			if (vmm_softc->pkru_enabled)
+				*rcx |= SEFF0ECX_PKU;
+			else
+				*rcx &= ~SEFF0ECX_PKU;
 		} else {
 			/* Unsupported subleaf */
 			DPRINTF("%s: function 0x07 (SEFF) unsupported subleaf "
@@ -7376,11 +7354,21 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 			break;
 		}
 
+		/* Restore any guest PKRU state. */
+		if (vmm_softc->pkru_enabled)
+			wrpkru(vcpu->vc_pkru);
+
 		KASSERT(vmcb->v_intercept1 & SVM_INTERCEPT_INTR);
 		wrmsr(MSR_AMD_VM_HSAVE_PA, vcpu->vc_svm_hsa_pa);
 
 		ret = svm_enter_guest(vcpu->vc_control_pa,
 		    &vcpu->vc_gueststate, &gdt);
+
+		/* Restore host PKRU state. */
+		if (vmm_softc->pkru_enabled) {
+			vcpu->vc_pkru = rdpkru(0);
+			wrpkru(PGK_VALUE);
+		}
 
 		/*
 		 * On exit, interrupts are disabled, and we are running with

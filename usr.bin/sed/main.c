@@ -1,4 +1,4 @@
-/*	$OpenBSD: main.c,v 1.42 2021/01/31 14:23:05 naddy Exp $	*/
+/*	$OpenBSD: main.c,v 1.44 2023/02/08 08:18:11 tb Exp $	*/
 
 /*-
  * Copyright (c) 1992 Diomidis Spinellis.
@@ -143,7 +143,6 @@ main(int argc, char *argv[])
 			setvbuf(stdout, NULL, _IOLBF, 0);
 			break;
 		default:
-		case '?':
 			(void)fprintf(stderr,
 			    "usage: sed [-aEnru] [-i[extension]] command [file ...]\n"
 			    "       sed [-aEnru] [-e command] [-f command_file] [-i[extension]] [file ...]\n");
@@ -479,7 +478,7 @@ add_file(char *s)
 
 
 static int
-next_files_have_lines()
+next_files_have_lines(void)
 {
 	struct s_flist *file;
 	FILE *file_fd;

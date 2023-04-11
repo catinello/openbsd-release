@@ -1,4 +1,4 @@
-#	$OpenBSD: files,v 1.716 2022/07/29 17:47:11 semarie Exp $
+#	$OpenBSD: files,v 1.722 2023/02/13 19:18:53 patrick Exp $
 #	$NetBSD: files,v 1.87 1996/05/19 17:17:50 jonathan Exp $
 
 #	@(#)files.newconf	7.5 (Berkeley) 5/10/93
@@ -530,6 +530,21 @@ file	dev/ic/dwiic.c			dwiic
 device	imxiic: i2cbus
 file	dev/ic/imxiic.c			imxiic
 
+# Synopsis Designware Ethernet QoS
+device	dwqe: ether, ifnet, ifmedia, mii
+file	dev/ic/dwqe.c			dwqe
+
+# Qualcomm GPIO controller
+device	qcgpio
+
+# Qualcomm I2C controller
+device	qciic: i2cbus
+
+# UFS HC
+device	ufshci: scsi
+#device	ufshci
+file	dev/ic/ufshci.c			ufshci
+
 # legitimate pseudo-devices
 pseudo-device vnd: disk
 pseudo-device rd: disk
@@ -581,7 +596,7 @@ file	miscfs/fuse/fuse_vfsops.c	fuse
 file	miscfs/fuse/fuse_vnops.c	fuse
 file	miscfs/fuse/fusebuf.c		fuse
 
-pseudo-device pf: ifnet
+pseudo-device pf: ifnet, stoeplitz
 file	net/pf.c			pf	needs-flag
 file	net/pf_norm.c			pf
 file	net/pf_ruleset.c		pf
@@ -676,6 +691,7 @@ file kern/init_sysent.c
 file kern/kern_acct.c			accounting
 file kern/kern_bufq.c
 file kern/kern_clock.c
+file kern/kern_clockintr.c
 file kern/kern_descrip.c
 file kern/kern_event.c
 file kern/kern_exec.c

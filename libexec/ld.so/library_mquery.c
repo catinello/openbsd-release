@@ -1,4 +1,4 @@
-/*	$OpenBSD: library_mquery.c,v 1.67 2022/08/20 14:11:31 sthen Exp $ */
+/*	$OpenBSD: library_mquery.c,v 1.70 2023/01/29 20:30:56 gnezdo Exp $ */
 
 /*
  * Copyright (c) 2002 Dale Rahn
@@ -101,8 +101,9 @@ unload:
 
 
 elf_object_t *
-_dl_tryload_shlib(const char *libname, int type, int flags)
+_dl_tryload_shlib(const char *libname, int type, int flags, int nodelete)
 {
+	struct range_vector imut, mut;
 	int libfile, i;
 	struct load_list *ld, *lowld = NULL;
 	elf_object_t *object;
@@ -231,6 +232,8 @@ _dl_tryload_shlib(const char *libname, int type, int flags)
 #define LOFF ((Elf_Addr)lowld->start - lowld->moff)
 
 retry:
+	_dl_memset(&mut, 0, sizeof mut);
+	_dl_memset(&imut, 0, sizeof imut);
 	exec_start = NULL;
 	exec_size = 0;
 	for (ld = lowld; ld != NULL; ld = ld->next) {
@@ -285,6 +288,9 @@ retry:
 			exec_size = ROUND_PG(ld->size);
 		}
 
+		/* Entire mapping can become immutable, minus exceptions chosen later */
+		_dl_push_range_size(&imut, LOFF + ld->moff, ROUND_PG(ld->size));
+
 		ld->start = res;
 	}
 
@@ -298,12 +304,20 @@ retry:
 
 	phdp = (Elf_Phdr *)(hbuf + ehdr->e_phoff);
 	for (i = 0; i < ehdr->e_phnum; i++, phdp++) {
-		if (phdp->p_type == PT_OPENBSD_RANDOMIZE)
+		switch (phdp->p_type) {
+		case PT_OPENBSD_RANDOMIZE:
 			_dl_arc4randombuf((char *)(phdp->p_vaddr + LOFF),
 			    phdp->p_memsz);
-		else if (phdp->p_type == PT_GNU_RELRO) {
+			break;
+		case PT_GNU_RELRO:
 			relro_addr = phdp->p_vaddr + LOFF;
 			relro_size = phdp->p_memsz;
+			_dl_push_range_size(&mut, relro_addr, relro_size);
+			break;
+		case PT_OPENBSD_MUTABLE:
+			_dl_push_range_size(&mut, phdp->p_vaddr + LOFF,
+			    phdp->p_memsz);
+			break;
 		}
 	}
 
@@ -322,6 +336,7 @@ retry:
 		object->dev = sb.st_dev;
 		object->inode = sb.st_ino;
 		object->obj_flags |= flags;
+		object->nodelete = nodelete;
 		object->relro_addr = relro_addr;
 		object->relro_size = relro_size;
 		_dl_set_sod(object->load_name, &object->sod);
@@ -336,6 +351,8 @@ retry:
 				_dl_printf("msyscall %lx %lx error\n",
 				    exec_start, exec_size);
 		}
+		_dl_bcopy(&mut, &object->mut, sizeof mut);
+		_dl_bcopy(&imut, &object->imut, sizeof imut);
 	} else {
 		_dl_load_list_free(lowld);
 	}

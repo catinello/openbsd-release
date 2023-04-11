@@ -1,4 +1,4 @@
-/*	$OpenBSD: aplsmc.c,v 1.13 2022/08/27 16:56:25 kettenis Exp $	*/
+/*	$OpenBSD: aplsmc.c,v 1.21 2023/01/09 20:29:35 kettenis Exp $	*/
 /*
  * Copyright (c) 2021 Mark Kettenis <kettenis@openbsd.org>
  *
@@ -36,6 +36,9 @@
 #include <arm64/dev/rtkit.h>
 
 #include "apm.h"
+
+extern int lid_action;
+extern void (*simplefb_burn_hook)(u_int);
 
 extern void (*cpuresetfn)(void);
 extern void (*powerdownfn)(void);
@@ -92,8 +95,13 @@ struct aplsmc_sensor {
 
 /* Button events */
 #define SMC_PWRBTN_OFF		0x00
-#define SMC_PWRBTN_SHORT	0x06
+#define SMC_PWRBTN_SHORT	0x01
+#define SMC_PWRBTN_TOUCHID	0x06
 #define SMC_PWRBTN_LONG		0xfe
+
+/* Lid events */
+#define SMC_LID_OPEN		0x00
+#define SMC_LID_CLOSE		0x01
 
 #define APLSMC_BE		(1 << 0)
 #define APLSMC_HIDDEN		(1 << 1)
@@ -212,7 +220,7 @@ aplsmc_attach(struct device *parent, struct device *self, void *aux)
 		return;
 	}
 
-	sc->sc_rs = rtkit_init(faa->fa_node, NULL, NULL);
+	sc->sc_rs = rtkit_init(faa->fa_node, NULL, RK_WAKEUP, NULL);
 	if (sc->sc_rs == NULL) {
 		printf(": can't map mailbox channel\n");
 		return;
@@ -266,6 +274,7 @@ aplsmc_attach(struct device *parent, struct device *self, void *aux)
 		sc->sc_todr.cookie = sc;
 		sc->sc_todr.todr_gettime = aplsmc_gettime;
 		sc->sc_todr.todr_settime = aplsmc_settime;
+		sc->sc_todr.todr_quality = 1000;
 		todr_attach(&sc->sc_todr);
 	}
 
@@ -329,20 +338,53 @@ aplsmc_attach(struct device *parent, struct device *self, void *aux)
 #endif
 
 #endif
+
+#ifdef SUSPEND
+	device_register_wakeup(&sc->sc_dev);
+#endif
 }
 
 void
 aplsmc_handle_notification(struct aplsmc_softc *sc, uint64_t data)
 {
 	extern int allowpowerdown;
+#ifdef SUSPEND
+	extern int cpu_suspended;
+	extern void suspend(void);
+
+	if (cpu_suspended) {
+		switch (SMC_EV_TYPE(data)) {
+		case SMC_EV_TYPE_BTN:
+			switch (SMC_EV_SUBTYPE(data)) {
+			case SMC_PWRBTN_SHORT:
+			case SMC_PWRBTN_TOUCHID:
+				cpu_suspended = 0;
+				break;
+			}
+			break;
+		case SMC_EV_TYPE_LID:
+			switch (SMC_EV_SUBTYPE(data)) {
+			case SMC_LID_OPEN:
+				cpu_suspended = 0;
+				break;
+			}
+			break;
+		}
+
+		return;
+	}
+#endif
 
 	switch (SMC_EV_TYPE(data)) {
 	case SMC_EV_TYPE_BTN:
 		switch (SMC_EV_SUBTYPE(data)) {
 		case SMC_PWRBTN_SHORT:
-			if (SMC_EV_DATA(data) == 1 && allowpowerdown) {
-				allowpowerdown = 0;
-				prsignal(initprocess, SIGUSR2);
+		case SMC_PWRBTN_TOUCHID:
+			if (SMC_EV_DATA(data) == 1) {
+				if (allowpowerdown) {
+					allowpowerdown = 0;
+					prsignal(initprocess, SIGUSR2);
+				}
 			}
 			break;
 		case SMC_PWRBTN_LONG:
@@ -357,7 +399,31 @@ aplsmc_handle_notification(struct aplsmc_softc *sc, uint64_t data)
 		}
 		break;
 	case SMC_EV_TYPE_LID:
-		/* XXX Handle lid events. */
+		switch (lid_action) {
+		case 0:
+			switch (SMC_EV_SUBTYPE(data)) {
+			case SMC_LID_OPEN:
+				if (simplefb_burn_hook)
+					simplefb_burn_hook(1);
+				break;
+			case SMC_LID_CLOSE:
+				if (simplefb_burn_hook)
+					simplefb_burn_hook(0);
+				break;
+			default:
+				printf("%s: SMV_EV_TYPE_LID 0x%016llx\n",
+				       sc->sc_dev.dv_xname, data);
+				break;
+			}
+		case 1:
+#ifdef SUSPEND
+			suspend();
+#endif
+			break;
+		case 2:
+			/* XXX: hibernate */
+			break;
+		}
 		break;
 	default:
 #ifdef APLSMC_DEBUG

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ca.c,v 1.88 2022/07/08 19:51:11 tobhe Exp $	*/
+/*	$OpenBSD: ca.c,v 1.91 2023/03/05 22:17:22 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -46,7 +46,7 @@
 #include "ikev2.h"
 
 void	 ca_run(struct privsep *, struct privsep_proc *, void *);
-void	 ca_shutdown(struct privsep_proc *);
+void	 ca_shutdown(void);
 void	 ca_reset(struct privsep *);
 int	 ca_reload(struct iked *);
 
@@ -98,16 +98,16 @@ struct ca_store {
 	uint8_t		 ca_privkey_method;
 };
 
-pid_t
+void
 caproc(struct privsep *ps, struct privsep_proc *p)
 {
-	return (proc_run(ps, p, procs, nitems(procs), ca_run, NULL));
+	proc_run(ps, p, procs, nitems(procs), ca_run, NULL);
 }
 
 void
 ca_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 {
-	struct iked	*env = ps->ps_env;
+	struct iked	*env = iked_env;
 	struct ca_store	*store;
 
 	/*
@@ -127,13 +127,11 @@ ca_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 }
 
 void
-ca_shutdown(struct privsep_proc *p)
+ca_shutdown(void)
 {
-	struct iked		*env = p->p_env;
+	struct iked		*env = iked_env;
 	struct ca_store		*store;
 
-	if (env == NULL)
-		return;
 	ibuf_release(env->sc_certreq);
 	if ((store = env->sc_priv) == NULL)
 		return;
@@ -147,7 +145,7 @@ ca_shutdown(struct privsep_proc *p)
 void
 ca_getkey(struct privsep *ps, struct iked_id *key, enum imsg_type type)
 {
-	struct iked	*env = ps->ps_env;
+	struct iked	*env = iked_env;
 	struct ca_store	*store = env->sc_priv;
 	struct iked_id	*id = NULL;
 	const char	*name;
@@ -180,7 +178,7 @@ ca_getkey(struct privsep *ps, struct iked_id *key, enum imsg_type type)
 void
 ca_reset(struct privsep *ps)
 {
-	struct iked	*env = ps->ps_env;
+	struct iked	*env = iked_env;
 	struct ca_store	*store = env->sc_priv;
 
 	if (store->ca_privkey.id_type == IKEV2_ID_NONE ||
@@ -209,7 +207,7 @@ ca_reset(struct privsep *ps)
 int
 ca_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked		*env = p->p_env;
+	struct iked		*env = iked_env;
 	unsigned int		 mode;
 
 	switch (imsg->hdr.type) {
@@ -244,7 +242,7 @@ ca_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 int
 ca_dispatch_ikev2(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked	*env = p->p_env;
+	struct iked	*env = iked_env;
 
 	switch (imsg->hdr.type) {
 	case IMSG_CERTREQ:
@@ -266,7 +264,7 @@ ca_dispatch_ikev2(int fd, struct privsep_proc *p, struct imsg *imsg)
 int
 ca_dispatch_control(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked	*env = p->p_env;
+	struct iked	*env = iked_env;
 	struct ca_store	*store = env->sc_priv;
 
 	switch (imsg->hdr.type) {
@@ -683,7 +681,7 @@ ca_getreq(struct iked *env, struct imsg *imsg)
 			if (subj_name == NULL)
 				return (-1);
 			log_debug("%s: found CA %s", __func__, subj_name);
-			free(subj_name);
+			OPENSSL_free(subj_name);
 
 			chain_len = ca_chain_by_issuer(store, subj, &id,
 			    chain, nitems(chain));
@@ -746,7 +744,7 @@ ca_getreq(struct iked *env, struct imsg *imsg)
 			return (-1);
 		log_debug("%s: found local certificate %s", __func__,
 		    subj_name);
-		free(subj_name);
+		OPENSSL_free(subj_name);
 
 		if ((buf = ca_x509_serialize(cert)) == NULL)
 			return (-1);
@@ -921,7 +919,7 @@ ca_reload(struct iked *env)
 		if (subj_name == NULL)
 			return (-1);
 		log_debug("%s: %s", __func__, subj_name);
-		free(subj_name);
+		OPENSSL_free(subj_name);
 
 		if (ibuf_add(env->sc_certreq, md, len) != 0) {
 			ibuf_release(env->sc_certreq);
@@ -1195,10 +1193,10 @@ ca_subjectpubkey_digest(X509 *x509, uint8_t *md, unsigned int *size)
 	if (buflen == 0)
 		return (-1);
 	if (!EVP_Digest(buf, buflen, md, size, EVP_sha1(), NULL)) {
-		free(buf);
+		OPENSSL_free(buf);
 		return (-1);
 	}
-	free(buf);
+	OPENSSL_free(buf);
 
 	return (0);
 }
@@ -1225,7 +1223,7 @@ ca_store_info(struct iked *env, const char *msg, X509_STORE *ctx)
 		    (name = X509_NAME_oneline(subject, NULL, 0)) == NULL)
 			continue;
 		buflen = asprintf(&buf, "%s: %s\n", msg, name);
-		free(name);
+		OPENSSL_free(name);
 		if (buflen == -1)
 			continue;
 		proc_compose(&env->sc_ps, PROC_CONTROL, IMSG_CTL_SHOW_CERTSTORE,
@@ -1478,6 +1476,10 @@ ca_privkey_to_method(struct iked_id *privkey)
 	return (method);
 }
 
+/*
+ * Return dynamically allocated buffer containing certificate name.
+ * The resulting buffer must be freed with OpenSSL_free().
+ */
 char *
 ca_asn1_name(uint8_t *asn1, size_t len)
 {
@@ -1795,7 +1797,7 @@ ca_validate_cert(struct iked *env, struct iked_static_id *id,
 		if (subj_name == NULL)
 			goto err;
 		log_debug("%s: %s %.100s", __func__, subj_name, errstr);
-		free(subj_name);
+		OPENSSL_free(subj_name);
 	}
  err:
 

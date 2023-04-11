@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.159 2022/02/28 15:49:57 visa Exp $	*/
+/*	$OpenBSD: trap.c,v 1.166 2023/02/11 23:07:27 deraadt Exp $	*/
 
 /*
  * Copyright (c) 1988 University of Utah.
@@ -255,7 +255,6 @@ itsa(struct trapframe *trapframe, struct cpu_info *ci, struct proc *p,
 	case T_TLB_LD_MISS:
 	case T_TLB_ST_MISS:
 		if (type == T_TLB_LD_MISS) {
-#ifdef CPU_OCTEON
 			vaddr_t pc;
 
 			/*
@@ -268,8 +267,7 @@ itsa(struct trapframe *trapframe, struct cpu_info *ci, struct proc *p,
 			if (pc == trapframe->badvaddr)
 				access_type = PROT_EXEC;
 			else
-#endif
-			access_type = PROT_READ;
+				access_type = PROT_READ;
 		} else
 			access_type = PROT_WRITE;
 
@@ -309,7 +307,6 @@ itsa(struct trapframe *trapframe, struct cpu_info *ci, struct proc *p,
 		}
 
 	case T_TLB_LD_MISS+T_USER: {
-#ifdef CPU_OCTEON
 		vaddr_t pc;
 
 		/* Check if the fault was caused by an instruction fetch. */
@@ -319,8 +316,7 @@ itsa(struct trapframe *trapframe, struct cpu_info *ci, struct proc *p,
 		if (pc == trapframe->badvaddr)
 			access_type = PROT_EXEC;
 		else
-#endif
-		access_type = PROT_READ;
+			access_type = PROT_READ;
 		pcb = &p->p_addr->u_pcb;
 		goto fault_common;
 	}
@@ -401,7 +397,7 @@ fault_common_no_miss:
 	    {
 		struct trapframe *locr0 = p->p_md.md_regs;
 		const struct sysent *callp;
-		unsigned int code;
+		unsigned int code, indirect = -1;
 		register_t tpc;
 		uint32_t branch = 0;
 		int error, numarg;
@@ -416,7 +412,7 @@ fault_common_no_miss:
 		tpc = trapframe->pc; /* Remember if restart */
 		if (trapframe->cause & CR_BR_DELAY) {
 			/* Get the branch instruction. */
-			if (copyin32((const void *)locr0->pc, &branch) != 0) {
+			if (copyinsn(p, locr0->pc, &branch) != 0) {
 				signal = SIGBUS;
 				sicode = BUS_OBJERR;
 				break;
@@ -430,13 +426,10 @@ fault_common_no_miss:
 		code = locr0->v0;
 		switch (code) {
 		case SYS_syscall:
-		case SYS___syscall:
 			/*
 			 * Code is first argument, followed by actual args.
-			 * __syscall provides the code as a quad to maintain
-			 * proper alignment of 64-bit arguments on 32-bit
-			 * platforms, which doesn't change anything here.
 			 */
+			indirect = code;
 			code = locr0->a0;
 			if (code >= SYS_MAXSYSCALL)
 				callp += SYS_syscall;
@@ -477,19 +470,18 @@ fault_common_no_miss:
 		}
 
 		rval[0] = 0;
-		rval[1] = locr0->v1;
+		rval[1] = 0;
 
 #if defined(DDB) || defined(DEBUG)
 		trapdebug[TRAPSIZE * ci->ci_cpuid + (trppos[ci->ci_cpuid] == 0 ?
 		    TRAPSIZE : trppos[ci->ci_cpuid]) - 1].code = code;
 #endif
 
-		error = mi_syscall(p, code, callp, args.i, rval);
+		error = mi_syscall(p, code, indirect, callp, args.i, rval);
 
 		switch (error) {
 		case 0:
 			locr0->v0 = rval[0];
-			locr0->v1 = rval[1];
 			locr0->a3 = 0;
 			break;
 
@@ -524,18 +516,17 @@ fault_common_no_miss:
 	case T_BREAK+T_USER:
 	    {
 		struct trapframe *locr0 = p->p_md.md_regs;
-		caddr_t va;
+		vaddr_t va;
 		uint32_t branch = 0;
 		uint32_t instr;
 
 		/* compute address of break instruction */
-		va = (caddr_t)trapframe->pc;
+		va = trapframe->pc;
 		if (trapframe->cause & CR_BR_DELAY) {
 			va += 4;
 
 			/* Read branch instruction. */
-			if (copyin32((const void *)trapframe->pc,
-			    &branch) != 0) {
+			if (copyinsn(p, trapframe->pc, &branch) != 0) {
 				signal = SIGBUS;
 				sicode = BUS_OBJERR;
 				break;
@@ -543,7 +534,7 @@ fault_common_no_miss:
 		}
 
 		/* read break instruction */
-		if (copyin32((const void *)va, &instr) != 0) {
+		if (copyinsn(p, va, &instr) != 0) {
 			signal = SIGBUS;
 			sicode = BUS_OBJERR;
 			break;
@@ -616,7 +607,7 @@ fault_common_no_miss:
 				KERNEL_UNLOCK();
 				(void)uvm_map_protect(map, p->p_md.md_fppgva,
 				    p->p_md.md_fppgva + PAGE_SIZE,
-				    PROT_NONE, FALSE);
+				    PROT_NONE, 0, FALSE, FALSE);
 				return;
 			}
 			/* FALLTHROUGH */
@@ -646,18 +637,17 @@ fault_common_no_miss:
 	case T_TRAP+T_USER:
 	    {
 		struct trapframe *locr0 = p->p_md.md_regs;
-		caddr_t va;
+		vaddr_t va;
 		uint32_t branch = 0;
 		uint32_t instr;
 
 		/* compute address of trap instruction */
-		va = (caddr_t)trapframe->pc;
+		va = trapframe->pc;
 		if (trapframe->cause & CR_BR_DELAY) {
 			va += 4;
 
 			/* Read branch instruction. */
-			if (copyin32((const void *)trapframe->pc,
-			    &branch) != 0) {
+			if (copyinsn(p, trapframe->pc, &branch) != 0) {
 				signal = SIGBUS;
 				sicode = BUS_OBJERR;
 				break;
@@ -665,7 +655,7 @@ fault_common_no_miss:
 		}
 
 		/* read break instruction */
-		if (copyin32((const void *)va, &instr) != 0) {
+		if (copyinsn(p, va, &instr) != 0) {
 			signal = SIGBUS;
 			sicode = BUS_OBJERR;
 			break;
@@ -708,18 +698,17 @@ fault_common_no_miss:
 	case T_RES_INST+T_USER:
 	    {
 		register_t *regs = (register_t *)trapframe;
-		caddr_t va;
+		vaddr_t va;
 		uint32_t branch = 0;
 		InstFmt inst;
 
 		/* Compute the instruction's address. */
-		va = (caddr_t)trapframe->pc;
+		va = trapframe->pc;
 		if (trapframe->cause & CR_BR_DELAY) {
 			va += 4;
 
 			/* Get the branch instruction. */
-			if (copyin32((const void *)trapframe->pc,
-			    &branch) != 0) {
+			if (copyinsn(p, trapframe->pc, &branch) != 0) {
 				signal = SIGBUS;
 				sicode = BUS_OBJERR;
 				break;
@@ -727,7 +716,7 @@ fault_common_no_miss:
 		}
 
 		/* Get the faulting instruction. */
-		if (copyin32((const void *)va, &inst.word) != 0) {
+		if (copyinsn(p, va, &inst.word) != 0) {
 			signal = SIGBUS;
 			sicode = BUS_OBJERR;
 			break;
@@ -839,12 +828,29 @@ child_return(void *arg)
 
 	trapframe = p->p_md.md_regs;
 	trapframe->v0 = 0;
-	trapframe->v1 = 1;
 	trapframe->a3 = 0;
 
 	KERNEL_UNLOCK();
 
 	mi_child_return(p);
+}
+
+int
+copyinsn(struct proc *p, vaddr_t uva, uint32_t *insn)
+{
+	struct vm_map *map = &p->p_vmspace->vm_map;
+	int error = 0;
+
+	if (__predict_false(uva >= VM_MAXUSER_ADDRESS || (uva & 3) != 0))
+		return EFAULT;
+
+	do {
+		if (pmap_copyinsn(map->pmap, uva, insn))
+			break;
+		error = uvm_fault(map, trunc_page(uva), 0, PROT_EXEC);
+	} while (error == 0);
+
+	return error;
 }
 
 #if defined(DDB) || defined(DEBUG)
@@ -1587,7 +1593,8 @@ fpe_branch_emulate(struct proc *p, struct trapframe *tf, uint32_t insn,
 	 */
 
 	rc = uvm_map_protect(map, p->p_md.md_fppgva,
-	    p->p_md.md_fppgva + PAGE_SIZE, PROT_READ | PROT_WRITE, FALSE);
+	    p->p_md.md_fppgva + PAGE_SIZE, PROT_READ | PROT_WRITE, 0, FALSE,
+	    FALSE);
 	if (rc != 0) {
 #ifdef DEBUG
 		printf("%s: uvm_map_protect on %p failed: %d\n",
@@ -1626,7 +1633,7 @@ fpe_branch_emulate(struct proc *p, struct trapframe *tf, uint32_t insn,
 	}
 
 	(void)uvm_map_protect(map, p->p_md.md_fppgva,
-	    p->p_md.md_fppgva + PAGE_SIZE, PROT_READ | PROT_EXEC, FALSE);
+	    p->p_md.md_fppgva + PAGE_SIZE, PROT_READ | PROT_EXEC, 0, FALSE, FALSE);
 	p->p_md.md_fpbranchva = dest;
 	p->p_md.md_fpslotva = (vaddr_t)tf->pc + 4;
 	p->p_md.md_flags |= MDP_FPUSED;
@@ -1640,7 +1647,7 @@ err:
 	KERNEL_UNLOCK();
 err2:
 	(void)uvm_map_protect(map, p->p_md.md_fppgva,
-	    p->p_md.md_fppgva + PAGE_SIZE, PROT_NONE, FALSE);
+	    p->p_md.md_fppgva + PAGE_SIZE, PROT_NONE, 0, FALSE, FALSE);
 	return rc;
 }
 #endif

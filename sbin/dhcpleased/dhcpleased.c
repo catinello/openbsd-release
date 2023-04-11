@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpleased.c,v 1.26 2022/07/23 09:33:18 florian Exp $	*/
+/*	$OpenBSD: dhcpleased.c,v 1.29 2023/02/15 13:47:00 florian Exp $	*/
 
 /*
  * Copyright (c) 2017, 2021 Florian Obser <florian@openbsd.org>
@@ -221,8 +221,11 @@ main(int argc, char *argv[])
 		errx(1, "need root privileges");
 
 	lockfd = open(_PATH_LOCKFILE, O_CREAT|O_RDWR|O_EXLOCK|O_NONBLOCK, 0600);
-	if (lockfd == -1)
-		errx(1, "already running");
+	if (lockfd == -1) {
+		if (errno == EAGAIN)
+			errx(1, "already running");
+		err(1, "%s", _PATH_LOCKFILE);
+	}
 
 	/* Check for assigned daemon user */
 	if (getpwnam(DHCPLEASED_USER) == NULL)
@@ -252,7 +255,7 @@ main(int argc, char *argv[])
 	if ((routesock = socket(AF_ROUTE, SOCK_RAW | SOCK_CLOEXEC |
 	    SOCK_NONBLOCK, AF_INET)) == -1)
 		fatal("route socket");
-	shutdown(SHUT_RD, routesock);
+	shutdown(routesock, SHUT_RD);
 
 	event_init();
 
@@ -802,6 +805,7 @@ configure_interface(struct imsg_configure_interface *imsg)
 			break;
 		}
 	}
+	freeifaddrs(ifap);
 
 	req_sin_addr->sin_addr = imsg->addr;
 	if (!found) {

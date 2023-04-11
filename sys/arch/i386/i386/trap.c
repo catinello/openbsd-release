@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.156 2021/12/09 00:26:11 guenther Exp $	*/
+/*	$OpenBSD: trap.c,v 1.161 2023/03/08 04:43:07 guenther Exp $	*/
 /*	$NetBSD: trap.c,v 1.95 1996/05/05 06:50:02 mycroft Exp $	*/
 
 /*-
@@ -45,27 +45,20 @@
 #include <sys/proc.h>
 #include <sys/signalvar.h>
 #include <sys/user.h>
-#include <sys/acct.h>
-#include <sys/kernel.h>
 #include <sys/signal.h>
 #include <sys/syscall.h>
 #include <sys/syscall_mi.h>
 
 #include <uvm/uvm_extern.h>
 
-#include <machine/cpu.h>
 #include <machine/cpufunc.h>
 #include <machine/psl.h>
-#include <machine/reg.h>
 #include <machine/trap.h>
 #ifdef DDB
 #include <machine/db_machdep.h>
 #endif
 
-#include <sys/exec.h>
-
 #include "isa.h"
-#include "npx.h"
 
 int upageflttrap(struct trapframe *, uint32_t);
 int kpageflttrap(struct trapframe *, uint32_t);
@@ -126,7 +119,14 @@ upageflttrap(struct trapframe *frame, uint32_t cr2)
 	union sigval sv;
 	int signal, sicode, error;
 
+	/*
+	 * cpu_pae is true if system has PAE + NX.
+	 * If NX is not enabled, we cant distinguish between PROT_READ
+	 * and PROT_EXEC access, so try both.
+	 */
 	error = uvm_fault(&p->p_vmspace->vm_map, va, 0, access_type);
+	if (cpu_pae == 0 && error == EACCES && access_type == PROT_READ)
+		error = uvm_fault(&p->p_vmspace->vm_map, va, 0, PROT_EXEC);
 
 	if (error == 0) {
 		uvm_grow(p, va);
@@ -512,14 +512,13 @@ ast(struct trapframe *frame)
  * syscall(frame):
  *	System call request from POSIX system call gate interface to kernel.
  */
-/*ARGSUSED*/
 void
 syscall(struct trapframe *frame)
 {
 	caddr_t params;
 	const struct sysent *callp;
 	struct proc *p;
-	int error;
+	int error, indirect = -1;
 	register_t code, args[8], rval[2];
 #ifdef DIAGNOSTIC
 	int ocpl = lapic_tpr;
@@ -552,16 +551,9 @@ syscall(struct trapframe *frame)
 		/*
 		 * Code is first argument, followed by actual args.
 		 */
+		indirect = code;
 		copyin(params, &code, sizeof(int));
 		params += sizeof(int);
-		break;
-	case SYS___syscall:
-		/*
-		 * Like syscall, but code is a quad, so as to maintain
-		 * quad alignment for the rest of the arguments.
-		 */
-		copyin(params + _QUAD_LOWWORD * sizeof(int), &code, sizeof(int));
-		params += sizeof(quad_t);
 		break;
 	default:
 		break;
@@ -579,7 +571,7 @@ syscall(struct trapframe *frame)
 	rval[0] = 0;
 	rval[1] = frame->tf_edx;
 
-	error = mi_syscall(p, code, callp, args, rval);
+	error = mi_syscall(p, code, indirect, callp, args, rval);
 
 	switch (error) {
 	case 0:

@@ -1,4 +1,4 @@
-/*	$OpenBSD: aspa.c,v 1.4 2022/09/05 18:07:04 tb Exp $ */
+/*	$OpenBSD: aspa.c,v 1.16 2023/03/12 11:54:56 job Exp $ */
 /*
  * Copyright (c) 2022 Job Snijders <job@fastly.com>
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
@@ -19,7 +19,6 @@
 
 #include <assert.h>
 #include <err.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,7 +70,7 @@ typedef struct {
 } ASProviderAttestation;
 
 ASN1_SEQUENCE(ASProviderAttestation) = {
-	ASN1_IMP_OPT(ASProviderAttestation, version, ASN1_INTEGER, 0),
+	ASN1_EXP_OPT(ASProviderAttestation, version, ASN1_INTEGER, 0),
 	ASN1_SIMPLE(ASProviderAttestation, customerASID, ASN1_INTEGER),
 	ASN1_SEQUENCE_OF(ASProviderAttestation, providers, ProviderAS),
 } ASN1_SEQUENCE_END(ASProviderAttestation);
@@ -189,29 +188,35 @@ aspa_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 	struct parse	 p;
 	size_t		 cmsz;
 	unsigned char	*cms;
-	const ASN1_TIME	*at;
 	struct cert	*cert = NULL;
+	time_t		 signtime = 0;
 	int		 rc = 0;
 
 	memset(&p, 0, sizeof(struct parse));
 	p.fn = fn;
 
-	cms = cms_parse_validate(x509, fn, der, len, aspa_oid, &cmsz);
+	cms = cms_parse_validate(x509, fn, der, len, aspa_oid, &cmsz,
+	    &signtime);
 	if (cms == NULL)
 		return NULL;
 
 	if ((p.res = calloc(1, sizeof(*p.res))) == NULL)
 		err(1, NULL);
 
+	p.res->signtime = signtime;
+
 	if (!x509_get_aia(*x509, fn, &p.res->aia))
 		goto out;
 	if (!x509_get_aki(*x509, fn, &p.res->aki))
 		goto out;
+	if (!x509_get_sia(*x509, fn, &p.res->sia))
+		goto out;
 	if (!x509_get_ski(*x509, fn, &p.res->ski))
 		goto out;
-	if (p.res->aia == NULL || p.res->aki == NULL || p.res->ski == NULL) {
+	if (p.res->aia == NULL || p.res->aki == NULL || p.res->sia == NULL ||
+	    p.res->ski == NULL) {
 		warnx("%s: RFC 6487 section 4.8: "
-		    "missing AIA, AKI or SKI X509 extension", fn);
+		    "missing AIA, AKI, SIA, or SKI X509 extension", fn);
 		goto out;
 	}
 
@@ -220,18 +225,13 @@ aspa_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	}
 
-	at = X509_get0_notAfter(*x509);
-	if (at == NULL) {
-		warnx("%s: X509_get0_notAfter failed", fn);
+	if (!x509_get_notbefore(*x509, fn, &p.res->notbefore))
 		goto out;
-	}
-	if (x509_get_time(at, &p.res->expires) == -1) {
-		warnx("%s: ASN1_time_parse failed", fn);
+	if (!x509_get_notafter(*x509, fn, &p.res->notafter))
 		goto out;
-	}
 
 	if (x509_any_inherits(*x509)) {
-		warnx("%s: inherit elements not allowed", fn);
+		warnx("%s: inherit elements not allowed in EE cert", fn);
 		goto out;
 	}
 
@@ -268,6 +268,7 @@ aspa_free(struct aspa *p)
 
 	free(p->aia);
 	free(p->aki);
+	free(p->sia);
 	free(p->ski);
 	free(p->providers);
 	free(p);
@@ -325,116 +326,80 @@ aspa_read(struct ibuf *b)
 }
 
 /*
- * draft-ietf-sidrops-8210bis section 5.12 states:
- *
- *     "The router MUST see at most one ASPA for a given AFI from a cache for
- *      a particular Customer ASID active at any time. As a number of conditions
- *      in the global RPKI may present multiple valid ASPA RPKI records for a
- *      single customer to a particular RP cache, this places a burden on the
- *      cache to form the union of multiple ASPA records it has received from
- *      the global RPKI into one RPKI-To-Router (RTR) ASPA PDU."
- *
- * The above described 'burden' (which is specific to RTR) is resolved in
- * insert_vap() and aspa_insert_vaps() functions below.
- *
- * XXX: for bgpd(8), ASPA config injection (via /var/db/rpki-client/openbgpd)
- * we probably want to undo the 'burden solving' and compress into implicit
- * AFIs.
- */
-
-/*
- * If the CustomerASID (CAS) showed up before, append the ProviderAS (PAS);
- * otherwise create a new entry in the RB tree.
- * Ensure there are no duplicates in the 'providers' array.
- * Always compare 'expires': use the soonest expiration moment.
+ * Insert a new aspa_provider at index idx in the struct vap v.
+ * All elements in the provider array from idx are moved up by one
+ * to make space for the new element.
  */
 static void
-insert_vap(struct vap_tree *tree, uint32_t cas, uint32_t pas, time_t expires,
-    enum afi afi)
+insert_vap(struct vap *v, uint32_t idx, struct aspa_provider *p)
 {
-	struct vap	*v, *found;
-	size_t		 i;
-
-	if ((v = malloc(sizeof(*v))) == NULL)
-		err(1, NULL);
-	v->afi = afi;
-	v->custasid = cas;
-	v->expires = expires;
-
-	if ((found = RB_INSERT(vap_tree, tree, v)) == NULL) {
-		if ((v->providers = malloc(sizeof(uint32_t))) == NULL)
-			err(1, NULL);
-
-		v->providers[0] = pas;
-		v->providersz = 1;
-
-		return;
-	}
-
-	free(v);
-
-	if (found->expires > expires)
-		found->expires = expires;
-
-	for (i = 0; i < found->providersz; i++) {
-		if (found->providers[i] == pas)
-			return;
-	}
-
-	found->providers = reallocarray(found->providers,
-	    found->providersz + 1, sizeof(uint32_t));
-	if (found->providers == NULL)
-		err(1, NULL);
-	found->providers[found->providersz++] = pas;
+	if (idx < v->providersz)
+		memmove(v->providers + idx + 1, v->providers + idx,
+		    (v->providersz - idx) * sizeof(*v->providers));
+	v->providers[idx] = *p;
+	v->providersz++;
 }
 
 /*
  * Add each ProviderAS entry into the Validated ASPA Providers (VAP) tree.
- * Updates "vaps" to be the total number of VAPs, and "uniqs" to be the
- * pre-'AFI explosion' deduplicated count.
+ * Duplicated entries are merged.
  */
 void
-aspa_insert_vaps(struct vap_tree *tree, struct aspa *aspa, size_t *vaps,
-    size_t *uniqs)
+aspa_insert_vaps(struct vap_tree *tree, struct aspa *aspa, struct repo *rp)
 {
-	size_t		 i;
-	uint32_t	 cas, pas;
-	time_t		 expires;
+	struct vap	*v, *found;
+	size_t		 i, j;
 
-	cas = aspa->custasid;
-	expires = aspa->expires;
+	repo_stat_inc(rp, RTYPE_ASPA, STYPE_TOTAL);
 
-	*uniqs += aspa->providersz;
+	if ((v = calloc(1, sizeof(*v))) == NULL)
+		err(1, NULL);
+	v->custasid = aspa->custasid;
+	v->expires = aspa->expires;
 
-	for (i = 0; i < aspa->providersz; i++) {
-		pas = aspa->providers[i].as;
+	if ((found = RB_INSERT(vap_tree, tree, v)) != NULL) {
+		if (found->expires > v->expires)
+			found->expires = v->expires;
+		free(v);
+		v = found;
+	} else
+		repo_stat_inc(rp, RTYPE_ASPA, STYPE_UNIQUE);
 
-		switch (aspa->providers[i].afi) {
-		case AFI_IPV4:
-			insert_vap(tree, cas, pas, expires, AFI_IPV4);
-			(*vaps)++;
-			break;
-		case AFI_IPV6:
-			insert_vap(tree, cas, pas, expires, AFI_IPV6);
-			(*vaps)++;
-			break;
-		default:
-			insert_vap(tree, cas, pas, expires, AFI_IPV4);
-			insert_vap(tree, cas, pas, expires, AFI_IPV6);
-			*vaps += 2;
-			break;
+	v->providers = reallocarray(v->providers,
+	    v->providersz + aspa->providersz, sizeof(*v->providers));
+	if (v->providers == NULL)
+		err(1, NULL);
+
+	/*
+	 * Merge all data from aspa into v: loop over all aspa providers,
+	 * insert them in the right place in v->providers while keeping the
+	 * order of the providers array.
+	 */
+	for (i = 0, j = 0; i < aspa->providersz; ) {
+		if (j == v->providersz ||
+		    aspa->providers[i].as < v->providers[j].as) {
+			/* merge provider from aspa into v */
+			repo_stat_inc(rp, RTYPE_ASPA,
+			    STYPE_BOTH + aspa->providers[i].afi);
+			insert_vap(v, j, &aspa->providers[i]);
+			i++;
+		} else if (aspa->providers[i].as == v->providers[j].as) {
+			/* duplicate provider, merge afi */
+			if (v->providers[j].afi != aspa->providers[i].afi) {
+				repo_stat_inc(rp, RTYPE_ASPA,
+				    STYPE_BOTH + aspa->providers[i].afi);
+				v->providers[j].afi = 0;
+			}
+			i++;
 		}
+		if (j < v->providersz)
+			j++;
 	}
 }
 
 static inline int
 vapcmp(struct vap *a, struct vap *b)
 {
-	if (a->afi > b->afi)
-		return 1;
-	if (a->afi < b->afi)
-		return -1;
-
 	if (a->custasid > b->custasid)
 		return 1;
 	if (a->custasid < b->custasid)

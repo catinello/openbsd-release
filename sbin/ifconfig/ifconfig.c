@@ -1,4 +1,4 @@
-/*	$OpenBSD: ifconfig.c,v 1.456 2022/07/08 07:04:54 jsg Exp $	*/
+/*	$OpenBSD: ifconfig.c,v 1.462 2023/03/08 04:43:06 guenther Exp $	*/
 /*	$NetBSD: ifconfig.c,v 1.40 1997/10/01 02:19:43 enami Exp $	*/
 
 /*
@@ -363,10 +363,13 @@ void	unsetwgpeer(const char *, int);
 void	unsetwgpeerpsk(const char *, int);
 void	unsetwgpeerall(const char *, int);
 
-void	wg_status();
+void	wg_status(int);
 #else
 void	setignore(const char *, int);
 #endif
+
+struct if_clonereq *get_cloners(void);
+int	findmac(const char *);
 
 /*
  * Media stuff.  Whenever a media command is first performed, the
@@ -679,7 +682,7 @@ void	printgroupattribs(char *);
 void	printif(char *, int);
 void	printb_status(unsigned short, unsigned char *);
 const char *get_linkstate(int, int);
-void	status(int, struct sockaddr_dl *, int);
+void	status(int, struct sockaddr_dl *, int, int);
 __dead void	usage(void);
 const char *get_string(const char *, const char *, u_int8_t *, int *);
 int	len_string(const u_int8_t *, int);
@@ -794,6 +797,11 @@ main(int argc, char *argv[])
 			case 'C':
 				Cflag = 1;
 				nomore = 1;
+				break;
+			case 'M':
+				if (argv[1] == NULL)
+					usage();
+				exit(findmac(argv[1]));
 				break;
 			default:
 				usage();
@@ -1195,7 +1203,7 @@ printif(char *name, int ifaliases)
 				continue;
 			ifdata = ifa->ifa_data;
 			status(1, (struct sockaddr_dl *)ifa->ifa_addr,
-			    ifdata->ifi_link_state);
+			    ifdata->ifi_link_state, ifaliases);
 			count++;
 			noinet = 1;
 			continue;
@@ -1232,7 +1240,6 @@ printif(char *name, int ifaliases)
 	}
 }
 
-/*ARGSUSED*/
 void
 clone_create(const char *addr, int param)
 {
@@ -1245,7 +1252,6 @@ clone_create(const char *addr, int param)
 		err(1, "SIOCIFCREATE");
 }
 
-/*ARGSUSED*/
 void
 clone_destroy(const char *addr, int param)
 {
@@ -1255,12 +1261,10 @@ clone_destroy(const char *addr, int param)
 		err(1, "SIOCIFDESTROY");
 }
 
-void
-list_cloners(void)
+struct if_clonereq *
+get_cloners(void)
 {
-	struct if_clonereq ifcr;
-	char *cp, *buf;
-	int idx;
+	static struct if_clonereq ifcr;
 
 	memset(&ifcr, 0, sizeof(ifcr));
 
@@ -1269,12 +1273,9 @@ list_cloners(void)
 	if (ioctl(sock, SIOCIFGCLONERS, &ifcr) == -1)
 		err(1, "SIOCIFGCLONERS for count");
 
-	buf = calloc(ifcr.ifcr_total, IFNAMSIZ);
-	if (buf == NULL)
+	if ((ifcr.ifcr_buffer = calloc(ifcr.ifcr_total, IFNAMSIZ)) == NULL)
 		err(1, "unable to allocate cloner name buffer");
-
 	ifcr.ifcr_count = ifcr.ifcr_total;
-	ifcr.ifcr_buffer = buf;
 
 	if (ioctl(sock, SIOCIFGCLONERS, &ifcr) == -1)
 		err(1, "SIOCIFGCLONERS for names");
@@ -1285,17 +1286,30 @@ list_cloners(void)
 	if (ifcr.ifcr_count > ifcr.ifcr_total)
 		ifcr.ifcr_count = ifcr.ifcr_total;
 
-	qsort(buf, ifcr.ifcr_count, IFNAMSIZ,
+	return &ifcr;
+}
+
+void
+list_cloners(void)
+{
+	struct if_clonereq *ifcr;
+	char *cp, *buf;
+	int idx;
+
+	ifcr = get_cloners();
+	buf = ifcr->ifcr_buffer;
+
+	qsort(buf, ifcr->ifcr_count, IFNAMSIZ,
 	    (int(*)(const void *, const void *))strcmp);
 
-	for (cp = buf, idx = 0; idx < ifcr.ifcr_count; idx++, cp += IFNAMSIZ) {
+	for (cp = buf, idx = 0; idx < ifcr->ifcr_count; idx++, cp += IFNAMSIZ) {
 		if (idx > 0)
 			putchar(' ');
 		printf("%s", cp);
 	}
 
 	putchar('\n');
-	free(buf);
+	free(ifcr->ifcr_buffer);
 }
 
 #define RIDADDR 0
@@ -1303,7 +1317,6 @@ list_cloners(void)
 #define MASK	2
 #define DSTADDR	3
 
-/*ARGSUSED*/
 void
 setifaddr(const char *addr, int param)
 {
@@ -1333,7 +1346,6 @@ setifrtlabel(const char *label, int d)
 }
 #endif
 
-/* ARGSUSED */
 void
 setifnetmask(const char *addr, int ignored)
 {
@@ -1341,7 +1353,6 @@ setifnetmask(const char *addr, int ignored)
 	explicit_prefix = 1;
 }
 
-/* ARGSUSED */
 void
 setifbroadaddr(const char *addr, int ignored)
 {
@@ -1349,7 +1360,6 @@ setifbroadaddr(const char *addr, int ignored)
 }
 
 #ifndef SMALL
-/* ARGSUSED */
 void
 setifdesc(const char *val, int ignored)
 {
@@ -1358,7 +1368,6 @@ setifdesc(const char *val, int ignored)
 		warn("SIOCSIFDESCR");
 }
 
-/* ARGSUSED */
 void
 unsetifdesc(const char *noval, int ignored)
 {
@@ -1367,7 +1376,6 @@ unsetifdesc(const char *noval, int ignored)
 		warn("SIOCSIFDESCR");
 }
 
-/* ARGSUSED */
 void
 setifipdst(const char *addr, int ignored)
 {
@@ -1379,7 +1387,6 @@ setifipdst(const char *addr, int ignored)
 #endif
 
 #define rqtosa(x) (&(((struct ifreq *)(afp->x))->ifr_addr))
-/*ARGSUSED*/
 void
 notealias(const char *addr, int param)
 {
@@ -1394,7 +1401,6 @@ notealias(const char *addr, int param)
 		clearaddr = 0;
 }
 
-/*ARGSUSED*/
 void
 setifdstaddr(const char *addr, int param)
 {
@@ -1408,7 +1414,6 @@ setifdstaddr(const char *addr, int param)
  * of the ifreq structure, which may confuse other parts of ifconfig.
  * Make a private copy so we can avoid that.
  */
-/* ARGSUSED */
 void
 setifflags(const char *vname, int value)
 {
@@ -1431,7 +1436,6 @@ setifflags(const char *vname, int value)
 		err(1, "SIOCSIFFLAGS");
 }
 
-/* ARGSUSED */
 void
 setifxflags(const char *vname, int value)
 {
@@ -1592,7 +1596,6 @@ settemporary(const char *cmd, int val)
 }
 
 #ifndef SMALL
-/* ARGSUSED */
 void
 setifmetric(const char *val, int ignored)
 {
@@ -1608,7 +1611,6 @@ setifmetric(const char *val, int ignored)
 }
 #endif
 
-/* ARGSUSED */
 void
 setifmtu(const char *val, int d)
 {
@@ -1623,7 +1625,6 @@ setifmtu(const char *val, int d)
 		warn("SIOCSIFMTU");
 }
 
-/* ARGSUSED */
 void
 setifllprio(const char *val, int d)
 {
@@ -1638,7 +1639,6 @@ setifllprio(const char *val, int d)
 		warn("SIOCSIFLLPRIO");
 }
 
-/* ARGSUSED */
 void
 setifgroup(const char *group_name, int dummy)
 {
@@ -1663,7 +1663,6 @@ setifgroup(const char *group_name, int dummy)
 	}
 }
 
-/* ARGSUSED */
 void
 unsetifgroup(const char *group_name, int dummy)
 {
@@ -1891,13 +1890,6 @@ delifjoinlist(const char *val, int d)
 	memset(&join, 0, sizeof(join));
 	join.i_flags |= (IEEE80211_JOIN_DEL | IEEE80211_JOIN_DEL_ALL);
 
-	if (d == -1) {
-		ifr.ifr_data = (caddr_t)&join;
-		if (ioctl(sock, SIOCS80211JOIN, (caddr_t)&ifr) == -1)
-			err(1, "SIOCS80211JOIN");
-		return;
-	}
-
 	ifr.ifr_data = (caddr_t)&join;
 	if (ioctl(sock, SIOCS80211JOIN, (caddr_t)&ifr) == -1)
 		err(1, "SIOCS80211JOIN");
@@ -2026,7 +2018,6 @@ setifnwkey(const char *val, int d)
 		err(1, "SIOCS80211NWKEY");
 }
 
-/* ARGSUSED */
 void
 setifwpa(const char *val, int d)
 {
@@ -2047,7 +2038,6 @@ setifwpa(const char *val, int d)
 		err(1, "SIOCS80211WPAPARMS");
 }
 
-/* ARGSUSED */
 void
 setifwpaprotos(const char *val, int d)
 {
@@ -2088,7 +2078,6 @@ setifwpaprotos(const char *val, int d)
 		err(1, "SIOCS80211WPAPARMS");
 }
 
-/* ARGSUSED */
 void
 setifwpaakms(const char *val, int d)
 {
@@ -2152,7 +2141,6 @@ getwpacipher(const char *name)
 	return IEEE80211_WPA_CIPHER_NONE;
 }
 
-/* ARGSUSED */
 void
 setifwpaciphers(const char *val, int d)
 {
@@ -2189,7 +2177,6 @@ setifwpaciphers(const char *val, int d)
 		err(1, "SIOCS80211WPAPARMS");
 }
 
-/* ARGSUSED */
 void
 setifwpagroupcipher(const char *val, int d)
 {
@@ -2319,7 +2306,6 @@ setifchan(const char *val, int d)
 		warn("SIOCS80211CHANNEL");
 }
 
-/* ARGSUSED */
 void
 setifscan(const char *val, int d)
 {
@@ -2363,7 +2349,6 @@ unsetifnwflag(const char *val, int d)
 	setifnwflag(val, 1);
 }
 
-/* ARGSUSED */
 void
 setifpowersave(const char *val, int d)
 {
@@ -2506,13 +2491,10 @@ ieee80211_status(void)
 		bcopy(bssid.i_bssid, &nr.nr_macaddr, sizeof(nr.nr_macaddr));
 		strlcpy(nr.nr_ifname, ifname, sizeof(nr.nr_ifname));
 		if (ioctl(sock, SIOCG80211NODE, &nr) == 0) {
-			if (nr.nr_rssi) {
-				if (nr.nr_max_rssi)
-					printf(" %u%%",
-					    IEEE80211_NODEREQ_RSSI(&nr));
-				else
-					printf(" %ddBm", nr.nr_rssi);
-			}
+			if (nr.nr_max_rssi)
+				printf(" %u%%", IEEE80211_NODEREQ_RSSI(&nr));
+			else
+				printf(" %ddBm", nr.nr_rssi);
 			assocfail = nr.nr_assoc_fail;
 		}
 	}
@@ -2889,7 +2871,6 @@ process_media_commands(void)
 		err(1, "SIOCSIFMEDIA");
 }
 
-/* ARGSUSED */
 void
 setmedia(const char *val, int d)
 {
@@ -2933,7 +2914,6 @@ setmedia(const char *val, int d)
 	/* Media will be set after other processing is complete. */
 }
 
-/* ARGSUSED */
 void
 setmediamode(const char *val, int d)
 {
@@ -2996,7 +2976,6 @@ setmediaopt(const char *val, int d)
 	/* Media will be set after other processing is complete. */
 }
 
-/* ARGSUSED */
 void
 unsetmediaopt(const char *val, int d)
 {
@@ -3021,7 +3000,6 @@ unsetmediaopt(const char *val, int d)
 	/* Media will be set after other processing is complete. */
 }
 
-/* ARGSUSED */
 void
 setmediainst(const char *val, int d)
 {
@@ -3247,7 +3225,6 @@ print_tunnel(const struct if_laddrreq *req)
 	}
 }
 
-/* ARGSUSED */
 static void
 phys_status(int force)
 {
@@ -3316,7 +3293,7 @@ get_linkstate(int mt, int link_state)
  * specified, show it and it only; otherwise, show them all.
  */
 void
-status(int link, struct sockaddr_dl *sdl, int ls)
+status(int link, struct sockaddr_dl *sdl, int ls, int ifaliases)
 {
 	const struct afswtch *p = afp;
 	struct ifmediareq ifmr;
@@ -3391,7 +3368,7 @@ status(int link, struct sockaddr_dl *sdl, int ls)
 	mpls_status();
 	pflow_status();
 	umb_status();
-	wg_status();
+	wg_status(ifaliases);
 #endif
 	trunk_status();
 	getifgroups();
@@ -3522,7 +3499,6 @@ status(int link, struct sockaddr_dl *sdl, int ls)
 #endif
 }
 
-/* ARGSUSED */
 void
 in_status(int force)
 {
@@ -3583,7 +3559,6 @@ in_status(int force)
 	putchar('\n');
 }
 
-/* ARGSUSED */
 void
 setifprefixlen(const char *addr, int d)
 {
@@ -3808,7 +3783,6 @@ settunneladdr(const char *addr, int ignored)
 	freeaddrinfo(res);
 }
 
-/* ARGSUSED */
 void
 deletetunnel(const char *ignored, int alsoignored)
 {
@@ -4015,7 +3989,6 @@ mpls_status(void)
 	printf("\n");
 }
 
-/* ARGSUSED */
 void
 setmplslabel(const char *val, int d)
 {
@@ -4189,7 +4162,6 @@ setvnetid(const char *id, int param)
 		warn("SIOCSVNETID");
 }
 
-/* ARGSUSED */
 void
 delvnetid(const char *ignored, int alsoignored)
 {
@@ -4238,7 +4210,6 @@ setifparent(const char *id, int param)
 		warn("SIOCSIFPARENT");
 }
 
-/* ARGSUSED */
 void
 delifparent(const char *ignored, int alsoignored)
 {
@@ -4702,7 +4673,6 @@ carp_status(void)
 	}
 }
 
-/* ARGSUSED */
 void
 setcarp_passwd(const char *val, int d)
 {
@@ -4721,7 +4691,6 @@ setcarp_passwd(const char *val, int d)
 		err(1, "SIOCSVH");
 }
 
-/* ARGSUSED */
 void
 setcarp_vhid(const char *val, int d)
 {
@@ -4746,7 +4715,6 @@ setcarp_vhid(const char *val, int d)
 		err(1, "SIOCSVH");
 }
 
-/* ARGSUSED */
 void
 setcarp_advskew(const char *val, int d)
 {
@@ -4770,7 +4738,6 @@ setcarp_advskew(const char *val, int d)
 		err(1, "SIOCSVH");
 }
 
-/* ARGSUSED */
 void
 setcarp_advbase(const char *val, int d)
 {
@@ -4794,7 +4761,6 @@ setcarp_advbase(const char *val, int d)
 		err(1, "SIOCSVH");
 }
 
-/* ARGSUSED */
 void
 setcarppeer(const char *val, int d)
 {
@@ -4845,7 +4811,6 @@ unsetcarppeer(const char *val, int d)
 		err(1, "SIOCSVH");
 }
 
-/* ARGSUSED */
 void
 setcarp_state(const char *val, int d)
 {
@@ -4869,7 +4834,6 @@ setcarp_state(const char *val, int d)
 		err(1, "SIOCSVH");
 }
 
-/* ARGSUSED */
 void
 setcarpdev(const char *val, int d)
 {
@@ -4973,7 +4937,6 @@ setpfsync_syncdev(const char *val, int d)
 		err(1, "SIOCSETPFSYNC");
 }
 
-/* ARGSUSED */
 void
 unsetpfsync_syncdev(const char *val, int d)
 {
@@ -4991,7 +4954,6 @@ unsetpfsync_syncdev(const char *val, int d)
 		err(1, "SIOCSETPFSYNC");
 }
 
-/* ARGSUSED */
 void
 setpfsync_syncpeer(const char *val, int d)
 {
@@ -5025,7 +4987,6 @@ setpfsync_syncpeer(const char *val, int d)
 	freeaddrinfo(peerres);
 }
 
-/* ARGSUSED */
 void
 unsetpfsync_syncpeer(const char *val, int d)
 {
@@ -5043,7 +5004,6 @@ unsetpfsync_syncpeer(const char *val, int d)
 		err(1, "SIOCSETPFSYNC");
 }
 
-/* ARGSUSED */
 void
 setpfsync_maxupd(const char *val, int d)
 {
@@ -5388,7 +5348,6 @@ notime:
 	putchar('\n');
 }
 
-/* ARGSUSED */
 void
 setpppoe_dev(const char *val, int d)
 {
@@ -5404,7 +5363,6 @@ setpppoe_dev(const char *val, int d)
 		err(1, "PPPOESETPARMS");
 }
 
-/* ARGSUSED */
 void
 setpppoe_svc(const char *val, int d)
 {
@@ -5423,7 +5381,6 @@ setpppoe_svc(const char *val, int d)
 		err(1, "PPPOESETPARMS");
 }
 
-/* ARGSUSED */
 void
 setpppoe_ac(const char *val, int d)
 {
@@ -5907,7 +5864,7 @@ process_wg_commands(void)
 }
 
 void
-wg_status(void)
+wg_status(int ifaliases)
 {
 	size_t			 i, j, last_size;
 	struct timespec		 now;
@@ -5942,45 +5899,47 @@ wg_status(void)
 		printf("\twgpubkey %s\n", key);
 	}
 
-	wg_peer = &wg_interface->i_peers[0];
-	for (i = 0; i < wg_interface->i_peers_count; i++) {
-		b64_ntop(wg_peer->p_public, WG_KEY_LEN,
-		    key, sizeof(key));
-		printf("\twgpeer %s\n", key);
+	if (ifaliases) {
+		wg_peer = &wg_interface->i_peers[0];
+		for (i = 0; i < wg_interface->i_peers_count; i++) {
+			b64_ntop(wg_peer->p_public, WG_KEY_LEN,
+			    key, sizeof(key));
+			printf("\twgpeer %s\n", key);
 
-		if (wg_peer->p_flags & WG_PEER_HAS_PSK)
-			printf("\t\twgpsk (present)\n");
+			if (wg_peer->p_flags & WG_PEER_HAS_PSK)
+				printf("\t\twgpsk (present)\n");
 
-		if (wg_peer->p_flags & WG_PEER_HAS_PKA && wg_peer->p_pka)
-			printf("\t\twgpka %u (sec)\n", wg_peer->p_pka);
+			if (wg_peer->p_flags & WG_PEER_HAS_PKA && wg_peer->p_pka)
+				printf("\t\twgpka %u (sec)\n", wg_peer->p_pka);
 
-		if (wg_peer->p_flags & WG_PEER_HAS_ENDPOINT) {
-			if (getnameinfo(&wg_peer->p_sa, wg_peer->p_sa.sa_len,
-			    hbuf, sizeof(hbuf), sbuf, sizeof(sbuf),
-			    NI_NUMERICHOST | NI_NUMERICSERV) == 0)
-				printf("\t\twgendpoint %s %s\n", hbuf, sbuf);
-			else
-				printf("\t\twgendpoint unable to print\n");
+			if (wg_peer->p_flags & WG_PEER_HAS_ENDPOINT) {
+				if (getnameinfo(&wg_peer->p_sa, wg_peer->p_sa.sa_len,
+				    hbuf, sizeof(hbuf), sbuf, sizeof(sbuf),
+				    NI_NUMERICHOST | NI_NUMERICSERV) == 0)
+					printf("\t\twgendpoint %s %s\n", hbuf, sbuf);
+				else
+					printf("\t\twgendpoint unable to print\n");
+			}
+
+			printf("\t\ttx: %llu, rx: %llu\n",
+			    wg_peer->p_txbytes, wg_peer->p_rxbytes);
+
+			if (wg_peer->p_last_handshake.tv_sec != 0) {
+				timespec_get(&now, TIME_UTC);
+				printf("\t\tlast handshake: %lld seconds ago\n",
+				    now.tv_sec - wg_peer->p_last_handshake.tv_sec);
+			}
+
+
+			wg_aip = &wg_peer->p_aips[0];
+			for (j = 0; j < wg_peer->p_aips_count; j++) {
+				inet_ntop(wg_aip->a_af, &wg_aip->a_addr,
+				    hbuf, sizeof(hbuf));
+				printf("\t\twgaip %s/%d\n", hbuf, wg_aip->a_cidr);
+				wg_aip++;
+			}
+			wg_peer = (struct wg_peer_io *)wg_aip;
 		}
-
-		printf("\t\ttx: %llu, rx: %llu\n",
-		    wg_peer->p_txbytes, wg_peer->p_rxbytes);
-
-		if (wg_peer->p_last_handshake.tv_sec != 0) {
-			timespec_get(&now, TIME_UTC);
-			printf("\t\tlast handshake: %lld seconds ago\n",
-			    now.tv_sec - wg_peer->p_last_handshake.tv_sec);
-		}
-
-
-		wg_aip = &wg_peer->p_aips[0];
-		for (j = 0; j < wg_peer->p_aips_count; j++) {
-			inet_ntop(wg_aip->a_af, &wg_aip->a_addr,
-			    hbuf, sizeof(hbuf));
-			printf("\t\twgaip %s/%d\n", hbuf, wg_aip->a_cidr);
-			wg_aip++;
-		}
-		wg_peer = (struct wg_peer_io *)wg_aip;
 	}
 out:
 	free(wgdata.wgd_interface);
@@ -6430,7 +6389,6 @@ in_getaddr(const char *s, int which)
 		errx(1, "%s: non-contiguous mask", s);
 }
 
-/* ARGSUSED */
 void
 in_getprefix(const char *plen, int which)
 {
@@ -6612,9 +6570,8 @@ __dead void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: ifconfig [-AaC] [interface] [address_family] "
-	    "[address [dest_address]]\n"
-	    "\t\t[parameters]\n");
+	    "usage: ifconfig [-AaC] [-M lladdr] [interface] [address_family]\n"
+	    "\t\t[address [dest_address]] [parameters]\n");
 	exit(1);
 }
 
@@ -6697,7 +6654,6 @@ sec2str(time_t total)
 	return (result);
 }
 
-/*ARGSUSED*/
 void
 setiflladdr(const char *addr, int param)
 {
@@ -6780,3 +6736,57 @@ setignore(const char *id, int param)
 	/* just digest the command */
 }
 #endif
+
+int
+findmac(const char *mac)
+{
+	struct ifaddrs *ifap, *ifa;
+	const char *ifnam = NULL;
+	struct if_clonereq *ifcr;
+	int ret = 0;
+
+	ifcr = get_cloners();
+	if (getifaddrs(&ifap) != 0)
+		err(1, "getifaddrs");
+
+	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+		struct sockaddr_dl *sdl = (struct sockaddr_dl *)ifa->ifa_addr;
+
+		if (sdl != NULL && sdl->sdl_alen &&
+		    (sdl->sdl_type == IFT_ETHER || sdl->sdl_type == IFT_CARP)) {
+			if (strcmp(ether_ntoa((struct ether_addr *)LLADDR(sdl)),
+			    mac) == 0) {
+				char *cp, *nam = ifa->ifa_name;
+				int idx, skip = 0;
+				size_t len;
+
+				/* MACs on cloned devices are ignored */
+				for (len = 0; nam[len]; len++)
+					if (isdigit((unsigned char)nam[len]))
+						break;
+				for (cp = ifcr->ifcr_buffer, idx = 0;
+				    idx < ifcr->ifcr_count;
+				    idx++, cp += IFNAMSIZ) {
+					if (strncmp(nam, cp, len) == 0) {
+						skip = 1;
+						break;
+					}
+				}
+				if (skip)
+					continue;
+
+				if (ifnam) {	/* same MAC on multiple ifp */
+					ret = 1;
+					goto done;
+				}
+				ifnam = nam;
+			}
+		}
+	}
+	if (ifnam)
+		printf("%s\n", ifnam);
+done:
+	free(ifcr->ifcr_buffer);
+	freeifaddrs(ifap);
+	return ret;
+}

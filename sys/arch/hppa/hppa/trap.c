@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.158 2022/08/12 17:19:52 miod Exp $	*/
+/*	$OpenBSD: trap.c,v 1.161 2023/02/11 23:07:26 deraadt Exp $	*/
 
 /*
  * Copyright (c) 1998-2004 Michael Shalayeff
@@ -641,7 +641,6 @@ child_return(void *arg)
 	 * Set up return value registers as libc:fork() expects
 	 */
 	tf->tf_ret0 = 0;
-	tf->tf_ret1 = 1;	/* ischild */
 	tf->tf_t1 = 0;		/* errno */
 
 	KERNEL_UNLOCK();
@@ -766,7 +765,7 @@ syscall(struct trapframe *frame)
 {
 	struct proc *p = curproc;
 	const struct sysent *callp;
-	int retq, code, argsize, argoff, error;
+	int retq, code, argsize, argoff, error, indirect = -1;
 	register_t args[8], rval[2];
 #ifdef DIAGNOSTIC
 	int oldcpl = curcpu()->ci_cpl;
@@ -782,23 +781,12 @@ syscall(struct trapframe *frame)
 	argoff = 4; retq = 0;
 	switch (code = frame->tf_t1) {
 	case SYS_syscall:
+		indirect = code;
 		code = frame->tf_arg0;
 		args[0] = frame->tf_arg1;
 		args[1] = frame->tf_arg2;
 		args[2] = frame->tf_arg3;
 		argoff = 3;
-		break;
-	case SYS___syscall:
-		/*
-		 * this works, because quads get magically swapped
-		 * due to the args being laid backwards on the stack
-		 * and then copied in words
-		 */
-		code = frame->tf_arg0;
-		args[0] = frame->tf_arg2;
-		args[1] = frame->tf_arg3;
-		argoff = 2;
-		retq = 1;
 		break;
 	default:
 		args[0] = frame->tf_arg0;
@@ -863,7 +851,7 @@ syscall(struct trapframe *frame)
 	rval[0] = 0;
 	rval[1] = frame->tf_ret1;
 
-	error = mi_syscall(p, code, callp, args, rval);
+	error = mi_syscall(p, code, indirect, callp, args, rval);
 
 	switch (error) {
 	case 0:

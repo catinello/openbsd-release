@@ -1,4 +1,4 @@
-/*	$OpenBSD: uipc_socket.c,v 1.289 2022/09/05 14:56:08 bluhm Exp $	*/
+/*	$OpenBSD: uipc_socket.c,v 1.301 2023/02/10 14:34:17 visa Exp $	*/
 /*	$NetBSD: uipc_socket.c,v 1.21 1996/02/04 02:17:52 christos Exp $	*/
 
 /*
@@ -112,6 +112,16 @@ const struct filterops soexcept_filtops = {
 	.f_process	= filt_soprocess,
 };
 
+void	klist_soassertlk(void *);
+int	klist_solock(void *);
+void	klist_sounlock(void *, int);
+
+const struct klistops socket_klistops = {
+	.klo_assertlk	= klist_soassertlk,
+	.klo_lock	= klist_solock,
+	.klo_unlock	= klist_sounlock,
+};
+
 #ifndef SOMINCONN
 #define SOMINCONN 80
 #endif /* SOMINCONN */
@@ -138,15 +148,21 @@ soinit(void)
 }
 
 struct socket *
-soalloc(int prflags)
+soalloc(int wait)
 {
 	struct socket *so;
 
-	so = pool_get(&socket_pool, prflags);
+	so = pool_get(&socket_pool, (wait == M_WAIT ? PR_WAITOK : PR_NOWAIT) |
+	    PR_ZERO);
 	if (so == NULL)
 		return (NULL);
 	rw_init_flags(&so->so_lock, "solock", RWL_DUPOK);
 	refcnt_init(&so->so_refcnt);
+	klist_init(&so->so_rcv.sb_klist, &socket_klistops, so);
+	klist_init(&so->so_snd.sb_klist, &socket_klistops, so);
+	sigio_init(&so->so_sigio);
+	TAILQ_INIT(&so->so_q0);
+	TAILQ_INIT(&so->so_q);
 
 	return (so);
 }
@@ -174,12 +190,7 @@ socreate(int dom, struct socket **aso, int type, int proto)
 		return (EPROTONOSUPPORT);
 	if (prp->pr_type != type)
 		return (EPROTOTYPE);
-	so = soalloc(PR_WAITOK | PR_ZERO);
-	klist_init(&so->so_rcv.sb_sel.si_note, &socket_klistops, so);
-	klist_init(&so->so_snd.sb_sel.si_note, &socket_klistops, so);
-	sigio_init(&so->so_sigio);
-	TAILQ_INIT(&so->so_q0);
-	TAILQ_INIT(&so->so_q);
+	so = soalloc(M_WAIT);
 	so->so_type = type;
 	if (suser(p) == 0)
 		so->so_state = SS_PRIV;
@@ -193,7 +204,7 @@ socreate(int dom, struct socket **aso, int type, int proto)
 	so->so_rcv.sb_timeo_nsecs = INFSLP;
 
 	solock(so);
-	error = pru_attach(so, proto);
+	error = pru_attach(so, proto, M_WAIT);
 	if (error) {
 		so->so_state |= SS_NOFDREF;
 		/* sofree() calls sounlock(). */
@@ -302,8 +313,8 @@ sofree(struct socket *so, int keep_lock)
 	}
 
 	sigio_free(&so->so_sigio);
-	klist_free(&so->so_rcv.sb_sel.si_note);
-	klist_free(&so->so_snd.sb_sel.si_note);
+	klist_free(&so->so_rcv.sb_klist);
+	klist_free(&so->so_snd.sb_klist);
 #ifdef SOCKET_SPLICE
 	if (so->so_sp) {
 		if (issplicedback(so)) {
@@ -577,9 +588,9 @@ sosend(struct socket *so, struct mbuf *addr, struct uio *uio, struct mbuf *top,
 restart:
 	if ((error = sblock(so, &so->so_snd, SBLOCKWAIT(flags))) != 0)
 		goto out;
-	so->so_state |= SS_ISSENDING;
+	so->so_snd.sb_state |= SS_ISSENDING;
 	do {
-		if (so->so_state & SS_CANTSENDMORE)
+		if (so->so_snd.sb_state & SS_CANTSENDMORE)
 			snderr(EPIPE);
 		if (so->so_error) {
 			error = so->so_error;
@@ -611,7 +622,7 @@ restart:
 				snderr(EWOULDBLOCK);
 			sbunlock(so, &so->so_snd);
 			error = sbwait(so, &so->so_snd);
-			so->so_state &= ~SS_ISSENDING;
+			so->so_snd.sb_state &= ~SS_ISSENDING;
 			if (error)
 				goto out;
 			goto restart;
@@ -637,7 +648,7 @@ restart:
 					top->m_flags |= M_EOR;
 			}
 			if (resid == 0)
-				so->so_state &= ~SS_ISSENDING;
+				so->so_snd.sb_state &= ~SS_ISSENDING;
 			if (top && so->so_options & SO_ZEROIZE)
 				top->m_flags |= M_ZEROIZE;
 			if (flags & MSG_OOB)
@@ -653,7 +664,7 @@ restart:
 	} while (resid);
 
 release:
-	so->so_state &= ~SS_ISSENDING;
+	so->so_snd.sb_state &= ~SS_ISSENDING;
 	sbunlock(so, &so->so_snd);
 out:
 	sounlock(so);
@@ -866,7 +877,7 @@ restart:
 				so->so_error = 0;
 			goto release;
 		}
-		if (so->so_state & SS_CANTRCVMORE) {
+		if (so->so_rcv.sb_state & SS_CANTRCVMORE) {
 			if (m)
 				goto dontblock;
 			else if (so->so_rcv.sb_cc == 0)
@@ -1022,7 +1033,7 @@ dontblock:
 			    so, so->so_type, m, m->m_type);
 #endif
 		}
-		so->so_state &= ~SS_RCVATMARK;
+		so->so_rcv.sb_state &= ~SS_RCVATMARK;
 		len = uio->uio_resid;
 		if (so->so_oobmark && len > so->so_oobmark - offset)
 			len = so->so_oobmark - offset;
@@ -1099,7 +1110,7 @@ dontblock:
 			if ((flags & MSG_PEEK) == 0) {
 				so->so_oobmark -= len;
 				if (so->so_oobmark == 0) {
-					so->so_state |= SS_RCVATMARK;
+					so->so_rcv.sb_state |= SS_RCVATMARK;
 					break;
 				}
 			} else {
@@ -1119,7 +1130,8 @@ dontblock:
 		 */
 		while (flags & MSG_WAITALL && m == NULL && uio->uio_resid > 0 &&
 		    !sosendallatonce(so) && !nextrecord) {
-			if (so->so_error || so->so_state & SS_CANTRCVMORE)
+			if (so->so_rcv.sb_state & SS_CANTRCVMORE ||
+			    so->so_error)
 				break;
 			SBLASTRECORDCHK(&so->so_rcv, "soreceive sbwait 2");
 			SBLASTMBUFCHK(&so->so_rcv, "soreceive sbwait 2");
@@ -1159,7 +1171,8 @@ dontblock:
 			pru_rcvd(so);
 	}
 	if (orig_resid == uio->uio_resid && orig_resid &&
-	    (flags & MSG_EOR) == 0 && (so->so_state & SS_CANTRCVMORE) == 0) {
+	    (flags & MSG_EOR) == 0 &&
+	    (so->so_rcv.sb_state & SS_CANTRCVMORE) == 0) {
 		sbunlock(so, &so->so_rcv);
 		goto restart;
 	}
@@ -1455,7 +1468,7 @@ somove(struct socket *so, int wait)
 	u_long		 len, off, oobmark;
 	long		 space;
 	int		 error = 0, maxreached = 0;
-	unsigned int	 state;
+	unsigned int	 rcvstate;
 
 	soassertlocked(so);
 
@@ -1464,7 +1477,7 @@ somove(struct socket *so, int wait)
 		error = so->so_error;
 		goto release;
 	}
-	if (sosp->so_state & SS_CANTSENDMORE) {
+	if (sosp->so_snd.sb_state & SS_CANTSENDMORE) {
 		error = EPIPE;
 		goto release;
 	}
@@ -1499,7 +1512,7 @@ somove(struct socket *so, int wait)
 			goto release;
 		len = space;
 	}
-	sosp->so_state |= SS_ISSENDING;
+	sosp->so_snd.sb_state |= SS_ISSENDING;
 
 	SBLASTRECORDCHK(&so->so_rcv, "somove 1");
 	SBLASTMBUFCHK(&so->so_rcv, "somove 1");
@@ -1631,13 +1644,13 @@ somove(struct socket *so, int wait)
 		pru_rcvd(so);
 
 	/* Receive buffer did shrink by len bytes, adjust oob. */
-	state = so->so_state;
-	so->so_state &= ~SS_RCVATMARK;
+	rcvstate = so->so_rcv.sb_state;
+	so->so_rcv.sb_state &= ~SS_RCVATMARK;
 	oobmark = so->so_oobmark;
 	so->so_oobmark = oobmark > len ? oobmark - len : 0;
 	if (oobmark) {
 		if (oobmark == len)
-			so->so_state |= SS_RCVATMARK;
+			so->so_rcv.sb_state |= SS_RCVATMARK;
 		if (oobmark >= len)
 			oobmark = 0;
 	}
@@ -1646,19 +1659,20 @@ somove(struct socket *so, int wait)
 	 * Handle oob data.  If any malloc fails, ignore error.
 	 * TCP urgent data is not very reliable anyway.
 	 */
-	while (((state & SS_RCVATMARK) || oobmark) &&
+	while (((rcvstate & SS_RCVATMARK) || oobmark) &&
 	    (so->so_options & SO_OOBINLINE)) {
 		struct mbuf *o = NULL;
 
-		if (state & SS_RCVATMARK) {
+		if (rcvstate & SS_RCVATMARK) {
 			o = m_get(wait, MT_DATA);
-			state &= ~SS_RCVATMARK;
+			rcvstate &= ~SS_RCVATMARK;
 		} else if (oobmark) {
 			o = m_split(m, oobmark, wait);
 			if (o) {
 				error = pru_send(sosp, m, NULL, NULL);
 				if (error) {
-					if (sosp->so_state & SS_CANTSENDMORE)
+					if (sosp->so_snd.sb_state &
+					    SS_CANTSENDMORE)
 						error = EPIPE;
 					m_freem(o);
 					goto release;
@@ -1675,7 +1689,7 @@ somove(struct socket *so, int wait)
 			*mtod(o, caddr_t) = *mtod(m, caddr_t);
 			error = pru_sendoob(sosp, o, NULL, NULL);
 			if (error) {
-				if (sosp->so_state & SS_CANTSENDMORE)
+				if (sosp->so_snd.sb_state & SS_CANTSENDMORE)
 					error = EPIPE;
 				m_freem(m);
 				goto release;
@@ -1685,7 +1699,7 @@ somove(struct socket *so, int wait)
 			if (oobmark) {
 				oobmark -= 1;
 				if (oobmark == 0)
-					state |= SS_RCVATMARK;
+					rcvstate |= SS_RCVATMARK;
 			}
 			m_adj(m, 1);
 		}
@@ -1693,10 +1707,10 @@ somove(struct socket *so, int wait)
 
 	/* Append all remaining data to drain socket. */
 	if (so->so_rcv.sb_cc == 0 || maxreached)
-		sosp->so_state &= ~SS_ISSENDING;
+		sosp->so_snd.sb_state &= ~SS_ISSENDING;
 	error = pru_send(sosp, m, NULL, NULL);
 	if (error) {
-		if (sosp->so_state & SS_CANTSENDMORE)
+		if (sosp->so_snd.sb_state & SS_CANTSENDMORE)
 			error = EPIPE;
 		goto release;
 	}
@@ -1707,13 +1721,15 @@ somove(struct socket *so, int wait)
 		goto nextpkt;
 
  release:
-	sosp->so_state &= ~SS_ISSENDING;
+	sosp->so_snd.sb_state &= ~SS_ISSENDING;
 	if (!error && maxreached && so->so_splicemax == so->so_splicelen)
 		error = EFBIG;
 	if (error)
 		so->so_error = error;
-	if (((so->so_state & SS_CANTRCVMORE) && so->so_rcv.sb_cc == 0) ||
-	    (sosp->so_state & SS_CANTSENDMORE) || maxreached || error) {
+	if (((so->so_rcv.sb_state & SS_CANTRCVMORE) &&
+	    so->so_rcv.sb_cc == 0) ||
+	    (sosp->so_snd.sb_state & SS_CANTSENDMORE) ||
+	    maxreached || error) {
 		sounsplice(so, sosp, 0);
 		return (0);
 	}
@@ -1838,7 +1854,7 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 			switch (optname) {
 
 			case SO_SNDBUF:
-				if (so->so_state & SS_CANTSENDMORE)
+				if (so->so_snd.sb_state & SS_CANTSENDMORE)
 					return (EINVAL);
 				if (sbcheckreserve(cnt, so->so_snd.sb_wat) ||
 				    sbreserve(so, &so->so_snd, cnt))
@@ -1847,7 +1863,7 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 				break;
 
 			case SO_RCVBUF:
-				if (so->so_state & SS_CANTRCVMORE)
+				if (so->so_rcv.sb_state & SS_CANTRCVMORE)
 					return (EINVAL);
 				if (sbcheckreserve(cnt, so->so_rcv.sb_wat) ||
 				    sbreserve(so, &so->so_rcv, cnt))
@@ -1947,17 +1963,15 @@ sogetopt(struct socket *so, int level, int optname, struct mbuf *m)
 {
 	int error = 0;
 
-	soassertlocked(so);
-
 	if (level != SOL_SOCKET) {
 		if (so->so_proto->pr_ctloutput) {
 			m->m_len = 0;
 
+			solock(so);
 			error = (*so->so_proto->pr_ctloutput)(PRCO_GETOPT, so,
 			    level, optname, m);
-			if (error)
-				return (error);
-			return (0);
+			sounlock(so);
+			return (error);
 		} else
 			return (ENOPROTOOPT);
 	} else {
@@ -1967,9 +1981,11 @@ sogetopt(struct socket *so, int level, int optname, struct mbuf *m)
 
 		case SO_LINGER:
 			m->m_len = sizeof (struct linger);
+			solock_shared(so);
 			mtod(m, struct linger *)->l_onoff =
 				so->so_options & SO_LINGER;
 			mtod(m, struct linger *)->l_linger = so->so_linger;
+			sounlock_shared(so);
 			break;
 
 		case SO_BINDANY:
@@ -1994,8 +2010,11 @@ sogetopt(struct socket *so, int level, int optname, struct mbuf *m)
 			break;
 
 		case SO_ERROR:
+			solock(so);
 			*mtod(m, int *) = so->so_error;
 			so->so_error = 0;
+			sounlock(so);
+
 			break;
 
 		case SO_DOMAIN:
@@ -2025,10 +2044,14 @@ sogetopt(struct socket *so, int level, int optname, struct mbuf *m)
 		case SO_SNDTIMEO:
 		case SO_RCVTIMEO:
 		    {
+			struct sockbuf *sb = (optname == SO_SNDTIMEO ?
+			    &so->so_snd : &so->so_rcv);
 			struct timeval tv;
-			uint64_t nsecs = (optname == SO_SNDTIMEO ?
-			    so->so_snd.sb_timeo_nsecs :
-			    so->so_rcv.sb_timeo_nsecs);
+			uint64_t nsecs;
+
+			solock_shared(so);
+			nsecs = sb->sb_timeo_nsecs;
+			sounlock_shared(so);
 
 			m->m_len = sizeof(struct timeval);
 			memset(&tv, 0, sizeof(tv));
@@ -2046,8 +2069,10 @@ sogetopt(struct socket *so, int level, int optname, struct mbuf *m)
 				    so->so_proto->pr_domain;
 
 				level = dom->dom_protosw->pr_protocol;
+				solock(so);
 				error = (*so->so_proto->pr_ctloutput)
 				    (PRCO_GETOPT, so, level, optname, m);
+				sounlock(so);
 				if (error)
 					return (error);
 				break;
@@ -2060,7 +2085,9 @@ sogetopt(struct socket *so, int level, int optname, struct mbuf *m)
 			off_t len;
 
 			m->m_len = sizeof(off_t);
+			solock_shared(so);
 			len = so->so_sp ? so->so_sp->ssp_len : 0;
+			sounlock_shared(so);
 			memcpy(mtod(m, off_t *), &len, sizeof(off_t));
 			break;
 		    }
@@ -2070,12 +2097,16 @@ sogetopt(struct socket *so, int level, int optname, struct mbuf *m)
 			if (so->so_proto->pr_protocol == AF_UNIX) {
 				struct unpcb *unp = sotounpcb(so);
 
+				solock(so);
 				if (unp->unp_flags & UNP_FEIDS) {
 					m->m_len = sizeof(unp->unp_connid);
 					memcpy(mtod(m, caddr_t),
 					    &(unp->unp_connid), m->m_len);
+					sounlock(so);
 					break;
 				}
+				sounlock(so);
+
 				return (ENOTCONN);
 			}
 			return (EOPNOTSUPP);
@@ -2091,7 +2122,7 @@ void
 sohasoutofband(struct socket *so)
 {
 	pgsigio(&so->so_sigio, SIGURG, 0);
-	KNOTE(&so->so_rcv.sb_sel.si_note, 0);
+	knote_locked(&so->so_rcv.sb_klist, 0);
 }
 
 int
@@ -2122,7 +2153,7 @@ soo_kqfilter(struct file *fp, struct knote *kn)
 		return (EINVAL);
 	}
 
-	klist_insert_locked(&sb->sb_sel.si_note, kn);
+	klist_insert_locked(&sb->sb_klist, kn);
 	sounlock(so);
 
 	return (0);
@@ -2133,7 +2164,7 @@ filt_sordetach(struct knote *kn)
 {
 	struct socket *so = kn->kn_fp->f_data;
 
-	klist_remove(&so->so_rcv.sb_sel.si_note, kn);
+	klist_remove(&so->so_rcv.sb_klist, kn);
 }
 
 int
@@ -2150,7 +2181,7 @@ filt_soread(struct knote *kn, long hint)
 		rv = 0;
 	} else
 #endif /* SOCKET_SPLICE */
-	if (so->so_state & SS_CANTRCVMORE) {
+	if (so->so_rcv.sb_state & SS_CANTRCVMORE) {
 		kn->kn_flags |= EV_EOF;
 		if (kn->kn_flags & __EV_POLL) {
 			if (so->so_state & SS_ISDISCONNECTED)
@@ -2174,7 +2205,7 @@ filt_sowdetach(struct knote *kn)
 {
 	struct socket *so = kn->kn_fp->f_data;
 
-	klist_remove(&so->so_snd.sb_sel.si_note, kn);
+	klist_remove(&so->so_snd.sb_klist, kn);
 }
 
 int
@@ -2186,7 +2217,7 @@ filt_sowrite(struct knote *kn, long hint)
 	soassertlocked(so);
 
 	kn->kn_data = sbspace(so, &so->so_snd);
-	if (so->so_state & SS_CANTSENDMORE) {
+	if (so->so_snd.sb_state & SS_CANTSENDMORE) {
 		kn->kn_flags |= EV_EOF;
 		if (kn->kn_flags & __EV_POLL) {
 			if (so->so_state & SS_ISDISCONNECTED)
@@ -2222,7 +2253,7 @@ filt_soexcept(struct knote *kn, long hint)
 	} else
 #endif /* SOCKET_SPLICE */
 	if (kn->kn_sfflags & NOTE_OOB) {
-		if (so->so_oobmark || (so->so_state & SS_RCVATMARK)) {
+		if (so->so_oobmark || (so->so_rcv.sb_state & SS_RCVATMARK)) {
 			kn->kn_fflags |= NOTE_OOB;
 			kn->kn_data -= so->so_oobmark;
 			rv = 1;
@@ -2312,12 +2343,6 @@ klist_sounlock(void *arg, int ls)
 
 	sounlock(so);
 }
-
-const struct klistops socket_klistops = {
-	.klo_assertlk	= klist_soassertlk,
-	.klo_lock	= klist_solock,
-	.klo_unlock	= klist_sounlock,
-};
 
 #ifdef DDB
 void

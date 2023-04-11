@@ -1,4 +1,4 @@
-/*	$OpenBSD: policy.c,v 1.91 2022/09/19 20:54:02 tobhe Exp $	*/
+/*	$OpenBSD: policy.c,v 1.93 2023/02/08 19:59:10 tb Exp $	*/
 
 /*
  * Copyright (c) 2020-2021 Tobias Heider <tobhe@openbsd.org>
@@ -222,11 +222,9 @@ struct iked_policy *
 policy_test(struct iked *env, struct iked_policy *key)
 {
 	struct iked_policy	*p = NULL, *pol = NULL;
-	unsigned int		 cnt = 0;
 
 	p = TAILQ_FIRST(&env->sc_policies);
 	while (p != NULL) {
-		cnt++;
 		if (p->pol_flags & IKED_POLICY_SKIP)
 			p = p->pol_skip[IKED_SKIP_FLAGS];
 		else if (key->pol_af && p->pol_af &&
@@ -355,8 +353,8 @@ policy_calc_skip_steps(struct iked_policies *policies)
 void
 policy_ref(struct iked *env, struct iked_policy *pol)
 {
-	pol->pol_refcnt++;
-	pol->pol_flags |= IKED_POLICY_REFCNT;
+	if (pol->pol_flags & IKED_POLICY_REFCNT)
+		pol->pol_refcnt++;
 }
 
 void
@@ -521,12 +519,7 @@ sa_new(struct iked *env, uint64_t ispi, uint64_t rspi,
 	if (pol == NULL && sa->sa_policy == NULL)
 		fatalx("%s: sa %p no policy", __func__, sa);
 	else if (sa->sa_policy == NULL) {
-		/* Increment refcount if the policy has refcounting enabled. */
-		if (pol->pol_flags & IKED_POLICY_REFCNT) {
-			log_info("%s: sa %p old pol %p pol_refcnt %d",
-			    __func__, sa, pol, pol->pol_refcnt);
-			policy_ref(env, pol);
-		}
+		policy_ref(env, pol);
 		sa->sa_policy = pol;
 		TAILQ_INSERT_TAIL(&pol->pol_sapeers, sa, sa_peer_entry);
 	} else

@@ -1,4 +1,4 @@
-/*	$OpenBSD: cert.c,v 1.89 2022/09/03 21:24:02 job Exp $ */
+/*	$OpenBSD: cert.c,v 1.106 2023/03/10 12:44:56 job Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2021 Job Snijders <job@openbsd.org>
@@ -17,13 +17,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/socket.h>
-
-#include <arpa/inet.h>
 #include <assert.h>
 #include <err.h>
-#include <inttypes.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -433,6 +428,7 @@ sbgp_sia(struct parse *p, X509_EXTENSION *ext)
 	AUTHORITY_INFO_ACCESS	*sia = NULL;
 	ACCESS_DESCRIPTION	*ad;
 	ASN1_OBJECT		*oid;
+	const char		*mftfilename;
 	int			 i, rc = 0;
 
 	if (X509_EXTENSION_get_critical(ext)) {
@@ -470,6 +466,18 @@ sbgp_sia(struct parse *p, X509_EXTENSION *ext)
 	if (p->res->mft == NULL || p->res->repo == NULL) {
 		warnx("%s: RFC 6487 section 4.8.8: SIA: missing caRepository "
 		    "or rpkiManifest", p->fn);
+		goto out;
+	}
+
+	mftfilename = strrchr(p->res->mft, '/');
+	if (mftfilename == NULL) {
+		warnx("%s: SIA: invalid rpkiManifest entry", p->fn);
+		goto out;
+	}
+	mftfilename++;
+	if (!valid_filename(mftfilename, strlen(mftfilename))) {
+		warnx("%s: SIA: rpkiManifest filename contains invalid "
+		    "characters", p->fn);
 		goto out;
 	}
 
@@ -560,7 +568,7 @@ certificate_policies(struct parse *p, X509_EXTENSION *ext)
 		goto out;
 	}
 
-	if (verbose > 1)
+	if (verbose > 1 && !filemode)
 		warnx("%s: CPS %.*s", p->fn, qualifier->d.cpsuri->length,
 		    qualifier->d.cpsuri->data);
 
@@ -587,6 +595,18 @@ cert_parse_ee_cert(const char *fn, X509 *x)
 	p.fn = fn;
 	if ((p.res = calloc(1, sizeof(struct cert))) == NULL)
 		err(1, NULL);
+
+	if (X509_get_key_usage(x) != KU_DIGITAL_SIGNATURE) {
+		warnx("%s: RFC 6487 section 4.8.4: KU must be digitalSignature",
+		    fn);
+		goto out;
+	}
+
+	/* EKU may be allowed for some purposes in the future. */
+	if (X509_get_extended_key_usage(x) != UINT32_MAX) {
+		warnx("%s: RFC 6487 section 4.8.5: EKU not allowed", fn);
+		goto out;
+	}
 
 	index = X509_get_ext_by_NID(x, NID_sbgp_ipAddrBlock, -1);
 	if ((ext = X509_get_ext(x, index)) != NULL) {
@@ -621,13 +641,18 @@ cert_parse_ee_cert(const char *fn, X509 *x)
 struct cert *
 cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 {
-	int		 extsz;
-	int		 sia_present = 0;
-	size_t		 i;
-	X509		*x = NULL;
-	X509_EXTENSION	*ext = NULL;
-	ASN1_OBJECT	*obj;
-	struct parse	 p;
+	const unsigned char	*oder;
+	int			 extsz;
+	int			 sia_present = 0;
+	size_t			 i;
+	X509			*x = NULL;
+	X509_EXTENSION		*ext = NULL;
+	const X509_ALGOR	*palg;
+	const ASN1_OBJECT	*cobj;
+	ASN1_OBJECT		*obj;
+	EVP_PKEY		*pkey;
+	struct parse		 p;
+	int			 nid;
 
 	/* just fail for empty buffers, the warning was printed elsewhere */
 	if (der == NULL)
@@ -638,14 +663,32 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 	if ((p.res = calloc(1, sizeof(struct cert))) == NULL)
 		err(1, NULL);
 
+	oder = der;
 	if ((x = d2i_X509(NULL, &der, len)) == NULL) {
 		cryptowarnx("%s: d2i_X509", p.fn);
+		goto out;
+	}
+	if (der != oder + len) {
+		warnx("%s: %td bytes trailing garbage", fn, oder + len - der);
 		goto out;
 	}
 
 	/* Cache X509v3 extensions, see X509_check_ca(3). */
 	if (X509_check_purpose(x, -1, -1) <= 0) {
 		cryptowarnx("%s: could not cache X509v3 extensions", p.fn);
+		goto out;
+	}
+
+	X509_get0_signature(NULL, &palg, x);
+	if (palg == NULL) {
+		cryptowarnx("%s: X509_get0_signature", p.fn);
+		goto out;
+	}
+	X509_ALGOR_get0(&cobj, NULL, NULL, palg);
+	if ((nid = OBJ_obj2nid(cobj)) != NID_sha256WithRSAEncryption) {
+		warnx("%s: RFC 7935: wrong signature algorithm %s, want %s",
+		    fn, OBJ_nid2ln(nid),
+		    OBJ_nid2ln(NID_sha256WithRSAEncryption));
 		goto out;
 	}
 
@@ -689,13 +732,18 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 			break;
 		case NID_ext_key_usage:
 			break;
+		case NID_basic_constraints:
+			break;
+		case NID_key_usage:
+			break;
 		default:
-			/* {
+			/* unexpected extensions warrant investigation */
+			{
 				char objn[64];
 				OBJ_obj2txt(objn, sizeof(objn), obj, 0);
 				warnx("%s: ignoring %s (NID %d)",
-					p.fn, objn, OBJ_obj2nid(obj));
-			} */
+				    p.fn, objn, OBJ_obj2nid(obj));
+			}
 			break;
 		}
 	}
@@ -708,7 +756,9 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	if (!x509_get_crl(x, p.fn, &p.res->crl))
 		goto out;
-	if (!x509_get_expire(x, p.fn, &p.res->expires))
+	if (!x509_get_notbefore(x, p.fn, &p.res->notbefore))
+		goto out;
+	if (!x509_get_notafter(x, p.fn, &p.res->notafter))
 		goto out;
 	p.res->purpose = x509_get_purpose(x, p.fn);
 
@@ -716,6 +766,26 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 
 	switch (p.res->purpose) {
 	case CERT_PURPOSE_CA:
+		if ((pkey = X509_get0_pubkey(x)) == NULL) {
+			warnx("%s: X509_get0_pubkey failed", p.fn);
+			goto out;
+		}
+		if (!valid_ca_pkey(p.fn, pkey))
+			goto out;
+
+		if (X509_get_key_usage(x) != (KU_KEY_CERT_SIGN | KU_CRL_SIGN)) {
+			warnx("%s: RFC 6487 section 4.8.4: key usage violation",
+			    p.fn);
+			goto out;
+		}
+
+		/* EKU may be allowed for some purposes in the future. */
+		if (X509_get_extended_key_usage(x) != UINT32_MAX) {
+			warnx("%s: RFC 6487 section 4.8.5: EKU not allowed",
+			    fn);
+			goto out;
+		}
+
 		if (p.res->mft == NULL) {
 			warnx("%s: RFC 6487 section 4.8.8: missing SIA", p.fn);
 			goto out;
@@ -738,8 +808,8 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 		}
 		for (i = 0; i < p.res->asz; i++) {
 			if (p.res->as[i].type == CERT_AS_INHERIT) {
-				warnx("%s: inherited AS numbers in BGPsec cert",
-				    p.fn);
+				warnx("%s: inherit elements not allowed in EE"
+				    " cert", p.fn);
 				goto out;
 			}
 		}
@@ -906,7 +976,7 @@ cert_free(struct cert *p)
 void
 cert_buffer(struct ibuf *b, const struct cert *p)
 {
-	io_simple_buffer(b, &p->expires, sizeof(p->expires));
+	io_simple_buffer(b, &p->notafter, sizeof(p->notafter));
 	io_simple_buffer(b, &p->purpose, sizeof(p->purpose));
 	io_simple_buffer(b, &p->talid, sizeof(p->talid));
 	io_simple_buffer(b, &p->repoid, sizeof(p->repoid));
@@ -939,7 +1009,7 @@ cert_read(struct ibuf *b)
 	if ((p = calloc(1, sizeof(struct cert))) == NULL)
 		err(1, NULL);
 
-	io_read_buf(b, &p->expires, sizeof(p->expires));
+	io_read_buf(b, &p->notafter, sizeof(p->notafter));
 	io_read_buf(b, &p->purpose, sizeof(p->purpose));
 	io_read_buf(b, &p->talid, sizeof(p->talid));
 	io_read_buf(b, &p->repoid, sizeof(p->repoid));
@@ -1030,7 +1100,7 @@ insert_brk(struct brk_tree *tree, struct cert *cert, int asid)
 		err(1, NULL);
 
 	b->asid = asid;
-	b->expires = cert->expires;
+	b->expires = cert->notafter;
 	b->talid = cert->talid;
 	if ((b->ski = strdup(cert->ski)) == NULL)
 		err(1, NULL);

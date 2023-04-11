@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmd.h,v 1.110 2022/09/13 10:28:19 martijn Exp $	*/
+/*	$OpenBSD: vmd.h,v 1.114 2023/01/28 14:40:53 dv Exp $	*/
 
 /*
  * Copyright (c) 2015 Mike Larkin <mlarkin@openbsd.org>
@@ -54,6 +54,17 @@
 #define VM_NAME_MAX		64
 #define VM_MAX_BASE_PER_DISK	4
 #define VM_TTYNAME_MAX		16
+#define VM_MAX_DISKS_PER_VM	4
+#define VM_MAX_PATH_DISK	128
+#define VM_MAX_PATH_CDROM	128
+#define VM_MAX_KERNEL_PATH	128
+#define VM_MAX_NICS_PER_VM	4
+
+#define VM_PCI_MMIO_BAR_SIZE	0x00010000
+#define VM_PCI_IO_BAR_BASE	0x1000
+#define VM_PCI_IO_BAR_END	0xFFFF
+#define VM_PCI_IO_BAR_SIZE	0x1000
+
 #define MAX_TAP			256
 #define NR_BACKLOG		5
 #define VMD_SWITCH_TYPE		"bridge"
@@ -64,11 +75,6 @@
 /* Rate-limit fast reboots */
 #define VM_START_RATE_SEC	6	/* min. seconds since last reboot */
 #define VM_START_RATE_LIMIT	3	/* max. number of fast reboots */
-
-/* default user instance limits */
-#define VM_DEFAULT_USER_MAXCPU	4
-#define VM_DEFAULT_USER_MAXMEM	2048
-#define VM_DEFAULT_USER_MAXIFS	8
 
 /* vmd -> vmctl error codes */
 #define VMD_BIOS_MISSING	1001
@@ -113,6 +119,7 @@ enum imsg_type {
 	IMSG_VMDOP_GET_INFO_VM_DATA,
 	IMSG_VMDOP_GET_INFO_VM_END_DATA,
 	IMSG_VMDOP_LOAD,
+	IMSG_VMDOP_RECEIVE_VMM_FD,
 	IMSG_VMDOP_RELOAD,
 	IMSG_VMDOP_PRIV_IFDESCR,
 	IMSG_VMDOP_PRIV_IFADD,
@@ -199,22 +206,22 @@ struct vmop_create_params {
 #define VMBOOTDEV_DISK		1
 #define VMBOOTDEV_CDROM		2
 #define VMBOOTDEV_NET		3
-	unsigned int		 vmc_ifflags[VMM_MAX_NICS_PER_VM];
+	unsigned int		 vmc_ifflags[VM_MAX_NICS_PER_VM];
 #define VMIFF_UP		0x01
 #define VMIFF_LOCKED		0x02
 #define VMIFF_LOCAL		0x04
 #define VMIFF_RDOMAIN		0x08
 #define VMIFF_OPTMASK		(VMIFF_LOCKED|VMIFF_LOCAL|VMIFF_RDOMAIN)
 
-	unsigned int		 vmc_disktypes[VMM_MAX_DISKS_PER_VM];
-	unsigned int		 vmc_diskbases[VMM_MAX_DISKS_PER_VM];
+	unsigned int		 vmc_disktypes[VM_MAX_DISKS_PER_VM];
+	unsigned int		 vmc_diskbases[VM_MAX_DISKS_PER_VM];
 #define VMDF_RAW		0x01
 #define VMDF_QCOW2		0x02
 
-	char			 vmc_ifnames[VMM_MAX_NICS_PER_VM][IF_NAMESIZE];
-	char			 vmc_ifswitch[VMM_MAX_NICS_PER_VM][VM_NAME_MAX];
-	char			 vmc_ifgroup[VMM_MAX_NICS_PER_VM][IF_NAMESIZE];
-	unsigned int		 vmc_ifrdomain[VMM_MAX_NICS_PER_VM];
+	char			 vmc_ifnames[VM_MAX_NICS_PER_VM][IF_NAMESIZE];
+	char			 vmc_ifswitch[VM_MAX_NICS_PER_VM][VM_NAME_MAX];
+	char			 vmc_ifgroup[VM_MAX_NICS_PER_VM][IF_NAMESIZE];
+	unsigned int		 vmc_ifrdomain[VM_MAX_NICS_PER_VM];
 	struct vmop_owner	 vmc_owner;
 
 	/* instance template params */
@@ -277,8 +284,8 @@ struct vmd_vm {
 	uint32_t		 vm_vmid;
 	int			 vm_kernel;
 	int			 vm_cdrom;
-	int			 vm_disks[VMM_MAX_DISKS_PER_VM][VM_MAX_BASE_PER_DISK];
-	struct vmd_if		 vm_ifs[VMM_MAX_NICS_PER_VM];
+	int			 vm_disks[VM_MAX_DISKS_PER_VM][VM_MAX_BASE_PER_DISK];
+	struct vmd_if		 vm_ifs[VM_MAX_NICS_PER_VM];
 	char			*vm_ttyname;
 	int			 vm_tty;
 	uint32_t		 vm_peerid;
@@ -287,7 +294,6 @@ struct vmd_vm {
 	struct imsgev		 vm_iev;
 	uid_t			 vm_uid;
 	int			 vm_receive_fd;
-	struct vmd_user		*vm_user;
 	unsigned int		 vm_state;
 /* When set, VM is running now (PROC_PARENT only) */
 #define VM_STATE_RUNNING	0x01
@@ -306,17 +312,6 @@ struct vmd_vm {
 	TAILQ_ENTRY(vmd_vm)	 vm_entry;
 };
 TAILQ_HEAD(vmlist, vmd_vm);
-
-struct vmd_user {
-	struct vmop_owner	 usr_id;
-	uint64_t		 usr_maxcpu;
-	uint64_t		 usr_maxmem;
-	uint64_t		 usr_maxifs;
-	int			 usr_refcnt;
-
-	TAILQ_ENTRY(vmd_user)	 usr_entry;
-};
-TAILQ_HEAD(userlist, vmd_user);
 
 struct name2id {
 	char			name[VMM_MAX_NAME_LEN];
@@ -373,7 +368,6 @@ struct vmd {
 	struct name2idlist	*vmd_known;
 	uint32_t		 vmd_nswitches;
 	struct switchlist	*vmd_switches;
-	struct userlist		*vmd_users;
 
 	int			 vmd_fd;
 	int			 vmd_fd6;
@@ -445,10 +439,6 @@ int	 vm_opentty(struct vmd_vm *);
 void	 vm_closetty(struct vmd_vm *);
 void	 switch_remove(struct vmd_switch *);
 struct vmd_switch *switch_getbyname(const char *);
-struct vmd_user *user_get(uid_t);
-void	 user_put(struct vmd_user *);
-void	 user_inc(struct vm_create_params *, struct vmd_user *, int);
-int	 user_checklimit(struct vmd_user *, struct vm_create_params *);
 char	*get_string(uint8_t *, size_t);
 uint32_t prefixlen2mask(uint8_t);
 void	 prefixlen2mask6(u_int8_t, struct in6_addr *);
@@ -482,6 +472,7 @@ void	 vm_pipe_init(struct vm_dev_pipe *, void (*)(int, short, void *));
 void	 vm_pipe_send(struct vm_dev_pipe *, enum pipe_msg_type);
 enum pipe_msg_type vm_pipe_recv(struct vm_dev_pipe *);
 int	 write_mem(paddr_t, const void *buf, size_t);
+void*	 hvaddr_mem(paddr_t, size_t);
 
 /* config.c */
 int	 config_init(struct vmd *);

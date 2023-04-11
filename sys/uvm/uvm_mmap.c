@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_mmap.c,v 1.172 2022/08/01 14:56:59 deraadt Exp $	*/
+/*	$OpenBSD: uvm_mmap.c,v 1.180 2023/03/08 04:43:09 guenther Exp $	*/
 /*	$NetBSD: uvm_mmap.c,v 1.49 2001/02/18 21:19:08 chs Exp $	*/
 
 /*
@@ -20,12 +20,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *      This product includes software developed by the Charles D. Cranor,
- *	Washington University, University of California, Berkeley and
- *	its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -73,6 +68,7 @@
 
 #include <machine/exec.h>	/* for __LDPGSZ */
 
+#include <sys/syscall.h>
 #include <sys/syscallargs.h>
 
 #include <uvm/uvm.h>
@@ -439,38 +435,6 @@ out:
 	return error;
 }
 
-#if 1
-int
-sys_pad_mquery(struct proc *p, void *v, register_t *retval)
-{
-	struct sys_pad_mquery_args *uap = v;
-	struct sys_mquery_args unpad;
-
-	SCARG(&unpad, addr) = SCARG(uap, addr);
-	SCARG(&unpad, len) = SCARG(uap, len);
-	SCARG(&unpad, prot) = SCARG(uap, prot);
-	SCARG(&unpad, flags) = SCARG(uap, flags);
-	SCARG(&unpad, fd) = SCARG(uap, fd);
-	SCARG(&unpad, pos) = SCARG(uap, pos);
-	return sys_mquery(p, &unpad, retval);
-}
-
-int
-sys_pad_mmap(struct proc *p, void *v, register_t *retval)
-{
-	struct sys_pad_mmap_args *uap = v;
-	struct sys_mmap_args unpad;
-
-	SCARG(&unpad, addr) = SCARG(uap, addr);
-	SCARG(&unpad, len) = SCARG(uap, len);
-	SCARG(&unpad, prot) = SCARG(uap, prot);
-	SCARG(&unpad, flags) = SCARG(uap, flags);
-	SCARG(&unpad, fd) = SCARG(uap, fd);
-	SCARG(&unpad, pos) = SCARG(uap, pos);
-	return sys_mmap(p, &unpad, retval);
-}
-#endif
-
 /*
  * sys_msync: the msync system call (a front-end for flush)
  */
@@ -569,7 +533,11 @@ sys_munmap(struct proc *p, void *v, register_t *retval)
 	}
 
 	TAILQ_INIT(&dead_entries);
-	uvm_unmap_remove(map, addr, addr + size, &dead_entries, FALSE, TRUE);
+	if (uvm_unmap_remove(map, addr, addr + size, &dead_entries,
+	    FALSE, TRUE, TRUE) != 0) {
+		vm_map_unlock(map);
+		return EPERM;	/* immutable entries found */
+	}
 	vm_map_unlock(map);	/* and unlock */
 
 	uvm_unmap_detach(&dead_entries, 0);
@@ -619,7 +587,7 @@ sys_mprotect(struct proc *p, void *v, register_t *retval)
 		return EINVAL;		/* disallow wrap-around. */
 
 	return (uvm_map_protect(&p->p_vmspace->vm_map, addr, addr+size,
-	    prot, FALSE));
+	    prot, 0, FALSE, TRUE));
 }
 
 /*
@@ -646,6 +614,64 @@ sys_msyscall(struct proc *p, void *v, register_t *retval)
 		return EINVAL;		/* disallow wrap-around. */
 
 	return uvm_map_syscall(&p->p_vmspace->vm_map, addr, addr+size);
+}
+
+/*
+ * sys_pinsyscall
+ */
+int
+sys_pinsyscall(struct proc *p, void *v, register_t *retval)
+{
+	struct sys_pinsyscall_args /* {
+		syscallarg(int) syscall;
+		syscallarg(void *) addr;
+		syscallarg(size_t) len;
+	} */ *uap = v;
+	struct vmspace *vm = p->p_vmspace;
+	vm_map_t map = &p->p_vmspace->vm_map;
+	vaddr_t start, end;
+
+	if (SCARG(uap, syscall) != SYS_execve)
+		return (EINVAL);
+	start = (vaddr_t)SCARG(uap, addr);
+	end = start + (vsize_t)SCARG(uap, len);
+	if (start >= end || start < map->min_offset || end > map->max_offset)
+		return (EFAULT);
+	vm_map_lock(map);
+	if (vm->vm_execve) {
+		vm_map_unlock(map);
+		return (EPERM);
+	}
+	vm->vm_execve = start;
+	vm->vm_execve_end = end;
+	vm_map_unlock(map);
+	return (0);
+}
+
+/*
+ * sys_mimmutable: the mimmutable system call
+ */
+int
+sys_mimmutable(struct proc *p, void *v, register_t *retval)
+{
+	struct sys_mimmutable_args /* {
+		immutablearg(void *) addr;
+		immutablearg(size_t) len;
+	} */ *uap = v;
+	vaddr_t addr;
+	vsize_t size, pageoff;
+
+	addr = (vaddr_t)SCARG(uap, addr);
+	size = (vsize_t)SCARG(uap, len);
+
+	/*
+	 * align the address to a page boundary, and adjust the size accordingly
+	 */
+	ALIGN_ADDR(addr, size, pageoff);
+	if (addr > SIZE_MAX - size)
+		return EINVAL;		/* disallow wrap-around. */
+
+	return uvm_map_immutable(&p->p_vmspace->vm_map, addr, addr+size, 1);
 }
 
 /*
@@ -681,7 +707,6 @@ sys_minherit(struct proc *p, void *v, register_t *retval)
 /*
  * sys_madvise: give advice about memory usage.
  */
-/* ARGSUSED */
 int
 sys_madvise(struct proc *p, void *v, register_t *retval)
 {
@@ -1105,8 +1130,6 @@ uvm_mmapfile(vm_map_t map, vaddr_t *addr, vsize_t size, vm_prot_t prot,
 	return error;
 }
 
-/* an address that can't be in userspace or kernelspace */
-#define	BOGO_PC	(u_long)-1
 int
 sys_kbind(struct proc *p, void *v, register_t *retval)
 {
@@ -1146,9 +1169,12 @@ sys_kbind(struct proc *p, void *v, register_t *retval)
 	pc = PROC_PC(p);
 	mtx_enter(&pr->ps_mtx);
 	if (paramp == NULL) {
+		/* ld.so disables kbind() when lazy binding is disabled */
 		if (pr->ps_kbind_addr == 0)
 			pr->ps_kbind_addr = BOGO_PC;
-		else
+		/* pre-7.3 static binaries disable kbind */
+		/* XXX delete check in 2026 */
+		else if (pr->ps_kbind_addr != BOGO_PC)
 			sigill = 1;
 	} else if (pr->ps_kbind_addr == 0) {
 		pr->ps_kbind_addr = pc;
@@ -1228,7 +1254,8 @@ redo:
 			if (kva != 0) {
 				vm_map_lock(kernel_map);
 				uvm_unmap_remove(kernel_map, kva,
-				    kva+PAGE_SIZE, &dead_entries, FALSE, TRUE);
+				    kva+PAGE_SIZE, &dead_entries,
+				    FALSE, TRUE, FALSE);	/* XXX */
 				vm_map_unlock(kernel_map);
 				kva = 0;
 			}
@@ -1255,7 +1282,7 @@ redo:
 	if (kva != 0) {
 		vm_map_lock(kernel_map);
 		uvm_unmap_remove(kernel_map, kva, kva+PAGE_SIZE,
-		    &dead_entries, FALSE, TRUE);
+		    &dead_entries, FALSE, TRUE, FALSE);		/* XXX */
 		vm_map_unlock(kernel_map);
 	}
 	uvm_unmap_detach(&dead_entries, AMAP_REFALL);

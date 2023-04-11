@@ -1,4 +1,4 @@
-.\" $OpenBSD: bgpctl.8,v 1.101 2022/09/01 22:24:40 job Exp $
+.\" $OpenBSD: bgpctl.8,v 1.106 2023/03/13 16:59:22 claudio Exp $
 .\"
 .\" Copyright (c) 2003 Henning Brauer <henning@openbsd.org>
 .\"
@@ -14,12 +14,12 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: September 1 2022 $
+.Dd $Mdocdate: March 13 2023 $
 .Dt BGPCTL 8
 .Os
 .Sh NAME
 .Nm bgpctl
-.Nd control the Border Gateway Protocol daemon
+.Nd control the BGP routing daemon
 .Sh SYNOPSIS
 .Nm bgpctl
 .Op Fl jnV
@@ -127,21 +127,19 @@ Bring the BGP session to the specified neighbor up.
 may be the neighbor's address, description or the word
 .Cm group
 followed by a group description.
-.It Cm network add Ar prefix Op Ar arguments
+.It Cm network add Ar prefix Op Ar argument ...
 Add the specified prefix to the list of announced networks.
-It is possible to set various path attributes with additional
-.Ar arguments .
+It is possible to set various path attributes with additional arguments.
 Adding a prefix will replace an existing equal prefix, including
 prefixes loaded from the configuration.
 .It Xo
 .Cm network bulk
-.Op Ar arguments
+.Op Ar argument ...
 .Op Cm add
 .Xc
 Bulk add specified prefixes to the list of announced networks.
 Prefixes should be sent via stdin.
-It is possible to set various path attributes with additional
-.Ar arguments .
+It is possible to set various path attributes with additional arguments.
 If neither
 .Cm add
 or
@@ -211,6 +209,8 @@ instead of the default routing table with ID 0.
 .El
 .It Cm show interfaces
 Show the interface states.
+.It Cm show metrics
+Dump various BGP statistics in OpenMetrics format.
 .It Xo
 .Cm show mrt
 .Op Ar options
@@ -375,6 +375,8 @@ Show all entries with
 anywhere but rightmost.
 .It Cm ovs Pq Ic valid | not-found | invalid
 Show all entries with matching Origin Validation State (OVS).
+.It Cm avs Pq Ic valid | unknown | invalid
+Show all entries with matching ASAP Validation State (AVS).
 .El
 .Pp
 Additionally, the following
@@ -385,17 +387,10 @@ are defined:
 .It Cm best
 Alias for
 .Ic selected .
-.It Cm error
-Show only prefixes which are marked invalid and were treated as withdrawn.
-.It Cm selected
-Show only selected routes.
-.It Cm ssv
-Show each RIB entry as a single line, with fields separated by semicolons.
-Only works if
-.Cm detail
-is specified.
 .It Cm detail
 Show more detailed output for matching routes.
+.It Cm error
+Show only prefixes which are marked invalid and were treated as withdrawn.
 .It Ar family
 Limit the output to the given address family.
 .It Cm in
@@ -403,11 +398,22 @@ Show routes from the unfiltered Adj-RIB-In.
 The
 .Cm neighbor
 needs to be specified.
+.It Cm invalid
+Show only routes which are not eligible.
+.It Cm leaked
+Show only routes where a route leak was detected.
 .It Cm out
 Show the filtered routes sent to a neighbor.
 The
 .Cm neighbor
 needs to be specified.
+.It Cm selected
+Show only selected routes.
+.It Cm ssv
+Show each RIB entry as a single line, with fields separated by semicolons.
+Only works if
+.Cm detail
+is specified.
 .El
 .Pp
 Options are silently ignored when used together with

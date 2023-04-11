@@ -1,4 +1,4 @@
-/*	$OpenBSD: unpcb.h,v 1.41 2022/09/13 09:05:47 mvs Exp $	*/
+/*	$OpenBSD: unpcb.h,v 1.45 2022/11/26 17:51:18 mvs Exp $	*/
 /*	$NetBSD: unpcb.h,v 1.6 1994/06/29 06:46:08 cgd Exp $	*/
 
 /*
@@ -111,8 +111,9 @@ struct fdpass {
 };
 
 extern const struct pr_usrreqs uipc_usrreqs;
+extern const struct pr_usrreqs uipc_dgram_usrreqs;
 
-int	uipc_attach(struct socket *, int);
+int	uipc_attach(struct socket *, int, int);
 int	uipc_detach(struct socket *);
 int	uipc_bind(struct socket *, struct mbuf *, struct proc *);
 int	uipc_listen(struct socket *);
@@ -120,23 +121,24 @@ int	uipc_connect(struct socket *, struct mbuf *);
 int	uipc_accept(struct socket *, struct mbuf *);
 int	uipc_disconnect(struct socket *);
 int	uipc_shutdown(struct socket *);
+int	uipc_dgram_shutdown(struct socket *);
 void	uipc_rcvd(struct socket *);
 int	uipc_send(struct socket *, struct mbuf *, struct mbuf *,
 	    struct mbuf *);
-int	uipc_abort(struct socket *);
+int	uipc_dgram_send(struct socket *, struct mbuf *, struct mbuf *,
+	    struct mbuf *);
+void	uipc_abort(struct socket *);
 int	uipc_sense(struct socket *, struct stat *);
 int	uipc_sockaddr(struct socket *, struct mbuf *);
 int	uipc_peeraddr(struct socket *, struct mbuf *);
 int	uipc_connect2(struct socket *, struct socket *);
 
 void	unp_init(void);
-int	unp_bind(struct unpcb *, struct mbuf *, struct proc *);
 int	unp_connect(struct socket *, struct mbuf *, struct proc *);
 int	unp_connect2(struct socket *, struct socket *);
 void	unp_detach(struct unpcb *);
 void	unp_disconnect(struct unpcb *);
 void	unp_gc(void *);
-void	unp_shutdown(struct unpcb *);
 int 	unp_externalize(struct mbuf *, socklen_t, int);
 int	unp_internalize(struct mbuf *, struct proc *);
 void 	unp_dispose(struct mbuf *);

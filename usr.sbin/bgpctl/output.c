@@ -1,4 +1,4 @@
-/*	$OpenBSD: output.c,v 1.29 2022/08/31 15:00:53 claudio Exp $ */
+/*	$OpenBSD: output.c,v 1.37 2023/03/09 13:13:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2003 Henning Brauer <henning@openbsd.org>
@@ -71,9 +71,11 @@ show_head(struct parse_result *res)
 		    "       S = Stale, E = Error\n");
 		printf("origin validation state: "
 		    "N = not-found, V = valid, ! = invalid\n");
+		printf("aspa validation state: "
+		    "? = unknown, V = valid, ! = invalid\n");
 		printf("origin: i = IGP, e = EGP, ? = Incomplete\n\n");
 		printf("%-5s %3s %-20s %-15s  %5s %5s %s\n",
-		    "flags", "ovs", "destination", "gateway", "lpref", "med",
+		    "flags", "vs", "destination", "gateway", "lpref", "med",
 		    "aspath origin");
 		break;
 	case SHOW_SET:
@@ -279,6 +281,8 @@ show_neighbor_full(struct peer *p, struct parse_result *res)
 	printf("\n");
 	if (p->conf.descr[0])
 		printf(" Description: %s\n", p->conf.descr);
+	if (p->conf.ebgp && p->conf.role != ROLE_NONE)
+		printf(" Role: %s\n", log_policy(p->conf.role));
 	if (p->conf.max_prefix) {
 		printf(" Max-prefix: %u", p->conf.max_prefix);
 		if (p->conf.max_prefix_restart)
@@ -328,7 +332,7 @@ show_neighbor_full(struct peer *p, struct parse_result *res)
 	}
 	if (hascapamp || hascapaap || p->capa.peer.grestart.restart ||
 	    p->capa.peer.refresh || p->capa.peer.enhanced_rr ||
-	    p->capa.peer.as4byte || p->capa.peer.role_ena) {
+	    p->capa.peer.as4byte || p->capa.peer.policy) {
 		printf("  Neighbor capabilities:\n");
 		if (hascapamp)
 			show_neighbor_capa_mp(&p->capa.peer);
@@ -342,10 +346,10 @@ show_neighbor_full(struct peer *p, struct parse_result *res)
 			show_neighbor_capa_restart(&p->capa.peer);
 		if (hascapaap)
 			show_neighbor_capa_add_path(&p->capa.peer);
-		if (p->capa.peer.role_ena)
+		if (p->capa.peer.policy)
 			printf("    Open Policy role %s (local %s)\n",
-			    log_policy(p->capa.peer.role),
-			    log_policy(p->capa.ann.role));
+			    log_policy(p->remote_role),
+			    log_policy(p->conf.role));
 	}
 
 	hascapamp = 0;
@@ -358,7 +362,7 @@ show_neighbor_full(struct peer *p, struct parse_result *res)
 	}
 	if (hascapamp || hascapaap || p->capa.neg.grestart.restart ||
 	    p->capa.neg.refresh || p->capa.neg.enhanced_rr ||
-	    p->capa.neg.as4byte || p->capa.neg.role_ena) {
+	    p->capa.neg.as4byte || p->capa.neg.policy) {
 		printf("  Negotiated capabilities:\n");
 		if (hascapamp)
 			show_neighbor_capa_mp(&p->capa.neg);
@@ -372,10 +376,10 @@ show_neighbor_full(struct peer *p, struct parse_result *res)
 			show_neighbor_capa_restart(&p->capa.neg);
 		if (hascapaap)
 			show_neighbor_capa_add_path(&p->capa.neg);
-		if (p->capa.neg.role_ena)
+		if (p->capa.neg.policy)
 			printf("    Open Policy role %s (local %s)\n",
-			    log_policy(p->capa.neg.role),
-			    log_policy(p->capa.ann.role));
+			    log_policy(p->remote_role),
+			    log_policy(p->conf.role));
 	}
 	printf("\n");
 
@@ -477,6 +481,8 @@ show_fib(struct kroute_full *kf)
 		printf("link#%u", kf->ifindex);
 	else
 		printf("%s", log_addr(&kf->nexthop));
+	if (kf->flags & F_MPLS)
+		printf(" mpls %d", ntohl(kf->mplslabel) >> MPLS_LABEL_OFFSET);
 	printf("\n");
 }
 
@@ -669,7 +675,7 @@ show_attr(u_char *data, size_t len, int reqflags, int addpath)
 	int		 i, pos, e2, e4;
 
 	if (len < 3) {
-		warnx("Too short BGP attrbute");
+		warnx("Too short BGP attribute");
 		return;
 	}
 
@@ -679,7 +685,7 @@ show_attr(u_char *data, size_t len, int reqflags, int addpath)
 	/* get the attribute length */
 	if (flags & ATTR_EXTLEN) {
 		if (len < 4) {
-			warnx("Too short BGP attrbute");
+			warnx("Too short BGP attribute");
 			return;
 		}
 		memcpy(&alen, data+2, sizeof(uint16_t));
@@ -694,7 +700,7 @@ show_attr(u_char *data, size_t len, int reqflags, int addpath)
 
 	/* bad imsg len how can that happen!? */
 	if (alen > len) {
-		warnx("Bad BGP attrbute length");
+		warnx("Bad BGP attribute length");
 		return;
 	}
 
@@ -916,8 +922,9 @@ show_rib_brief(struct ctl_show_rib *r, u_char *asdata, size_t aslen)
 
 	if (asprintf(&p, "%s/%u", log_addr(&r->prefix), r->prefixlen) == -1)
 		err(1, NULL);
-	printf("%s %3s %-20s %-15s %5u %5u ",
-	    fmt_flags(r->flags, 1), fmt_ovs(r->validation_state, 1), p,
+	printf("%s %s-%s %-20s %-15s %5u %5u ",
+	    fmt_flags(r->flags, 1), fmt_ovs(r->roa_validation_state, 1),
+	    fmt_avs(r->aspa_validation_state, 1), p,
 	    log_addr(&r->exit_nexthop), r->local_pref, r->med);
 	free(p);
 
@@ -959,8 +966,9 @@ show_rib_detail(struct ctl_show_rib *r, u_char *asdata, size_t aslen,
 
 	printf("    Origin %s, metric %u, localpref %u, weight %u, ovs %s, ",
 	    fmt_origin(r->origin, 0), r->med, r->local_pref, r->weight,
-	    fmt_ovs(r->validation_state, 0));
-	printf("%s", fmt_flags(r->flags, 0));
+	    fmt_ovs(r->roa_validation_state, 0));
+	printf("avs %s, %s", fmt_avs(r->aspa_validation_state, 0),
+	    fmt_flags(r->flags, 0));
 
 	printf("%c    Last update: %s ago%c", EOL0(flag0),
 	    fmt_timeframe(r->age), EOL0(flag0));
@@ -1037,7 +1045,7 @@ show_rib_set(struct ctl_show_set *set)
 {
 	char buf[64];
 
-	if (set->type == ASNUM_SET)
+	if (set->type == ASNUM_SET || set->type == ASPA_SET)
 		snprintf(buf, sizeof(buf), "%7s %7s %6zu",
 		    "-", "-", set->as_cnt);
 	else
@@ -1073,14 +1081,14 @@ show_rtr(struct ctl_show_rtr *rtr)
 		printf(" Last sent error: %s\n",
 		  log_rtr_error(rtr->last_sent_error));
 		if (rtr->last_sent_msg[0])
-			printf(" with reason \"%s\"",
+			printf("   with reason \"%s\"",
 			    log_reason(rtr->last_sent_msg));
 	}
 	if (rtr->last_recv_error != NO_ERROR) {
-		printf("Last received error: %s\n",
+		printf(" Last received error: %s\n",
 		  log_rtr_error(rtr->last_recv_error));
 		if (rtr->last_recv_msg[0])
-			printf(" with reason \"%s\"",
+			printf("   with reason \"%s\"",
 			    log_reason(rtr->last_recv_msg));
 	}
 
@@ -1120,5 +1128,5 @@ const struct output show_output = {
 	.set = show_rib_set,
 	.rtr = show_rtr,
 	.result = show_result,
-	.tail = show_tail
+	.tail = show_tail,
 };

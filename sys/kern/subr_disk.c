@@ -1,4 +1,4 @@
-/*	$OpenBSD: subr_disk.c,v 1.264 2022/09/23 12:32:50 krw Exp $	*/
+/*	$OpenBSD: subr_disk.c,v 1.271 2023/02/10 07:00:12 miod Exp $	*/
 /*	$NetBSD: subr_disk.c,v 1.17 1996/03/16 23:17:08 christos Exp $	*/
 
 /*
@@ -113,7 +113,8 @@ int gpt_get_hdr(struct buf *, void (*)(struct buf *), struct disklabel *,
     uint64_t, struct gpt_header *);
 int gpt_get_parts(struct buf *, void (*)(struct buf *),
     struct disklabel *, const struct gpt_header *, struct gpt_partition **);
-int gpt_get_fstype(struct uuid *);
+int gpt_get_fstype(const struct uuid *);
+int mbr_get_fstype(const uint8_t);
 
 int duid_equal(u_char *, u_char *);
 
@@ -164,12 +165,13 @@ initdisklabel(struct disklabel *lp)
  * a newer version if needed, etc etc.
  */
 int
-checkdisklabel(void *rlp, struct disklabel *lp, u_int64_t boundstart,
+checkdisklabel(dev_t dev, void *rlp, struct disklabel *lp, u_int64_t boundstart,
     u_int64_t boundend)
 {
 	struct disklabel *dlp = rlp;
 	struct __partitionv0 *v0pp;
 	struct partition *pp;
+	const char *blkname;
 	u_int64_t disksize;
 	int error = 0;
 	int i;
@@ -224,9 +226,6 @@ checkdisklabel(void *rlp, struct disklabel *lp, u_int64_t boundstart,
 
 		dlp->d_flags = swap32(dlp->d_flags);
 
-		for (i = 0; i < NDDATA; i++)
-			dlp->d_drivedata[i] = swap32(dlp->d_drivedata[i]);
-
 		dlp->d_secperunith = swap16(dlp->d_secperunith);
 		dlp->d_version = swap16(dlp->d_version);
 
@@ -265,6 +264,12 @@ checkdisklabel(void *rlp, struct disklabel *lp, u_int64_t boundstart,
 		*lp = *dlp;
 
 	if (lp->d_version == 0) {
+		blkname = findblkname(major(dev));
+		if (blkname == NULL)
+			blkname = findblkname(major(chrtoblk(dev)));
+		printf("%s%d has legacy label, please rewrite using "
+		    "disklabel(8)\n", blkname, DISKUNIT(dev));
+
 		lp->d_version = 1;
 		lp->d_secperunith = 0;
 
@@ -409,7 +414,8 @@ readdoslabel(struct buf *bp, void (*strat)(struct buf *), struct disklabel *lp,
 	}
 
 	rlp = (struct disklabel *)(bp->b_data + DL_BLKOFFSET(lp, partoff));
-	error = checkdisklabel(rlp, lp, DL_GETBSTART(rlp), DL_GETBEND(rlp));
+	error = checkdisklabel(bp->b_dev, rlp, lp, DL_GETBSTART(rlp),
+	    DL_GETBEND(rlp));
 
 	DPRINTF("readdoslabel return: %s, %d, checkdisklabel() of daddr_t "
 	    "%lld %s\n", devname, error, partoff, error ? "failed" : "ok");
@@ -537,7 +543,7 @@ gpt_get_parts(struct buf *bp, void (*strat)(struct buf *), struct disklabel *lp,
 }
 
 int
-gpt_get_fstype(struct uuid *uuid_part)
+gpt_get_fstype(const struct uuid *uuid_part)
 {
 	static int init = 0;
 	static struct uuid uuid_openbsd, uuid_msdos, uuid_chromefs,
@@ -698,6 +704,34 @@ spoofgpt(struct buf *bp, void (*strat)(struct buf *), const uint8_t *dosbb,
 	return 0;
 }
 
+int
+mbr_get_fstype(const uint8_t dp_typ)
+{
+	switch (dp_typ) {
+	case DOSPTYP_OPENBSD:
+		return FS_BSDFFS;
+	case DOSPTYP_UNUSED:
+		return FS_UNUSED;
+	case DOSPTYP_LINUX:
+		return FS_EXT2FS;
+	case DOSPTYP_NTFS:
+		return FS_NTFS;
+	case DOSPTYP_EFISYS:
+	case DOSPTYP_FAT12:
+	case DOSPTYP_FAT16S:
+	case DOSPTYP_FAT16B:
+	case DOSPTYP_FAT16L:
+	case DOSPTYP_FAT32:
+	case DOSPTYP_FAT32L:
+		return FS_MSDOS;
+	case DOSPTYP_EFI:
+	case DOSPTYP_EXTEND:
+	case DOSPTYP_EXTENDL:
+	default:
+		return FS_OTHER;
+	}
+}
+
 void
 spoofmbr(struct buf *bp, void (*strat)(struct buf *), const uint8_t *dosbb,
     struct disklabel *lp, daddr_t *partoffp)
@@ -786,30 +820,11 @@ spoofmbr(struct buf *bp, void (*strat)(struct buf *), const uint8_t *dosbb,
 				}
 				wander = 1;
 				continue;
-
-			case DOSPTYP_UNUSED:
-				fstype = FS_UNUSED;
-				break;
-			case DOSPTYP_LINUX:
-				fstype = FS_EXT2FS;
-				break;
-			case DOSPTYP_NTFS:
-				fstype = FS_NTFS;
-				break;
-			case DOSPTYP_EFISYS:
-			case DOSPTYP_FAT12:
-			case DOSPTYP_FAT16S:
-			case DOSPTYP_FAT16B:
-			case DOSPTYP_FAT16L:
-			case DOSPTYP_FAT32:
-			case DOSPTYP_FAT32L:
-				fstype = FS_MSDOS;
-				break;
 			default:
-				fstype = FS_OTHER;
 				break;
 			}
 
+			fstype = mbr_get_fstype(dp[i].dp_typ);
 			if (n < MAXPARTITIONS) {
 				pp = &lp->d_partitions[n++];
 				pp->p_fstype = fstype;
@@ -1791,9 +1806,7 @@ disk_map(char *path, char *mappath, int size, int flags)
 
 	mdk = NULL;
 	TAILQ_FOREACH(dk, &disklist, dk_link) {
-		if (dk->dk_label &&
-		    !duid_iszero(dk->dk_label->d_uid) &&
-		    memcmp(dk->dk_label->d_uid, uid,
+		if (dk->dk_label && memcmp(dk->dk_label->d_uid, uid,
 		    sizeof(dk->dk_label->d_uid)) == 0) {
 			/* Fail if there are duplicate UIDs! */
 			if (mdk != NULL)

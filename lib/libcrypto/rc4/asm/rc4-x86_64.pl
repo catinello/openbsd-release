@@ -50,7 +50,7 @@
 # As was shown by Zou Nanhai loop unrolling can improve Intel EM64T
 # performance by >30% [unlike P4 32-bit case that is]. But this is
 # provided that loads are reordered even more aggressively! Both code
-# pathes, AMD64 and EM64T, reorder loads in essentially same manner
+# paths, AMD64 and EM64T, reorder loads in essentially same manner
 # as my IA-64 implementation. On Opteron this resulted in modest 5%
 # improvement [I had to test it], while final Intel P4 performance
 # achieves respectful 432MBps on 2.8GHz processor now. For reference.
@@ -81,7 +81,7 @@
 # The only code path that was not modified is P4-specific one. Non-P4
 # Intel code path optimization is heavily based on submission by Maxim
 # Perminov, Maxim Locktyukhin and Jim Guilford of Intel. I've used
-# some of the ideas even in attempt to optmize the original RC4_INT
+# some of the ideas even in attempt to optimize the original RC4_INT
 # code path... Current performance in cycles per processed byte (less
 # is better) and improvement coefficients relative to previous
 # version of this module are:
@@ -517,13 +517,14 @@ RC4_options:
 	add	\$12,%rax
 .Ldone:
 	ret
+.section .rodata
 .align	64
 .Lopts:
 .asciz	"rc4(8x,int)"
 .asciz	"rc4(8x,char)"
 .asciz	"rc4(16x,int)"
-.asciz	"RC4 for x86_64, CRYPTOGAMS by <appro\@openssl.org>"
 .align	64
+.text
 .size	RC4_options,.-RC4_options
 ___
 

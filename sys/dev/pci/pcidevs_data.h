@@ -2,7 +2,7 @@
  * THIS FILE AUTOMATICALLY GENERATED.  DO NOT EDIT.
  *
  * generated from:
- *	OpenBSD: pcidevs,v 1.2005 2022/09/15 04:28:07 kmos Exp 
+ *	OpenBSD: pcidevs,v 1.2026 2023/03/19 09:38:06 jsg Exp 
  */
 
 /*	$NetBSD: pcidevs,v 1.30 1997/06/24 06:20:24 thorpej Exp $	*/
@@ -1384,6 +1384,78 @@ static const struct pci_known_product pci_known_products[] = {
 	    "17h xHCI",
 	},
 	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_RC,
+	    "19h/4xh Root Complex",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_IOMMU,
+	    "19h/4xh IOMMU",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_HB_1,
+	    "19h/4xh Host",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_PCIE_1,
+	    "19h/4xh PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_PCIE_2,
+	    "19h/4xh PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_RC,
+	    "19h/6xh Root Complex",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_IOMMU,
+	    "19h/6xh IOMMU",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_HB,
+	    "19h/6xh Host",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_PCIE_1,
+	    "19h/6xh PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_PCIE_2,
+	    "19h/6xh PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_1,
+	    "19h/6xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_2,
+	    "19h/6xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_3,
+	    "19h/6xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_4,
+	    "19h/6xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_5,
+	    "19h/6xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_6,
+	    "19h/6xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_7,
+	    "19h/6xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_DF_8,
+	    "19h/6xh Data Fabric",
+	},
+	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_14_HB,
 	    "14h Host",
 	},
@@ -1520,6 +1592,18 @@ static const struct pci_known_product pci_known_products[] = {
 	    "16h Misc Cfg",
 	},
 	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_XHCI_1,
+	    "19h/6xh xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_XHCI_2,
+	    "19h/6xh xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_6X_XHCI_3,
+	    "19h/6xh xHCI",
+	},
+	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_1X_RC,
 	    "17h/1xh Root Complex",
 	},
@@ -1530,6 +1614,14 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_1X_PCIE_1,
 	    "17h/1xh PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_XHCI_4,
+	    "19h/4xh xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_XHCI_5,
+	    "19h/4xh xHCI",
 	},
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_1X_PCIE_2,
@@ -1620,6 +1712,22 @@ static const struct pci_known_product pci_known_products[] = {
 	    "15/0xh Host",
 	},
 	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_XHCI_1,
+	    "19h/4xh xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_XHCI_2,
+	    "19h/4xh xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_XHCI_3,
+	    "19h/4xh xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_XHCI_1,
+	    "17h/90h xHCI",
+	},
+	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_6X_RC,
 	    "17h/6xh Root Complex",
 	},
@@ -1646,6 +1754,58 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_6X_XHCI,
 	    "17h/6xh xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_XHCI_2,
+	    "17h/90h xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_HB,
+	    "17h/90h Host",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_PCIE_1,
+	    "17h/90h PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_PCIE_2,
+	    "17h/90h PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_CCP,
+	    "17h/90h Crypto",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_0,
+	    "17h/90h Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_1,
+	    "17h/90h Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_2,
+	    "17h/90h Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_3,
+	    "17h/90h Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_4,
+	    "17h/90h Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_5,
+	    "17h/90h Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_6,
+	    "17h/90h Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_17_90_DF_7,
+	    "17h/90h Data Fabric",
 	},
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_5X_DF_0,
@@ -1678,6 +1838,38 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_5X_DF_7,
 	    "19h/5xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_0,
+	    "19h/4xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_1,
+	    "19h/4xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_2,
+	    "19h/4xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_3,
+	    "19h/4xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_4,
+	    "19h/4xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_5,
+	    "19h/4xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_6,
+	    "19h/4xh Data Fabric",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_19_4X_DF_7,
+	    "19h/4xh Data Fabric",
 	},
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_14_LINK,
@@ -1874,6 +2066,22 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_500SERIES_XHCI,
 	    "500 Series xHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_600SERIES_PCIE_1,
+	    "600 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_600SERIES_PCIE_2,
+	    "600 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_600SERIES_AHCI,
+	    "600 Series AHCI",
+	},
+	{
+	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_600SERIES_XHCI,
+	    "600 Series xHCI",
 	},
 	{
 	    PCI_VENDOR_AMD, PCI_PRODUCT_AMD_500SERIES_PCIE_3,
@@ -2724,6 +2932,10 @@ static const struct pci_known_product pci_known_products[] = {
 	    "ASM1143 xHCI",
 	},
 	{
+	    PCI_VENDOR_ASMEDIA, PCI_PRODUCT_ASMEDIA_ASM2142,
+	    "ASM2142 xHCI",
+	},
+	{
 	    PCI_VENDOR_ASMEDIA, PCI_PRODUCT_ASMEDIA_ASM2824,
 	    "ASM2824",
 	},
@@ -3004,12 +3216,20 @@ static const struct pci_known_product pci_known_products[] = {
 	    "Cyan Skillfish",
 	},
 	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_CYAN_SKILLFISH_2,
+	    "Cyan Skillfish",
+	},
+	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_PPB_1,
 	    "PCIE",
 	},
 	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_PPB_2,
 	    "PCIE",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_MENDOCINO,
+	    "Mendocino",
 	},
 	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_PICASSO,
@@ -3044,16 +3264,24 @@ static const struct pci_known_product pci_known_products[] = {
 	    "Van Gogh",
 	},
 	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_VANGOGH_HDA,
+	    "Van Gogh HD Audio",
+	},
+	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_LUCIENNE,
 	    "Lucienne",
 	},
 	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_YELLOW_CARP_1,
-	    "Yellow Carp",
+	    "Rembrandt",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_RAPHAEL,
+	    "Raphael",
 	},
 	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_YELLOW_CARP_2,
-	    "Yellow Carp",
+	    "Rembrandt",
 	},
 	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_RADEON_HD6500D_HDA,
@@ -6232,6 +6460,22 @@ static const struct pci_known_product pci_known_products[] = {
 	    "Navi 23",
 	},
 	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_ALDEBARAN_1,
+	    "Aldebaran",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_ALDEBARAN_2,
+	    "Aldebaran",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_ALDEBARAN_3,
+	    "Aldebaran",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_ALDEBARAN_4,
+	    "Aldebaran",
+	},
+	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_BEIGE_GOBY_1,
 	    "Navi 24",
 	},
@@ -6254,6 +6498,18 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_BEIGE_GOBY_6,
 	    "Navi 24",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_NAVI31_1,
+	    "Navi 31",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_NAVI33_1,
+	    "Navi 33",
+	},
+	{
+	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_NAVI33_2,
+	    "Navi 33",
 	},
 	{
 	    PCI_VENDOR_ATI, PCI_PRODUCT_ATI_RADEON_9000IGP,
@@ -18928,6 +19184,10 @@ static const struct pci_known_product pci_known_products[] = {
 	    "E600 Host",
 	},
 	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_P5800X,
+	    "P5800X",
+	},
+	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_PRO_WL_2200BG,
 	    "PRO/Wireless 2200BG",
 	},
@@ -19304,6 +19564,74 @@ static const struct pci_known_product pci_known_products[] = {
 	    "Turbo Memory",
 	},
 	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_DPTF,
+	    "Elkhart Lake DPTF",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_GNA,
+	    "Elkhart Lake GNA",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_1,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_2,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_3,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_4,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_5,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_6,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_7,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_8,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_GCD_TH,
+	    "Elkhart Lake TH",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_9,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_10,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_11,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_12,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_13,
+	    "Elkhart Lake Host",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HB_14,
+	    "Elkhart Lake Host",
+	},
+	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_GT_1,
 	    "UHD Graphics",
 	},
@@ -19320,7 +19648,11 @@ static const struct pci_known_product pci_known_products[] = {
 	    "UHD Graphics",
 	},
 	{
-	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_GT_5,
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_GT_6,
+	    "UHD Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_GT_7,
 	    "UHD Graphics",
 	},
 	{
@@ -19590,6 +19922,362 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_ADL_N_GT_3,
 	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG1_1,
+	    "Iris Xe MAX",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG1_2,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG1_3,
+	    "SG-18M",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG1_4,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG1_5,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_ESPI,
+	    "Elkhart Lake eSPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_P2SB,
+	    "Elkhart Lake P2SB",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PMC,
+	    "Elkhart Lake PMC",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SMB,
+	    "Elkhart Lake SMBus",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SPI,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_TH,
+	    "Elkhart Lake TH",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_UART_0,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_UART_1,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_SPI_0,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_SPI_1,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_IEH,
+	    "Elkhart Lake IEH",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SGMII,
+	    "Elkhart Lake Ethernet",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_SPI_2,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PCIE_0,
+	    "Elkhart Lake PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PCIE_1,
+	    "Elkhart Lake PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PCIE_2,
+	    "Elkhart Lake PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PCIE_3,
+	    "Elkhart Lake PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PCIE_4,
+	    "Elkhart Lake PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PCIE_5,
+	    "Elkhart Lake PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PCIE_6,
+	    "Elkhart Lake PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_6,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_7,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_EMMC,
+	    "Elkhart Lake eMMC",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SDMMC,
+	    "Elkhart Lake SD/MMC",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SI,
+	    "Elkhart Lake SI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_4,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_5,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_UART_2,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HDA,
+	    "Elkhart Lake HD Audio",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_AHCI,
+	    "Elkhart Lake AHCI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_HPET,
+	    "Elkhart Lake HPET",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_IOAPIC,
+	    "Elkhart Lake IOAPIC",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_CSE_PTT_DMA,
+	    "Elkhart Lake PTT DMA",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_CSE_UMA,
+	    "Elkhart Lake UMA",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_CSE_HECI_0,
+	    "Elkhart Lake HECI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_CSE_HECI_1,
+	    "Elkhart Lake HECI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_CSE_HECI_2,
+	    "Elkhart Lake HECI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_CSE_HECI_3,
+	    "Elkhart Lake HECI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_0,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_1,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_2,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SIO_I2C_3,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_XHCI,
+	    "Elkhart Lake xHCI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_XDCI,
+	    "Elkhart Lake xDCI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_SRAM,
+	    "Elkhart Lake SRAM",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_QEP_1,
+	    "Elkhart Lake QEP",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_QEP_2,
+	    "Elkhart Lake QEP",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_QEP_3,
+	    "Elkhart Lake QEP",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_SPI_0,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_SPI_1,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_SPI_2,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_SPI_3,
+	    "Elkhart Lake SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_GPIO_0,
+	    "Elkhart Lake GPIO",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_GPIO_1,
+	    "Elkhart Lake GPIO",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_UART_0,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_UART_1,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_UART_2,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_UART_3,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_UART_4,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_UART_5,
+	    "Elkhart Lake UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2S_0,
+	    "Elkhart Lake I2S",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2S_1,
+	    "Elkhart Lake I2S",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE0_RGMII_1G,
+	    "Elkhart Lake Ethernet",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE0_SGMII_1G,
+	    "Elkhart Lake Ethernet",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE0_SGMII_2G,
+	    "Elkhart Lake Ethernet",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE1_RGMII_1G,
+	    "Elkhart Lake Ethernet",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE1_SGMII_1G,
+	    "Elkhart Lake Ethernet",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE1_SGMII_2G,
+	    "Elkhart Lake Ethernet",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_LH2OSE,
+	    "Elkhart Lake LH2OSE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_DMA_0,
+	    "Elkhart Lake DMA",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_DMA_1,
+	    "Elkhart Lake DMA",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_DMA_2,
+	    "Elkhart Lake DMA",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_PWM,
+	    "Elkhart Lake PWM",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_0,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_1,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_2,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_3,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_4,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_5,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_6,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_I2C_7,
+	    "Elkhart Lake I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_CAN_0,
+	    "Elkhart Lake CAN",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_CAN_1,
+	    "Elkhart Lake CAN",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_EHL_PSE_QEP_0,
+	    "Elkhart Lake QEP",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_RKL_GT_1,
@@ -20178,6 +20866,94 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_I219_V19,
 	    "I219-V",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G10_1,
+	    "Arc A770M",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G10_2,
+	    "Arc A730M",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G10_3,
+	    "Arc A550M",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_1,
+	    "Arc A370M",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_2,
+	    "Arc A350M",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_3,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G12_1,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G12_2,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_4,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G10_4,
+	    "Arc A770",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G10_5,
+	    "Arc A750",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G10_6,
+	    "Arc A580",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G12_3,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G12_4,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_5,
+	    "Arc A380",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_6,
+	    "Arc A310",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_7,
+	    "Arc Pro A30M",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G11_8,
+	    "Arc Pro A40/A50",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G12_5,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_DG2_G12_6,
+	    "Graphics",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_ATS_M150,
+	    "Flex 170",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_ATS_M75,
+	    "Flex 140",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_QEMU_NVME,
@@ -20976,8 +21752,244 @@ static const struct pci_known_product pci_known_products[] = {
 	    "82740 AGP",
 	},
 	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_P2SB,
+	    "700 Series P2SB",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PMC,
+	    "700 Series PMC",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_SMB,
+	    "700 Series SMBus",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_SPI,
+	    "700 Series SPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_TH,
+	    "700 Series TH",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_SRAM,
+	    "700 Series Shared SRAM",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_UART_0,
+	    "700 Series UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_UART_1,
+	    "700 Series UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_GSPI_0,
+	    "700 Series GSPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_GSPI_1,
+	    "700 Series GSPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_9,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_10,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_11,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_12,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_13,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_14,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_15,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_16,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_1,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_2,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_3,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_4,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_5,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_6,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_7,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_8,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_17,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_18,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_19,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_20,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_21,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_22,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_23,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_24,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_25,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_26,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_27,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_PCIE_28,
+	    "700 Series PCIE",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_I2C_0,
+	    "700 Series I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_I2C_1,
+	    "700 Series I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_I2C_2,
+	    "700 Series I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_I2C_3,
+	    "700 Series I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_HDA,
+	    "700 Series HD Audio",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_UART_3,
+	    "700 Series UART",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_XHCI,
+	    "700 Series xHCI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_XDCI,
+	    "700 Series xDCI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_AHCI,
+	    "700 Series AHCI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_HECI_1,
+	    "700 Series HECI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_HECI_2,
+	    "700 Series HECI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_IDER,
+	    "700 Series IDE-R",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_KT,
+	    "700 Series KT",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_HECI_3,
+	    "700 Series HECI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_HECI_4,
+	    "700 Series HECI",
+	},
+	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_WL_22500_12,
 	    "Wi-Fi 6 AX211",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_ISH,
+	    "700 Series ISH",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_GSPI_3,
+	    "700 Series GSPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_GSPI_2,
+	    "700 Series GSPI",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_I2C_4,
+	    "700 Series I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_I2C_5,
+	    "700 Series I2C",
+	},
+	{
+	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_700SERIES_UART_2,
+	    "700 Series UART",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_Z690_ESPI,
@@ -20985,215 +21997,215 @@ static const struct pci_known_product pci_known_products[] = {
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_P2SB,
-	    "P2SB",
+	    "600 Series P2SB",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PMC,
-	    "PMC",
+	    "600 Series PMC",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_SMB,
-	    "SMBus",
+	    "600 Series SMBus",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_SPI,
-	    "SPI",
+	    "600 Series SPI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_TH,
-	    "TH",
+	    "600 Series TH",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_SRAM,
-	    "Shared SRAM",
+	    "600 Series Shared SRAM",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_UART_0,
-	    "UART",
+	    "600 Series UART",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_UART_1,
-	    "UART",
+	    "600 Series UART",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_GSPI_0,
-	    "GSPI",
+	    "600 Series GSPI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_GSPI_1,
-	    "GSPI",
+	    "600 Series GSPI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_9,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_10,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_11,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_12,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_13,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_14,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_15,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_16,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_1,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_2,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_3,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_4,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_5,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_6,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_7,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_8,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_17,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_18,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_19,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_20,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_21,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_22,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_23,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_24,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_25,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_26,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_27,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_PCIE_28,
-	    "PCIE",
+	    "600 Series PCIE",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_I2C_0,
-	    "I2C",
+	    "600 Series I2C",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_I2C_1,
-	    "I2C",
+	    "600 Series I2C",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_I2C_2,
-	    "I2C",
+	    "600 Series I2C",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_I2C_3,
-	    "I2C",
+	    "600 Series I2C",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_HDA,
-	    "HD Audio",
+	    "600 Series HD Audio",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_UART_3,
-	    "UART",
+	    "600 Series UART",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_XHCI,
-	    "xHCI",
+	    "600 Series xHCI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_XDCI,
-	    "xDCI",
+	    "600 Series xDCI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_AHCI,
-	    "AHCI",
+	    "600 Series AHCI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_HECI_1,
-	    "HECI",
+	    "600 Series HECI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_HECI_2,
-	    "HECI",
+	    "600 Series HECI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_IDER,
-	    "IDE-R",
+	    "600 Series IDE-R",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_KT,
-	    "KT",
+	    "600 Series KT",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_HECI_3,
-	    "HECI",
+	    "600 Series HECI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_HECI_4,
-	    "HECI",
+	    "600 Series HECI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_WL_22500_13,
@@ -21201,27 +22213,27 @@ static const struct pci_known_product pci_known_products[] = {
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_ISH,
-	    "ISH",
+	    "600 Series ISH",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_GSPI_3,
-	    "GSPI",
+	    "600 Series GSPI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_GSPI_2,
-	    "GSPI",
+	    "600 Series GSPI",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_I2C_4,
-	    "I2C",
+	    "600 Series I2C",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_I2C_5,
-	    "I2C",
+	    "600 Series I2C",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_600SERIES_UART_2,
-	    "UART",
+	    "600 Series UART",
 	},
 	{
 	    PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_WL_22500_14,
@@ -24348,6 +25360,10 @@ static const struct pci_known_product pci_known_products[] = {
 	    "A2000",
 	},
 	{
+	    PCI_VENDOR_KINGSTON, PCI_PRODUCT_KINGSTON_NV2,
+	    "NV2",
+	},
+	{
 	    PCI_VENDOR_KIOXIA, PCI_PRODUCT_KIOXIA_BG4,
 	    "BG4",
 	},
@@ -25186,6 +26202,10 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_MICREL, PCI_PRODUCT_MICREL_KSZ8842,
 	    "KSZ8842",
+	},
+	{
+	    PCI_VENDOR_MICRON, PCI_PRODUCT_MICRON_MTFDKBA512QFM,
+	    "NVMe",
 	},
 	{
 	    PCI_VENDOR_MICROSOFT, PCI_PRODUCT_MICROSOFT_MN120,
@@ -29660,8 +30680,12 @@ static const struct pci_known_product pci_known_products[] = {
 	    "5U852 SD/MMC",
 	},
 	{
-	    PCI_VENDOR_ROCKCHIP, PCI_PRODUCT_ROCKCHIP_RK3399_RC,
-	    "RK3399 Root Complex",
+	    PCI_VENDOR_ROCKCHIP, PCI_PRODUCT_ROCKCHIP_RK3399,
+	    "RK3399",
+	},
+	{
+	    PCI_VENDOR_ROCKCHIP, PCI_PRODUCT_ROCKCHIP_RK3566,
+	    "RK3566",
 	},
 	{
 	    PCI_VENDOR_ROCKWELL, PCI_PRODUCT_ROCKWELL_RS56SP_PCI11P1,
@@ -31764,6 +32788,14 @@ static const struct pci_known_product pci_known_products[] = {
 	    "SD",
 	},
 	{
+	    PCI_VENDOR_TRANSMETA, PCI_PRODUCT_TRANSMETA_TM8000_HT,
+	    "TM8000 HyperTransport",
+	},
+	{
+	    PCI_VENDOR_TRANSMETA, PCI_PRODUCT_TRANSMETA_TM8000_AGP,
+	    "TM8000 AGP",
+	},
+	{
 	    PCI_VENDOR_TRANSMETA, PCI_PRODUCT_TRANSMETA_NB,
 	    "Northbridge",
 	},
@@ -32058,6 +33090,14 @@ static const struct pci_known_product pci_known_products[] = {
 	{
 	    PCI_VENDOR_UMIS, PCI_PRODUCT_UMIS_NVME,
 	    "NVMe",
+	},
+	{
+	    PCI_VENDOR_UMIS, PCI_PRODUCT_UMIS_AM620,
+	    "AM620",
+	},
+	{
+	    PCI_VENDOR_UMIS, PCI_PRODUCT_UMIS_AM630,
+	    "AM630",
 	},
 	{
 	    PCI_VENDOR_USR, PCI_PRODUCT_USR_3CP5610,
@@ -34426,6 +35466,10 @@ static const struct pci_known_vendor pci_known_vendors[] = {
 	{
 	    PCI_VENDOR_SIIG,
 	    "SIIG",
+	},
+	{
+	    PCI_VENDOR_MICRON,
+	    "Micron Technology",
 	},
 	{
 	    PCI_VENDOR_DTCTECH,

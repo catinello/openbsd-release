@@ -1,4 +1,4 @@
-# $OpenBSD: files.arm64,v 1.60 2022/09/03 08:44:56 kettenis Exp $
+# $OpenBSD: files.arm64,v 1.66 2023/01/14 12:11:11 kettenis Exp $
 
 maxpartitions	16
 maxusers	2 8 128
@@ -63,9 +63,10 @@ device	simplebus: fdt
 attach	simplebus at fdt
 file	arch/arm64/dev/simplebus.c		simplebus
 
-device	efi {}
+# EFI
+include "dev/efi/files.efi"
 attach	efi at fdt
-file	arch/arm64/dev/efi.c			efi
+file	arch/arm64/dev/efi_machdep.c		efi
 
 device	smbios
 attach	smbios at efi
@@ -169,6 +170,10 @@ device	apldog
 attach	apldog at fdt
 file	arch/arm64/dev/apldog.c			apldog
 
+device	aplefuse
+attach	aplefuse at fdt
+file	arch/arm64/dev/aplefuse.c		aplefuse
+
 device	apliic: i2cbus
 attach	apliic at fdt
 file	arch/arm64/dev/apliic.c			apliic
@@ -209,6 +214,10 @@ device	aplpmgr
 attach	aplpmgr at fdt
 file	arch/arm64/dev/aplpmgr.c		aplpmgr
 
+device	aplpwm
+attach	aplpwm at fdt
+file	arch/arm64/dev/aplpwm.c			aplpwm
+
 device	aplrtk
 attach	aplrtk at fdt
 file	arch/arm64/dev/aplrtk.c			aplrtk
@@ -227,7 +236,6 @@ device	aplsmc
 attach	aplsmc at fdt
 file	arch/arm64/dev/aplsmc.c			aplsmc
 
-define	spmi {}
 device	aplpmu
 attach	aplpmu at spmi
 file	arch/arm64/dev/aplpmu.c			aplpmu

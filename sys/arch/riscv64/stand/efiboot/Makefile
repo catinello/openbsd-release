@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.2 2021/11/14 21:51:48 guenther Exp $
+#	$OpenBSD: Makefile,v 1.5 2023/02/23 19:48:22 miod Exp $
 
 NOMAN=		#
 
@@ -19,7 +19,7 @@ OBJCOPY?=	objcopy
 OBJDUMP?=	objdump
 
 LDFLAGS+=-nostdlib -T ${.CURDIR}/ldscript.riscv64 -Bsymbolic -shared
-LDFLAGS+=--pack-dyn-relocs=none
+LDFLAGS+=--pack-dyn-relocs=none --no-execute-only
 
 .PATH:	${S}/stand/boot
 SRCS+=	boot.c cmd.c vars.c
@@ -46,7 +46,7 @@ SRCS+=	adler32.c crc32.c inflate.c inftrees.c
 CPPFLAGS+=	-nostdinc
 CPPFLAGS+=	-I${S} -I. -I${.CURDIR}
 CPPFLAGS+=	-I${EFIDIR}/include -I${EFIDIR}/include/riscv64
-CPPFLAGS+=	-D_STANDALONE
+CPPFLAGS+=	-D_STANDALONE -DBOOT_STTY
 CPPFLAGS+=	-DSMALL -DSLOW -DNOBYFOUR -D__INTERNAL_LIBSA_CREAD
 CPPFLAGS+=	-DNEEDS_HEAP_H -DFWRANDOM
 CPPFLAGS+=	-march=rv64gc --target=riscv64 -mno-relax
@@ -54,6 +54,9 @@ COPTS+=		-Wno-attributes -Wno-format
 COPTS+=		-ffreestanding -fno-stack-protector
 COPTS+=		-fshort-wchar -fPIC -fno-builtin
 COPTS+=		-Wall -Werror
+# XXX Workaround for zlib + clang 15
+# https://github.com/madler/zlib/issues/633
+COPTS+=		-Wno-deprecated-non-prototype -Wno-unknown-warning-option
 
 PROG.elf=	${PROG:S/.EFI/.elf/}
 CLEANFILES+=	${PROG.elf} ${PROG.elf}.tmp

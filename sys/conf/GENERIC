@@ -1,4 +1,4 @@
-#	$OpenBSD: GENERIC,v 1.285 2022/09/24 13:30:21 jsg Exp $
+#	$OpenBSD: GENERIC,v 1.287 2023/03/19 06:02:07 jsg Exp $
 #
 #	Machine-independent option; used by all architectures for their
 #	GENERIC kernel

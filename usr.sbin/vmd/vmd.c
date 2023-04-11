@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmd.c,v 1.132 2022/09/13 10:28:19 martijn Exp $	*/
+/*	$OpenBSD: vmd.c,v 1.138 2023/01/28 14:40:53 dv Exp $	*/
 
 /*
  * Copyright (c) 2015 Reyk Floeter <reyk@openbsd.org>
@@ -66,6 +66,8 @@ int	 vm_instance(struct privsep *, struct vmd_vm **,
 int	 vm_checkinsflag(struct vmop_create_params *, unsigned int, uid_t);
 int	 vm_claimid(const char *, int, uint32_t *);
 void	 start_vm_batch(int, short, void*);
+
+static inline void vm_terminate(struct vmd_vm *, const char *);
 
 struct vmd	*env;
 
@@ -393,16 +395,16 @@ vmd_dispatch_vmm(int fd, struct privsep_proc *p, struct imsg *imsg)
 			    imsg->hdr.type, vm->vm_peerid, -1,
 			    &vmr, sizeof(vmr)) == -1) {
 				errno = vmr.vmr_result;
-				log_warn("%s: failed to foward vm result",
+				log_warn("%s: failed to forward vm result",
 				    vcp->vcp_name);
-				vm_remove(vm, __func__);
+				vm_terminate(vm, __func__);
 				return (-1);
 			}
 		}
 
 		if (vmr.vmr_result) {
 			log_warnx("%s: failed to start vm", vcp->vcp_name);
-			vm_remove(vm, __func__);
+			vm_terminate(vm, __func__);
 			errno = vmr.vmr_result;
 			break;
 		}
@@ -410,7 +412,7 @@ vmd_dispatch_vmm(int fd, struct privsep_proc *p, struct imsg *imsg)
 		/* Now configure all the interfaces */
 		if (vm_priv_ifconfig(ps, vm) == -1) {
 			log_warn("%s: failed to configure vm", vcp->vcp_name);
-			vm_remove(vm, __func__);
+			vm_terminate(vm, __func__);
 			break;
 		}
 
@@ -441,10 +443,7 @@ vmd_dispatch_vmm(int fd, struct privsep_proc *p, struct imsg *imsg)
 			log_info("%s: sent vm %d successfully.",
 			    vm->vm_params.vmc_params.vcp_name,
 			    vm->vm_vmid);
-			if (vm->vm_from_config)
-				vm_stop(vm, 0, __func__);
-			else
-				vm_remove(vm, __func__);
+			vm_terminate(vm, __func__);
 		}
 
 		/* Send a response if a control client is waiting for it */
@@ -470,10 +469,7 @@ vmd_dispatch_vmm(int fd, struct privsep_proc *p, struct imsg *imsg)
 		}
 		if (vmr.vmr_result != EAGAIN ||
 		    vm->vm_params.vmc_bootdevice) {
-			if (vm->vm_from_config)
-				vm_stop(vm, 0, __func__);
-			else
-				vm_remove(vm, __func__);
+			vm_terminate(vm, __func__);
 		} else {
 			/* Stop VM instance but keep the tty open */
 			vm_stop(vm, 1, __func__);
@@ -509,7 +505,7 @@ vmd_dispatch_vmm(int fd, struct privsep_proc *p, struct imsg *imsg)
 		    imsg->hdr.peerid, -1, &vir, sizeof(vir)) == -1) {
 			log_debug("%s: GET_INFO_VM failed for vm %d, removing",
 			    __func__, vm->vm_vmid);
-			vm_remove(vm, __func__);
+			vm_terminate(vm, __func__);
 			return (-1);
 		}
 		break;
@@ -545,7 +541,7 @@ vmd_dispatch_vmm(int fd, struct privsep_proc *p, struct imsg *imsg)
 				    sizeof(vir)) == -1) {
 					log_debug("%s: GET_INFO_VM_END failed",
 					    __func__);
-					vm_remove(vm, __func__);
+					vm_terminate(vm, __func__);
 					return (-1);
 				}
 			}
@@ -665,9 +661,8 @@ vmd_check_vmh(struct vm_dump_header *vmh)
 				    code, leaf);
 				return (-1);
 			}
-#define VMM_SEFF0ECX_MASK_T (SEFF0ECX_UMIP)
-			if ((vmh->vmh_cpuids[i].c & c & VMM_SEFF0ECX_MASK_T) !=
-			    (vmh->vmh_cpuids[i].c & VMM_SEFF0ECX_MASK_T)) {
+			if ((vmh->vmh_cpuids[i].c & c & VMM_SEFF0ECX_MASK) !=
+			    (vmh->vmh_cpuids[i].c & VMM_SEFF0ECX_MASK)) {
 				log_debug("%s: incompatible cpu features "
 				    "code: 0x%x leaf: 0x%x  reg: d", __func__,
 				    code, leaf);
@@ -848,8 +843,8 @@ main(int argc, char **argv)
 	proc_priv->p_pw = &proc_privpw; /* initialized to all 0 */
 	proc_priv->p_chroot = ps->ps_pw->pw_dir; /* from VMD_USER */
 
-	/* Open /dev/vmm */
-	if (env->vmd_noaction == 0) {
+	/* Open /dev/vmm early. */
+	if (env->vmd_noaction == 0 && proc_id == PROC_PARENT) {
 		env->vmd_fd = open(VMM_NODE, O_RDWR);
 		if (env->vmd_fd == -1)
 			fatal("%s", VMM_NODE);
@@ -971,6 +966,10 @@ vmd_configure(void)
 		proc_kill(&env->vmd_ps);
 		exit(0);
 	}
+
+	/* Send VMM device fd to vmm proc. */
+	proc_compose_imsg(&env->vmd_ps, PROC_VMM, -1,
+	    IMSG_VMDOP_RECEIVE_VMM_FD, -1, env->vmd_fd, NULL, 0);
 
 	/* Send shared global configuration to all children */
 	if (config_setconfig(env) == -1)
@@ -1189,14 +1188,11 @@ vm_stop(struct vmd_vm *vm, int keeptty, const char *caller)
 	vm->vm_state &= ~(VM_STATE_RECEIVED | VM_STATE_RUNNING
 	    | VM_STATE_SHUTDOWN);
 
-	user_inc(&vm->vm_params.vmc_params, vm->vm_user, 0);
-	user_put(vm->vm_user);
-
 	if (vm->vm_iev.ibuf.fd != -1) {
 		event_del(&vm->vm_iev.ev);
 		close(vm->vm_iev.ibuf.fd);
 	}
-	for (i = 0; i < VMM_MAX_DISKS_PER_VM; i++) {
+	for (i = 0; i < VM_MAX_DISKS_PER_VM; i++) {
 		for (j = 0; j < VM_MAX_BASE_PER_DISK; j++) {
 			if (vm->vm_disks[i][j] != -1) {
 				close(vm->vm_disks[i][j]);
@@ -1204,7 +1200,7 @@ vm_stop(struct vmd_vm *vm, int keeptty, const char *caller)
 			}
 		}
 	}
-	for (i = 0; i < VMM_MAX_NICS_PER_VM; i++) {
+	for (i = 0; i < VM_MAX_NICS_PER_VM; i++) {
 		if (vm->vm_ifs[i].vif_fd != -1) {
 			close(vm->vm_ifs[i].vif_fd);
 			vm->vm_ifs[i].vif_fd = -1;
@@ -1244,7 +1240,6 @@ vm_remove(struct vmd_vm *vm, const char *caller)
 
 	TAILQ_REMOVE(env->vmd_vms, vm, vm_entry);
 
-	user_put(vm->vm_user);
 	vm_stop(vm, 0, caller);
 	free(vm);
 }
@@ -1287,7 +1282,6 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	struct vmd_vm		*vm = NULL, *vm_parent = NULL;
 	struct vm_create_params	*vcp = &vmc->vmc_params;
 	struct vmop_owner	*vmo = NULL;
-	struct vmd_user		*usr = NULL;
 	uint32_t		 nid, rng;
 	unsigned int		 i, j;
 	struct vmd_switch	*sw;
@@ -1336,10 +1330,10 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	if (vcp->vcp_ncpus > VMM_MAX_VCPUS_PER_VM) {
 		log_warnx("invalid number of CPUs");
 		goto fail;
-	} else if (vcp->vcp_ndisks > VMM_MAX_DISKS_PER_VM) {
+	} else if (vcp->vcp_ndisks > VM_MAX_DISKS_PER_VM) {
 		log_warnx("invalid number of disks");
 		goto fail;
-	} else if (vcp->vcp_nnics > VMM_MAX_NICS_PER_VM) {
+	} else if (vcp->vcp_nnics > VM_MAX_NICS_PER_VM) {
 		log_warnx("invalid number of interfaces");
 		goto fail;
 	} else if (strlen(vcp->vcp_kernel) == 0 &&
@@ -1355,19 +1349,12 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 		goto fail;
 	} else {
 		for (s = vcp->vcp_name; *s != '\0'; ++s) {
-			if (!(isalnum(*s) || *s == '.' || *s == '-' ||
-			    *s == '_')) {
+			if (!(isalnum((unsigned char)*s) || *s == '.' || \
+			    *s == '-' || *s == '_')) {
 				log_warnx("invalid VM name");
 				goto fail;
 			}
 		}
-	}
-
-	/* track active users */
-	if (uid != 0 && env->vmd_users != NULL &&
-	    (usr = user_get(uid)) == NULL) {
-		log_warnx("could not add user");
-		goto fail;
 	}
 
 	if ((vm = calloc(1, sizeof(*vm))) == NULL)
@@ -1380,12 +1367,11 @@ vm_register(struct privsep *ps, struct vmop_create_params *vmc,
 	vm->vm_tty = -1;
 	vm->vm_receive_fd = -1;
 	vm->vm_state &= ~VM_STATE_PAUSED;
-	vm->vm_user = usr;
 
-	for (i = 0; i < VMM_MAX_DISKS_PER_VM; i++)
+	for (i = 0; i < VM_MAX_DISKS_PER_VM; i++)
 		for (j = 0; j < VM_MAX_BASE_PER_DISK; j++)
 			vm->vm_disks[i][j] = -1;
-	for (i = 0; i < VMM_MAX_NICS_PER_VM; i++)
+	for (i = 0; i < VM_MAX_NICS_PER_VM; i++)
 		vm->vm_ifs[i].vif_fd = -1;
 	for (i = 0; i < vcp->vcp_nnics; i++) {
 		if ((sw = switch_getbyname(vmc->vmc_ifswitch[i])) != NULL) {
@@ -1685,7 +1671,7 @@ vm_checkperm(struct vmd_vm *vm, struct vmop_owner *vmo, uid_t uid)
 /*
  * vm_checkinsflag
  *
- * Checks wheter the non-root user is allowed to set an instance option.
+ * Checks whether the non-root user is allowed to set an instance option.
  *
  * Parameters:
  *  vmc: the VM create parameters
@@ -1904,111 +1890,13 @@ switch_getbyname(const char *name)
 	return (NULL);
 }
 
-struct vmd_user *
-user_get(uid_t uid)
-{
-	struct vmd_user		*usr;
-
-	if (uid == 0)
-		return (NULL);
-
-	/* first try to find an existing user */
-	TAILQ_FOREACH(usr, env->vmd_users, usr_entry) {
-		if (usr->usr_id.uid == uid)
-			goto done;
-	}
-
-	if ((usr = calloc(1, sizeof(*usr))) == NULL) {
-		log_warn("could not allocate user");
-		return (NULL);
-	}
-
-	usr->usr_id.uid = uid;
-	usr->usr_id.gid = -1;
-	TAILQ_INSERT_TAIL(env->vmd_users, usr, usr_entry);
-
- done:
-	DPRINTF("%s: uid %d #%d +",
-	    __func__, usr->usr_id.uid, usr->usr_refcnt + 1);
-	usr->usr_refcnt++;
-
-	return (usr);
-}
-
-void
-user_put(struct vmd_user *usr)
-{
-	if (usr == NULL)
-		return;
-
-	DPRINTF("%s: uid %d #%d -",
-	    __func__, usr->usr_id.uid, usr->usr_refcnt - 1);
-
-	if (--usr->usr_refcnt > 0)
-		return;
-
-	TAILQ_REMOVE(env->vmd_users, usr, usr_entry);
-	free(usr);
-}
-
-void
-user_inc(struct vm_create_params *vcp, struct vmd_user *usr, int inc)
-{
-	char	 mem[FMT_SCALED_STRSIZE];
-
-	if (usr == NULL)
-		return;
-
-	/* increment or decrement counters */
-	inc = inc ? 1 : -1;
-
-	usr->usr_maxcpu += vcp->vcp_ncpus * inc;
-	usr->usr_maxmem += vcp->vcp_memranges[0].vmr_size * inc;
-	usr->usr_maxifs += vcp->vcp_nnics * inc;
-
-	if (log_getverbose() > 1) {
-		(void)fmt_scaled(usr->usr_maxmem * 1024 * 1024, mem);
-		log_debug("%s: %c uid %d ref %d cpu %llu mem %s ifs %llu",
-		    __func__, inc == 1 ? '+' : '-',
-		    usr->usr_id.uid, usr->usr_refcnt,
-		    usr->usr_maxcpu, mem, usr->usr_maxifs);
-	}
-}
-
-int
-user_checklimit(struct vmd_user *usr, struct vm_create_params *vcp)
-{
-	const char	*limit = "";
-
-	/* XXX make the limits configurable */
-	if (usr->usr_maxcpu > VM_DEFAULT_USER_MAXCPU) {
-		limit = "cpu ";
-		goto fail;
-	}
-	if (usr->usr_maxmem > VM_DEFAULT_USER_MAXMEM) {
-		limit = "memory ";
-		goto fail;
-	}
-	if (usr->usr_maxifs > VM_DEFAULT_USER_MAXIFS) {
-		limit = "interface ";
-		goto fail;
-	}
-
-	return (0);
-
- fail:
-	log_warnx("%s: user %d %slimit reached", vcp->vcp_name,
-	    usr->usr_id.uid, limit);
-	return (-1);
-}
-
 char *
 get_string(uint8_t *ptr, size_t len)
 {
 	size_t	 i;
 
 	for (i = 0; i < len; i++)
-		if (!isprint(ptr[i]))
+		if (!isprint((unsigned char)ptr[i]))
 			break;
 
 	return strndup(ptr, i);
@@ -2055,3 +1943,15 @@ getmonotime(struct timeval *tv)
 
 	TIMESPEC_TO_TIMEVAL(tv, &ts);
 }
+
+static inline void
+vm_terminate(struct vmd_vm *vm, const char *caller)
+{
+	if (vm->vm_from_config)
+		vm_stop(vm, 0, caller);
+	else {
+		/* vm_remove calls vm_stop */
+		vm_remove(vm, caller);
+	}
+}
+

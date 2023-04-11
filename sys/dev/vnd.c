@@ -1,4 +1,4 @@
-/*	$OpenBSD: vnd.c,v 1.178 2022/09/01 12:28:53 deraadt Exp $	*/
+/*	$OpenBSD: vnd.c,v 1.180 2023/03/08 04:43:08 guenther Exp $	*/
 /*	$NetBSD: vnd.c,v 1.26 1996/03/30 23:06:11 christos Exp $	*/
 
 /*
@@ -227,7 +227,6 @@ vndgetdisklabel(dev_t dev, struct vnd_softc *sc, struct disklabel *lp,
 	lp->d_type = DTYPE_VND;
 	strncpy(lp->d_packname, "fictitious", sizeof(lp->d_packname));
 	DL_SETDSIZE(lp, sc->sc_size);
-	lp->d_flags = 0;
 	lp->d_version = 1;
 
 	lp->d_magic = DISKMAGIC;
@@ -360,14 +359,12 @@ vndstrategy(struct buf *bp)
 	splx(s);
 }
 
-/* ARGSUSED */
 int
 vndread(dev_t dev, struct uio *uio, int flags)
 {
 	return (physio(vndstrategy, dev, B_READ, minphys, uio));
 }
 
-/* ARGSUSED */
 int
 vndwrite(dev_t dev, struct uio *uio, int flags)
 {
@@ -392,7 +389,6 @@ vndbdevsize(struct vnode *vp, struct proc *p)
 	return (DL_GETPSIZE(pi.part));
 }
 
-/* ARGSUSED */
 int
 vndioctl(dev_t dev, u_long cmd, caddr_t addr, int flag, struct proc *p)
 {

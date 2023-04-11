@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.179 2022/08/29 02:58:13 jsg Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.181 2022/12/06 01:56:44 cheloha Exp $	*/
 /*	$NetBSD: cpu.h,v 1.35 1996/05/05 19:29:26 christos Exp $	*/
 
 /*-
@@ -64,6 +64,7 @@
  */
 #define clockframe intrframe
 
+#include <sys/clockintr.h>
 #include <sys/device.h>
 #include <sys/sched.h>
 #include <sys/sensors.h>
@@ -168,6 +169,7 @@ struct cpu_info {
 #if defined(GPROF) || defined(DDBPROF)
 	struct gmonparam	*ci_gmon;
 #endif
+	struct clockintr_queue	ci_queue;
 	char			ci_panicbuf[512];
 };
 
@@ -302,6 +304,7 @@ void signotify(struct proc *);
  * We need a machine-independent name for this.
  */
 extern void (*delay_func)(int);
+void delay_fini(void(*)(int));
 void delay_init(void(*)(int), int);
 struct timeval;
 

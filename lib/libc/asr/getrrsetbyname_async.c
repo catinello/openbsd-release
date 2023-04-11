@@ -1,4 +1,4 @@
-/*	$OpenBSD: getrrsetbyname_async.c,v 1.11 2017/02/23 17:04:02 eric Exp $	*/
+/*	$OpenBSD: getrrsetbyname_async.c,v 1.13 2023/03/15 22:12:00 millert Exp $	*/
 /*
  * Copyright (c) 2012 Eric Faurot <eric@openbsd.org>
  *
@@ -168,9 +168,9 @@ getrrsetbyname_async_run(struct asr_query *as, struct asr_result *ar)
 	goto next;
 }
 
-/* The rest of this file is taken from the orignal implementation. */
+/* The rest of this file is taken from the original implementation. */
 
-/* $OpenBSD: getrrsetbyname_async.c,v 1.11 2017/02/23 17:04:02 eric Exp $ */
+/* $OpenBSD: getrrsetbyname_async.c,v 1.13 2023/03/15 22:12:00 millert Exp $ */
 
 /*
  * Copyright (c) 2001 Jakob Schlyter. All rights reserved.

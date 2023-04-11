@@ -1,4 +1,4 @@
-/*	$OpenBSD: efi_installboot.c,v 1.6 2022/09/14 16:43:00 kn Exp $	*/
+/*	$OpenBSD: efi_installboot.c,v 1.9 2022/11/22 14:37:58 kn Exp $	*/
 /*	$NetBSD: installboot.c,v 1.5 1995/11/17 23:23:50 gwr Exp $ */
 
 /*
@@ -70,6 +70,7 @@
 
 static int	create_filesystem(struct disklabel *, char);
 static void	write_filesystem(struct disklabel *, char);
+static int	write_firmware(const char *, const char *);
 static int	findgptefisys(int, struct disklabel *);
 static int	findmbrfat(int, struct disklabel *);
 
@@ -166,6 +167,7 @@ create_filesystem(struct disklabel *dl, char part)
 	rslt = snprintf(cmd, sizeof(cmd), newfsfmt, args.fspec);
 	if (rslt >= sizeof(cmd)) {
 		warnx("can't build newfs command");
+		free(args.fspec);
 		rslt = -1;
 		return rslt;
 	}
@@ -177,10 +179,12 @@ create_filesystem(struct disklabel *dl, char part)
 		rslt = system(cmd);
 		if (rslt == -1) {
 			warn("system('%s') failed", cmd);
+			free(args.fspec);
 			return rslt;
 		}
 	}
 
+	free(args.fspec);
 	return 0;
 }
 
@@ -305,7 +309,10 @@ write_filesystem(struct disklabel *dl, char part)
 			goto umount;
 	}
 
-	rslt = 0;
+	dst[mntlen] = '\0';
+	rslt = write_firmware(root, dst);
+	if (rslt == -1)
+		warnx("unable to write firmware");
 
 umount:
 	dst[mntlen] = '\0';
@@ -322,6 +329,61 @@ rmdir:
 
 	if (rslt == -1)
 		exit(1);
+}
+
+static int
+write_firmware(const char *root, const char *mnt)
+{
+	char dst[PATH_MAX];
+	char fw[PATH_MAX];
+	char *src;
+	struct stat st;
+	int rslt;
+
+	strlcpy(dst, mnt, sizeof(dst));
+
+	/* Skip if no /etc/firmware exists */
+	rslt = snprintf(fw, sizeof(fw), "%s/%s", root, "etc/firmware");
+	if (rslt < 0 || rslt >= PATH_MAX) {
+		warnx("unable to build /etc/firmware path");
+		return -1;
+	}
+	if ((stat(fw, &st) != 0) || !S_ISDIR(st.st_mode))
+		return 0;
+
+	/* Copy apple-boot firmware to /m1n1/boot.bin if available */
+	src = fileprefix(fw, "/apple-boot.bin");
+	if (src == NULL)
+		return -1;
+	if (access(src, R_OK) == 0) {
+		if (strlcat(dst, "/m1n1", sizeof(dst)) >= sizeof(dst)) {
+			rslt = -1;
+			warnx("unable to build /m1n1 path");
+			goto cleanup;
+		}
+		if ((stat(dst, &st) != 0) || !S_ISDIR(st.st_mode)) {
+			rslt = 0;
+			goto cleanup;
+		}
+		if (strlcat(dst, "/boot.bin", sizeof(dst)) >= sizeof(dst)) {
+			rslt = -1;
+			warnx("unable to build /m1n1/boot.bin path");
+			goto cleanup;
+		}
+		if (verbose)
+			fprintf(stderr, "%s %s to %s\n",
+			    (nowrite ? "would copy" : "copying"), src, dst);
+		if (!nowrite) {
+			rslt = filecopy(src, dst);
+			if (rslt == -1)
+				goto cleanup;
+		}
+	}
+	rslt = 0;
+
+ cleanup:
+	free(src);
+	return rslt;
 }
 
 /*

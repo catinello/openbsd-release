@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmm.c,v 1.105 2022/04/10 19:36:58 dv Exp $	*/
+/*	$OpenBSD: vmm.c,v 1.107 2023/01/14 20:55:55 dv Exp $	*/
 
 /*
  * Copyright (c) 2015 Mike Larkin <mlarkin@openbsd.org>
@@ -89,14 +89,11 @@ vmm_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 	 * stdio - for malloc and basic I/O including events.
 	 * vmm - for the vmm ioctls and operations.
 	 * proc - for forking and maitaining vms.
-	 * send - for sending send/recv fds to vm proc.
+	 * sendfd - for sending send/recv fds to vm proc.
 	 * recvfd - for disks, interfaces and other fds.
 	 */
 	if (pledge("stdio vmm sendfd recvfd proc", NULL) == -1)
 		fatal("pledge");
-
-	/* Get and terminate all running VMs */
-	get_info_vm(ps, NULL, 1);
 }
 
 int
@@ -314,6 +311,14 @@ vmm_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 		imsg_compose_event(&vm->vm_iev,
 		    imsg->hdr.type, imsg->hdr.peerid, imsg->hdr.pid,
 		    imsg->fd, &var, sizeof(var));
+		break;
+	case IMSG_VMDOP_RECEIVE_VMM_FD:
+		if (env->vmd_fd > -1)
+			fatalx("already received vmm fd");
+		env->vmd_fd = imsg->fd;
+
+		/* Get and terminate all running VMs */
+		get_info_vm(ps, NULL, 1);
 		break;
 	default:
 		return (-1);

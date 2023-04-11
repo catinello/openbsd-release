@@ -1,4 +1,4 @@
-/*	$OpenBSD: output_json.c,v 1.23 2022/08/31 15:00:53 claudio Exp $ */
+/*	$OpenBSD: output_json.c,v 1.30 2023/03/09 13:13:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2020 Claudio Jeker <claudio@openbsd.org>
@@ -125,10 +125,9 @@ json_neighbor_capabilities(struct capabilities *capa)
 		json_do_end();
 	}
 
-	if (capa->role_ena) {
-		json_do_printf("open_policy_role", "%s%s",
-		    log_policy(capa->role),
-		    capa->role_ena == 2 ? " enforce" : "");
+	if (capa->policy) {
+		json_do_printf("open_policy", "%s",
+		    capa->policy == 2 ? "enforce" : "present");
 	}
 
 	json_do_end();
@@ -248,6 +247,9 @@ json_neighbor_full(struct peer *p)
 	json_do_bool("ttl_security", p->conf.ttlsec);
 	json_do_uint("holdtime", p->conf.holdtime);
 	json_do_uint("min_holdtime", p->conf.min_holdtime);
+	if (p->conf.ebgp && p->conf.role != ROLE_NONE)
+		json_do_printf("role", "%s",
+		    log_policy(p->conf.role));
 
 	/* capabilities */
 	json_do_bool("announce_capabilities", p->conf.announce_capa);
@@ -296,6 +298,12 @@ json_neighbor_full(struct peer *p)
 		/* capabilities */
 		json_neighbor_capabilities(&p->capa.neg);
 
+		if (p->conf.ebgp && p->conf.role != ROLE_NONE) {
+			json_do_printf("remote_role", "%s",
+			    log_policy(p->remote_role));
+			json_do_printf("local_role", "%s",
+			    log_policy(p->conf.role));
+		}
 		json_do_end();
 	}
 }
@@ -385,6 +393,12 @@ json_fib(struct kroute_full *kf)
 	else
 		json_do_printf("nexthop", "%s", log_addr(&kf->nexthop));
 
+	if (kf->flags & F_MPLS) {
+		json_do_array("mplslabel");
+		json_do_uint("mplslabel", 
+		    ntohl(kf->mplslabel) >> MPLS_LABEL_OFFSET);
+		json_do_end();
+	}
 	json_do_end();
 }
 
@@ -587,7 +601,7 @@ json_attr(u_char *data, size_t len, int reqflags, int addpath)
 	int e4, e2, pos;
 
 	if (len < 3) {
-		warnx("Too short BGP attrbute");
+		warnx("Too short BGP attribute");
 		return;
 	}
 
@@ -595,7 +609,7 @@ json_attr(u_char *data, size_t len, int reqflags, int addpath)
 	type = data[1];
 	if (flags & ATTR_EXTLEN) {
 		if (len < 4) {
-			warnx("Too short BGP attrbute");
+			warnx("Too short BGP attribute");
 			return;
 		}
 		memcpy(&alen, data+2, sizeof(uint16_t));
@@ -610,7 +624,7 @@ json_attr(u_char *data, size_t len, int reqflags, int addpath)
 
 	/* bad imsg len how can that happen!? */
 	if (alen > len) {
-		warnx("Bad BGP attrbute length");
+		warnx("Bad BGP attribute length");
 		return;
 	}
 
@@ -888,7 +902,8 @@ json_rib(struct ctl_show_rib *r, u_char *asdata, size_t aslen,
 		json_do_bool("announced", 1);
 
 	/* various attribibutes */
-	json_do_printf("ovs", "%s", fmt_ovs(r->validation_state, 0));
+	json_do_printf("ovs", "%s", fmt_ovs(r->roa_validation_state, 0));
+	json_do_printf("avs", "%s", fmt_avs(r->aspa_validation_state, 0));
 	json_do_printf("origin", "%s", fmt_origin(r->origin, 0));
 	json_do_uint("metric", r->med);
 	json_do_uint("localpref", r->local_pref);
@@ -897,7 +912,7 @@ json_rib(struct ctl_show_rib *r, u_char *asdata, size_t aslen,
 	json_do_printf("last_update", "%s", fmt_timeframe(r->age));
 	json_do_int("last_update_sec", r->age);
 
-	/* keep the object open for communities and attribuites */
+	/* keep the object open for communities and attributes */
 }
 
 static void
@@ -975,7 +990,7 @@ json_rib_set(struct ctl_show_set *set)
 	json_do_printf("type", "%s", fmt_set_type(set));
 	json_do_printf("last_change", "%s", fmt_monotime(set->lastchange));
 	json_do_int("last_change_sec", get_monotime(set->lastchange));
-	if (set->type == ASNUM_SET) {
+	if (set->type == ASNUM_SET || set->type == ASPA_SET) {
 		json_do_uint("num_ASnum", set->as_cnt);
 	} else {
 		json_do_uint("num_IPv4", set->v4_cnt);
@@ -1057,5 +1072,5 @@ const struct output json_output = {
 	.set = json_rib_set,
 	.rtr = json_rtr,
 	.result = json_result,
-	.tail = json_tail
+	.tail = json_tail,
 };

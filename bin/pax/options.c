@@ -1,4 +1,4 @@
-/*	$OpenBSD: options.c,v 1.103 2019/11/15 20:34:17 naddy Exp $	*/
+/*	$OpenBSD: options.c,v 1.105 2023/01/17 16:20:28 tb Exp $	*/
 /*	$NetBSD: options.c,v 1.6 1996/03/26 23:54:18 mrg Exp $	*/
 
 /*-
@@ -1107,8 +1107,7 @@ tar_options(int argc, char **argv)
 int mkpath(char *);
 
 int
-mkpath(path)
-	char *path;
+mkpath(char *path)
 {
 	struct stat sb;
 	char *slash;
@@ -1371,7 +1370,6 @@ cpio_options(int argc, char **argv)
 				 */
 				frmt = &(fsub[F_OCPIO]);
 				break;
-			case '?':
 			default:
 				cpio_usage();
 				break;

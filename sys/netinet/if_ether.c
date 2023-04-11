@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_ether.c,v 1.251 2022/07/16 15:25:30 bluhm Exp $	*/
+/*	$OpenBSD: if_ether.c,v 1.258 2023/03/08 04:43:08 guenther Exp $	*/
 /*	$NetBSD: if_ether.c,v 1.31 1996/05/11 12:59:58 mycroft Exp $	*/
 
 /*
@@ -105,7 +105,8 @@ struct niqueue arpinq = NIQUEUE_INITIALIZER(50, NETISR_ARP);
 /* llinfo_arp live time, rt_llinfo and RTF_LLINFO are protected by arp_mtx */
 struct mutex arp_mtx = MUTEX_INITIALIZER(IPL_SOFTNET);
 
-LIST_HEAD(, llinfo_arp) arp_list; /* [mN] list of all llinfo_arp structures */
+LIST_HEAD(, llinfo_arp) arp_list =
+    LIST_HEAD_INITIALIZER(arp_list);	/* [mN] list of llinfo_arp structures */
 struct	pool arp_pool;		/* [I] pool for llinfo_arp structures */
 int	arp_maxtries = 5;	/* [I] arp requests before set to rejected */
 int	la_hold_total;		/* [a] packets currently in the arp queue */
@@ -120,7 +121,6 @@ unsigned int revarp_ifidx;
 /*
  * Timeout routine.  Age arp_tab entries periodically.
  */
-/* ARGSUSED */
 void
 arptimer(void *arg)
 {
@@ -429,8 +429,8 @@ arpresolve(struct ifnet *ifp, struct rtentry *rt0, struct mbuf *m,
 
 	/*
 	 * There is an arptab entry, but no ethernet address
-	 * response yet. Insert mbuf in hold queue if below limit
-	 * if above the limit free the queue without queuing the new packet.
+	 * response yet. Insert mbuf in hold queue if below limit.
+	 * If above the limit free the queue without queuing the new packet.
 	 */
 	if (atomic_inc_int_nv(&la_hold_total) <= LA_HOLD_TOTAL) {
 		if (mq_push(&la->la_mq, m) != 0)

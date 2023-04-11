@@ -1,4 +1,4 @@
-/*	$OpenBSD: apm.c,v 1.40 2022/04/06 18:59:26 naddy Exp $	*/
+/*	$OpenBSD: apm.c,v 1.42 2023/02/10 14:34:16 visa Exp $	*/
 
 /*-
  * Copyright (c) 2001 Alexander Guy.  All rights reserved.
@@ -38,6 +38,7 @@
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/proc.h>
+#include <sys/clockintr.h>
 #include <sys/device.h>
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
@@ -362,7 +363,7 @@ apm_record_event(u_int event, const char *src, const char *msg)
 		return (1);
 
 	apm_evindex++;
-	KNOTE(&sc->sc_note, APM_EVENT_COMPOSE(event, apm_evindex));
+	knote_locked(&sc->sc_note, APM_EVENT_COMPOSE(event, apm_evindex));
 
 	return (0);
 }
@@ -415,7 +416,13 @@ apm_suspend(int state)
 		if (rv == 0)
 			rv = sys_platform->resume();
 	}
+
 	inittodr(gettime());	/* Move the clock forward */
+#ifdef __HAVE_CLOCKINTR
+	clockintr_cpu_init(NULL);
+	clockintr_trigger();
+#endif
+
 	config_suspend_all(DVACT_RESUME);
 
 	cold = 0;

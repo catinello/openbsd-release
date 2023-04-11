@@ -1,4 +1,4 @@
-/*	$OpenBSD: disklabel.c,v 1.244 2022/09/06 14:14:44 krw Exp $	*/
+/*	$OpenBSD: disklabel.c,v 1.247 2023/01/04 21:08:08 krw Exp $	*/
 
 /*
  * Copyright (c) 1987, 1993
@@ -186,7 +186,6 @@ main(int argc, char *argv[])
 		case 'v':
 			verbose = 1;
 			break;
-		case '?':
 		default:
 			usage();
 		}
@@ -456,7 +455,7 @@ makedisktab(FILE *f, struct disklabel *lp)
 }
 
 double
-scale(u_int64_t sz, char unit, struct disklabel *lp)
+scale(u_int64_t sz, char unit, const struct disklabel *lp)
 {
 	double fsz;
 
@@ -484,9 +483,9 @@ scale(u_int64_t sz, char unit, struct disklabel *lp)
  * Display a particular partition.
  */
 void
-display_partition(FILE *f, struct disklabel *lp, int i, char unit)
+display_partition(FILE *f, const struct disklabel *lp, int i, char unit)
 {
-	struct partition *pp = &lp->d_partitions[i];
+	const struct partition *pp = &lp->d_partitions[i];
 	double p_size;
 
 	p_size = scale(DL_GETPSIZE(pp), unit, lp);
@@ -524,9 +523,9 @@ display_partition(FILE *f, struct disklabel *lp, int i, char unit)
 }
 
 char
-canonical_unit(struct disklabel *lp, char unit)
+canonical_unit(const struct disklabel *lp, char unit)
 {
-	struct partition *pp;
+	const struct partition *pp;
 	u_int64_t small;
 	int i;
 
@@ -551,7 +550,7 @@ canonical_unit(struct disklabel *lp, char unit)
 }
 
 void
-display(FILE *f, struct disklabel *lp, char unit, int all)
+display(FILE *f, const struct disklabel *lp, char unit, int all)
 {
 	int i;
 	double d;
@@ -572,8 +571,6 @@ display(FILE *f, struct disklabel *lp, char unit, int all)
 	    lp->d_uid[0], lp->d_uid[1], lp->d_uid[2], lp->d_uid[3],
 	    lp->d_uid[4], lp->d_uid[5], lp->d_uid[6], lp->d_uid[7]);
 	fprintf(f, "flags:");
-	if (lp->d_flags & D_BADSECT)
-		fprintf(f, " badsect");
 	if (lp->d_flags & D_VENDOR)
 		fprintf(f, " vendor");
 	putc('\n', f);
@@ -865,7 +862,7 @@ getasciilabel(FILE *f, struct disklabel *lp)
 			for (v = 0; (cp = tp) && *cp != '\0';) {
 				tp = word(cp);
 				if (!strcmp(cp, "badsect"))
-					v |= D_BADSECT;
+					; /* Ignore obsolete flag. */
 				else if (!strcmp(cp, "vendor"))
 					v |= D_VENDOR;
 				else {

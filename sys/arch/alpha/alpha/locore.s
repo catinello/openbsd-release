@@ -1,4 +1,4 @@
-/* $OpenBSD: locore.s,v 1.48 2020/05/17 13:48:29 deraadt Exp $ */
+/* $OpenBSD: locore.s,v 1.51 2023/01/31 15:18:51 deraadt Exp $ */
 /* $NetBSD: locore.s,v 1.94 2001/04/26 03:10:44 ross Exp $ */
 
 /*-
@@ -767,7 +767,7 @@ LEAF(cpu_idle_leave, 0)
 	END(cpu_idle_leave)
 
 /*
- * switch_trampoline()
+ * proc_trampoline()
  *
  * Arrange for a function to be invoked neatly, after a cpu_fork().
  *
@@ -775,7 +775,7 @@ LEAF(cpu_idle_leave, 0)
  * address specified by the s1 register and with one argument specified
  * by the s2 register.
  */
-LEAF(switch_trampoline, 0)
+LEAF(proc_trampoline, 0)
 #if defined(MULTIPROCESSOR)
 	CALL(proc_trampoline_mp)
 #endif
@@ -783,7 +783,7 @@ LEAF(switch_trampoline, 0)
 	mov	s1, ra
 	mov	s2, a0
 	jmp	zero, (pv)
-	END(switch_trampoline)
+	END(proc_trampoline)
 
 /**************************************************************************/
 
@@ -793,7 +793,7 @@ LEAF(switch_trampoline, 0)
  *
  * int copystr(char *from, char *to, size_t len, size_t *lenp);
  */
-LEAF(copystr, 4)
+STATIC_LEAF(copystr, 4)
 	LDGP(pv)
 
 	mov	a2, t0			/* t0 = i = len */
@@ -827,7 +827,7 @@ LEAF(copystr, 4)
 	RET
 	END(copystr)
 
-NESTED(copyinstr, 4, 16, ra, IM_RA|IM_S0, 0)
+NESTED(_copyinstr, 4, 16, ra, IM_RA|IM_S0, 0)
 	LDGP(pv)
 	ldiq	t0, VM_MAX_ADDRESS		/* make sure that src addr   */
 	cmpult	a0, t0, t1			/* is in user space.	     */
@@ -847,7 +847,7 @@ NESTED(copyinstr, 4, 16, ra, IM_RA|IM_S0, 0)
 	ldq	s0, (16-16)(sp)			/* restore s0.		     */
 	lda	sp, 16(sp)			/* kill stack frame.	     */
 	RET					/* v0 left over from copystr */
-	END(copyinstr)
+	END(_copyinstr)
 
 NESTED(copyoutstr, 4, 16, ra, IM_RA|IM_S0, 0)
 	LDGP(pv)
@@ -914,7 +914,7 @@ LEAF(kcopyerr, 0)
 	RET
 END(kcopyerr)
 
-NESTED(copyin, 3, 16, ra, IM_RA|IM_S0, 0)
+NESTED(_copyin, 3, 16, ra, IM_RA|IM_S0, 0)
 	LDGP(pv)
 	ldiq	t0, VM_MAX_ADDRESS		/* make sure that src addr   */
 	cmpult	a0, t0, t1			/* is in user space.	     */
@@ -935,7 +935,7 @@ NESTED(copyin, 3, 16, ra, IM_RA|IM_S0, 0)
 	lda	sp, 16(sp)			/* kill stack frame.	     */
 	mov	zero, v0			/* return 0. */
 	RET
-	END(copyin)
+	END(_copyin)
 
 NESTED(copyout, 3, 16, ra, IM_RA|IM_S0, 0)
 	LDGP(pv)

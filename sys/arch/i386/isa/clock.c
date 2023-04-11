@@ -1,4 +1,4 @@
-/*	$OpenBSD: clock.c,v 1.60 2021/02/23 04:44:30 cheloha Exp $	*/
+/*	$OpenBSD: clock.c,v 1.64 2023/02/04 19:19:36 cheloha Exp $	*/
 /*	$NetBSD: clock.c,v 1.39 1996/05/12 23:11:54 mycroft Exp $	*/
 
 /*-
@@ -89,12 +89,11 @@ WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #include <sys/systm.h>
 #include <sys/time.h>
 #include <sys/kernel.h>
-#include <sys/device.h>
+#include <sys/clockintr.h>
 #include <sys/timeout.h>
 #include <sys/timetc.h>
 #include <sys/mutex.h>
 
-#include <machine/cpu.h>
 #include <machine/intr.h>
 #include <machine/pio.h>
 #include <machine/cpufunc.h>
@@ -130,7 +129,6 @@ u_int i8254_simple_get_timecount(struct timecounter *tc);
 
 static struct timecounter i8254_timecounter = {
 	.tc_get_timecount = i8254_get_timecount,
-	.tc_poll_pps = NULL,
 	.tc_counter_mask = ~0u,
 	.tc_frequency = TIMER_FREQ,
 	.tc_name = "i8254",
@@ -202,10 +200,8 @@ rtcdrain(void *v)
 }
 
 int
-clockintr(void *arg)
+clockintr(void *frame)
 {
-	struct clockframe *frame = arg;		/* not strictly necessary */
-
 	if (timecounter->tc_get_timecount == i8254_get_timecount) {
 		if (i8254_ticked) {
 			i8254_ticked = 0;
@@ -214,33 +210,26 @@ clockintr(void *arg)
 			i8254_lastcount = 0;
 		}
 	}
-
-	hardclock(frame);
+	clockintr_dispatch(frame);
 	return (1);
 }
 
 int
-rtcintr(void *arg)
+rtcintr(void *frame)
 {
-	struct clockframe *frame = arg;		/* not strictly necessary */
 	u_int stat = 0;
-
-	if (stathz == 0) {
-		extern int psratio;
-
-		stathz = 128;
-		profhz = 1024;
-		psratio = profhz / stathz;
-	}
 
 	/*
 	 * If rtcintr is 'late', next intr may happen immediately.
 	 * Get them all. (Also, see comment in cpu_initclocks().)
 	 */
-	while (mc146818_read(NULL, MC_REGC) & MC_REGC_PF) {
-		statclock(frame);
+	while (mc146818_read(NULL, MC_REGC) & MC_REGC_PF)
 		stat = 1;
-	}
+
+	/* XXX Can rtcintr() run before i8254_initclocks() is complete? */
+	if (stathz != 0 && stat)
+		clockintr_dispatch(frame);
+
 	return (stat);
 }
 
@@ -433,6 +422,14 @@ calibrate_cyclecounter(void)
 void
 i8254_initclocks(void)
 {
+	i8254_inittimecounter();	/* hook the interrupt-based i8254 tc */
+
+	stathz = 128;
+	profhz = 1024;		/* XXX does not divide into 1 billion */
+	clockintr_init(0);
+
+	clockintr_cpu_init(NULL);
+
 	/* When using i8254 for clock, we also use the rtc for profclock */
 	(void)isa_intr_establish(NULL, 0, IST_PULSE, IPL_CLOCK,
 	    clockintr, 0, "clock");
@@ -440,8 +437,6 @@ i8254_initclocks(void)
 	    rtcintr, 0, "rtc");
 
 	rtcstart();			/* start the mc146818 clock */
-
-	i8254_inittimecounter();	/* hook the interrupt-based i8254 tc */
 }
 
 void
@@ -646,7 +641,6 @@ rtcsettime(struct todr_chip_handle *handle, struct timeval *tv)
 	return 0;
 }
 
-extern todr_chip_handle_t todr_handle;
 struct todr_chip_handle rtc_todr;
 
 void
@@ -654,7 +648,8 @@ rtcinit(void)
 {
 	rtc_todr.todr_gettime = rtcgettime;
 	rtc_todr.todr_settime = rtcsettime;
-	todr_handle = &rtc_todr;
+	rtc_todr.todr_quality = 0;
+	todr_attach(&rtc_todr);
 }
 
 void
@@ -668,6 +663,7 @@ setstatclockrate(int arg)
 			mc146818_write(NULL, MC_REGA,
 			    MC_BASE_32_KHz | MC_RATE_1024_Hz);
 	}
+	clockintr_setstatclockrate(arg);
 }
 
 void

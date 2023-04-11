@@ -1,4 +1,4 @@
-/* $OpenBSD: isakmpd.c,v 1.107 2018/01/15 09:54:48 mpi Exp $	 */
+/* $OpenBSD: isakmpd.c,v 1.109 2023/03/08 04:43:06 guenther Exp $	 */
 /* $EOM: isakmpd.c,v 1.54 2000/10/05 09:28:22 niklas Exp $	 */
 
 /*
@@ -212,7 +212,6 @@ parse_args(int argc, char *argv[])
 			verbose_logging = 1;
 			break;
 
-		case '?':
 		default:
 			usage();
 		}
@@ -227,7 +226,6 @@ parse_args(int argc, char *argv[])
 		pcap_file = PCAP_FILE_DEFAULT;
 }
 
-/* ARGSUSED */
 static void
 sighup(int sig)
 {
@@ -336,7 +334,6 @@ daemon_shutdown(void)
 }
 
 /* Called on SIGTERM, SIGINT or by ui_shutdown_daemon().  */
-/* ARGSUSED */
 void
 daemon_shutdown_now(int sig)
 {

@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.161 2022/09/22 04:36:37 robert Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.165 2023/03/09 13:17:28 jsg Exp $	*/
 /* $NetBSD: cpu.c,v 1.1 2003/04/26 18:39:26 fvdl Exp $ */
 
 /*-
@@ -149,6 +149,19 @@ void	replacemds(void);
 
 extern long _stac;
 extern long _clac;
+
+int cpuid_level = 0;		/* cpuid(0).eax */
+char cpu_vendor[16] = { 0 };	/* cpuid(0).e[bdc]x, \0 */
+int cpu_id = 0;			/* cpuid(1).eax */
+int cpu_ebxfeature = 0;		/* cpuid(1).ebx */
+int cpu_ecxfeature = 0;		/* cpuid(1).ecx */
+int cpu_feature = 0;		/* cpuid(1).edx */
+int cpu_perf_eax = 0;		/* cpuid(0xa).eax */
+int cpu_perf_ebx = 0;		/* cpuid(0xa).ebx */
+int cpu_perf_edx = 0;		/* cpuid(0xa).edx */
+int cpu_apmi_edx = 0;		/* cpuid(0x80000007).edx */
+int ecpu_ecxfeature = 0;	/* cpuid(0x80000001).ecx */
+int cpu_meltdown = 0;
 
 void
 replacesmap(void)
@@ -420,7 +433,7 @@ cpu_match(struct device *parent, void *match, void *aux)
 }
 
 void	cpu_idle_mwait_cycle(void);
-void	cpu_init_mwait(struct cpu_softc *);
+void	cpu_init_mwait(struct cpu_softc *, struct cpu_info *);
 
 u_int	cpu_mwait_size, cpu_mwait_states;
 
@@ -458,7 +471,7 @@ cpu_idle_mwait_cycle(void)
 }
 
 void
-cpu_init_mwait(struct cpu_softc *sc)
+cpu_init_mwait(struct cpu_softc *sc, struct cpu_info *ci)
 {
 	unsigned int smallest, largest, extensions, c_substates;
 
@@ -469,6 +482,11 @@ cpu_init_mwait(struct cpu_softc *sc)
 	CPUID(0x5, smallest, largest, extensions, cpu_mwait_states);
 	smallest &= 0xffff;
 	largest  &= 0xffff;
+
+	/* mask out states C6/C7 in 31:24 for CHT45 errata */
+	if (strcmp(cpu_vendor, "GenuineIntel") == 0 &&
+	    ci->ci_family == 0x06 && ci->ci_model == 0x4c)
+		cpu_mwait_states &= 0x00ffffff;
 
 	printf("%s: mwait min=%u, max=%u", sc->sc_dev.dv_xname,
 	    smallest, largest);
@@ -607,7 +625,7 @@ cpu_attach(struct device *parent, struct device *self, void *aux)
 #endif /* MTRR */
 		/* XXX SP fpuinit(ci) is done earlier */
 		cpu_init(ci);
-		cpu_init_mwait(sc);
+		cpu_init_mwait(sc, ci);
 		break;
 
 	case CPU_ROLE_BP:
@@ -634,7 +652,7 @@ cpu_attach(struct device *parent, struct device *self, void *aux)
 #if NIOAPIC > 0
 		ioapic_bsp_id = caa->cpu_apicid;
 #endif
-		cpu_init_mwait(sc);
+		cpu_init_mwait(sc, ci);
 		break;
 
 	case CPU_ROLE_AP:
@@ -724,6 +742,8 @@ cpu_init(struct cpu_info *ci)
 		cr4 |= CR4_UMIP;
 	if ((cpu_ecxfeature & CPUIDECX_XSAVE) && cpuid_level >= 0xd)
 		cr4 |= CR4_OSXSAVE;
+	if (pg_xo)
+		cr4 |= CR4_PKE;
 	if (pmap_use_pcid)
 		cr4 |= CR4_PCIDE;
 	lcr4(cr4);
@@ -937,7 +957,6 @@ cpu_hatch(void *v)
 	atomic_setbits_int(&ci->ci_flags, CPUF_PRESENT);
 
 	lapic_enable();
-	lapic_startclock();
 	cpu_ucode_apply(ci);
 	cpu_tsx_disable(ci);
 
@@ -1003,6 +1022,8 @@ cpu_hatch(void *v)
 
 	nanouptime(&ci->ci_schedstate.spc_runtime);
 	splx(s);
+
+	lapic_startclock();
 
 	SCHED_LOCK(s);
 	cpu_switchto(NULL, sched_chooseproc());

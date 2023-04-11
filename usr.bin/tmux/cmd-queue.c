@@ -1,4 +1,4 @@
-/* $OpenBSD: cmd-queue.c,v 1.110 2022/05/30 13:00:18 nicm Exp $ */
+/* $OpenBSD: cmd-queue.c,v 1.114 2023/02/05 21:15:32 nicm Exp $ */
 
 /*
  * Copyright (c) 2013 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -24,6 +24,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <vis.h>
 
 #include "tmux.h"
 
@@ -823,43 +824,28 @@ cmdq_guard(struct cmdq_item *item, const char *guard, int flags)
 
 /* Show message from command. */
 void
+cmdq_print_data(struct cmdq_item *item, int parse, struct evbuffer *evb)
+{
+	server_client_print(item->client, parse, evb);
+}
+
+/* Show message from command. */
+void
 cmdq_print(struct cmdq_item *item, const char *fmt, ...)
 {
-	struct client			*c = item->client;
-	struct window_pane		*wp;
-	struct window_mode_entry	*wme;
-	va_list				 ap;
-	char				*tmp, *msg;
+	va_list		 ap;
+	struct evbuffer	*evb;
+
+	evb = evbuffer_new();
+	if (evb == NULL)
+		fatalx("out of memory");
 
 	va_start(ap, fmt);
-	xvasprintf(&msg, fmt, ap);
+	evbuffer_add_vprintf(evb, fmt, ap);
 	va_end(ap);
 
-	log_debug("%s: %s", __func__, msg);
-
-	if (c == NULL)
-		/* nothing */;
-	else if (c->session == NULL || (c->flags & CLIENT_CONTROL)) {
-		if (~c->flags & CLIENT_UTF8) {
-			tmp = msg;
-			msg = utf8_sanitize(tmp);
-			free(tmp);
-		}
-		if (c->flags & CLIENT_CONTROL)
-			control_write(c, "%s", msg);
-		else
-			file_print(c, "%s\n", msg);
-	} else {
-		wp = server_client_get_pane(c);
-		wme = TAILQ_FIRST(&wp->modes);
-		if (wme == NULL || wme->mode != &window_view_mode) {
-			window_pane_set_mode(wp, NULL, &window_view_mode, NULL,
-			    NULL);
-		}
-		window_copy_add(wp, 0, "%s", msg);
-	}
-
-	free(msg);
+	cmdq_print_data(item, 0, evb);
+	evbuffer_free(evb);
 }
 
 /* Show error from command. */

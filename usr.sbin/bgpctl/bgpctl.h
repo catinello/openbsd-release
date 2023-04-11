@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpctl.h,v 1.16 2022/08/31 15:00:53 claudio Exp $ */
+/*	$OpenBSD: bgpctl.h,v 1.19 2023/01/24 11:29:34 claudio Exp $ */
 
 /*
  * Copyright (c) 2019 Claudio Jeker <claudio@openbsd.org>
@@ -37,7 +37,7 @@ struct output {
 	void	(*tail)(void);
 };
 
-extern const struct output show_output, json_output;
+extern const struct output show_output, json_output, ometric_output;
 extern const size_t pt_sizes[];
 
 #define EOL0(flag)	((flag & F_CTL_SSV) ? ';' : '\n')
@@ -50,6 +50,7 @@ const char	*fmt_fib_flags(uint16_t);
 const char	*fmt_origin(uint8_t, int);
 const char	*fmt_flags(uint32_t, int);
 const char	*fmt_ovs(uint8_t, int);
+const char	*fmt_avs(uint8_t, int);
 const char	*fmt_auth_method(enum auth_method);
 const char	*fmt_mem(long long);
 const char	*fmt_errstr(uint8_t, uint8_t);
@@ -58,3 +59,5 @@ const char	*fmt_community(uint16_t, uint16_t);
 const char	*fmt_large_community(uint32_t, uint32_t, uint32_t);
 const char	*fmt_ext_community(uint8_t *);
 const char	*fmt_set_type(struct ctl_show_set *);
+
+#define MPLS_LABEL_OFFSET 12

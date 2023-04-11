@@ -1,4 +1,4 @@
-/*	$OpenBSD: sysctl.h,v 1.229 2022/08/16 13:29:53 visa Exp $	*/
+/*	$OpenBSD: sysctl.h,v 1.232 2023/01/07 05:24:58 guenther Exp $	*/
 /*	$NetBSD: sysctl.h,v 1.16 1996/04/09 20:55:36 cgd Exp $	*/
 
 /*
@@ -191,7 +191,9 @@ struct ctlname {
 #define	KERN_TIMEOUT_STATS	87	/* struct: timeout status and stats */
 #define	KERN_UTC_OFFSET		88	/* int: adjust RTC time to UTC */
 #define	KERN_VIDEO		89	/* struct: video properties */
-#define	KERN_MAXID		90	/* number of valid kern ids */
+#define	KERN_CLOCKINTR		90	/* node: clockintr */
+#define	KERN_AUTOCONF_SERIAL	91	/* int: kernel device tree state serial */
+#define	KERN_MAXID		92	/* number of valid kern ids */
 
 #define	CTL_KERN_NAMES { \
 	{ 0, 0 }, \
@@ -284,6 +286,8 @@ struct ctlname {
 	{ "timeout_stats", CTLTYPE_STRUCT }, \
 	{ "utc_offset", CTLTYPE_INT }, \
 	{ "video", CTLTYPE_STRUCT }, \
+ 	{ "clockintr", CTLTYPE_NODE }, \
+	{ "autoconf_serial", CTLTYPE_INT }, \
 }
 
 /*
@@ -486,6 +490,7 @@ struct kinfo_proc {
 	u_int32_t p_rtableid;		/* U_INT: Routing table identifier. */
 
 	u_int64_t p_pledge;		/* U_INT64_T: Pledge flags. */
+	char	p_name[KI_MAXCOMLEN];	/* thread name */
 };
 
 /*
@@ -613,7 +618,7 @@ do {									\
 	(kp)->p_svgid = (uc)->cr_svgid;					\
 									\
 	memcpy((kp)->p_groups, (uc)->cr_groups,				\
-	    _FILL_KPROC_MIN(sizeof((kp)->p_groups), sizeof((uc)->cr_groups)));	\
+	    _FILL_KPROC_MIN(sizeof((kp)->p_groups), sizeof((uc)->cr_groups))); \
 	(kp)->p_ngroups = (uc)->cr_ngroups;				\
 									\
 	(kp)->p_jobc = (pg)->pg_jobc;					\
@@ -626,6 +631,7 @@ do {									\
 		(kp)->p_uticks = (p)->p_tu.tu_uticks;			\
 		(kp)->p_sticks = (p)->p_tu.tu_sticks;			\
 		(kp)->p_iticks = (p)->p_tu.tu_iticks;			\
+		strlcpy((kp)->p_name, (p)->p_name, sizeof((kp)->p_name)); \
 	} else {							\
 		(kp)->p_rtime_sec = (pr)->ps_tu.tu_runtime.tv_sec;	\
 		(kp)->p_rtime_usec = (pr)->ps_tu.tu_runtime.tv_nsec/1000; \
@@ -662,7 +668,7 @@ do {									\
 	strlcpy((kp)->p_emul, "native", sizeof((kp)->p_emul));		\
 	strlcpy((kp)->p_comm, (pr)->ps_comm, sizeof((kp)->p_comm));	\
 	strlcpy((kp)->p_login, (sess)->s_login,				\
-	    _FILL_KPROC_MIN(sizeof((kp)->p_login), sizeof((sess)->s_login)));	\
+	    _FILL_KPROC_MIN(sizeof((kp)->p_login), sizeof((sess)->s_login))); \
 									\
 	if ((sess)->s_ttyvp)						\
 		(kp)->p_eflag |= EPROC_CTTY;				\
@@ -878,6 +884,17 @@ struct kinfo_file {
 	{ "timestepwarnings", CTLTYPE_INT }, \
 	{ "hardware", CTLTYPE_STRING }, \
 	{ "choice", CTLTYPE_STRING }, \
+}
+
+/*
+ * KERN_CLOCKINTR
+ */
+#define KERN_CLOCKINTR_STATS		1	/* struct: stats */
+#define KERN_CLOCKINTR_MAXID		2
+
+#define CTL_KERN_CLOCKINTR_NAMES { \
+	{ 0, 0 }, \
+	{ "stats", CTLTYPE_STRUCT }, \
 }
 
 /*

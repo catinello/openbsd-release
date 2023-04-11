@@ -1,4 +1,4 @@
-/*	$OpenBSD: sys_socket.c,v 1.54 2022/09/02 13:12:31 mvs Exp $	*/
+/*	$OpenBSD: sys_socket.c,v 1.60 2023/01/22 12:05:44 mvs Exp $	*/
 /*	$NetBSD: sys_socket.c,v 1.13 1995/08/12 23:59:09 mycroft Exp $	*/
 
 /*
@@ -119,7 +119,7 @@ soo_ioctl(struct file *fp, u_long cmd, caddr_t data, struct proc *p)
 		break;
 
 	case SIOCATMARK:
-		*(int *)data = (so->so_state&SS_RCVATMARK) != 0;
+		*(int *)data = (so->so_rcv.sb_state & SS_RCVATMARK) != 0;
 		break;
 
 	default:
@@ -129,16 +129,12 @@ soo_ioctl(struct file *fp, u_long cmd, caddr_t data, struct proc *p)
 		 * different entry since a socket's unnecessary
 		 */
 		if (IOCGROUP(cmd) == 'i') {
-			KERNEL_LOCK();
 			error = ifioctl(so, cmd, data, p);
-			KERNEL_UNLOCK();
 			return (error);
 		}
 		if (IOCGROUP(cmd) == 'r')
 			return (EOPNOTSUPP);
-		KERNEL_LOCK();
 		error = pru_control(so, cmd, data, NULL);
-		KERNEL_UNLOCK();
 		break;
 	}
 
@@ -153,9 +149,10 @@ soo_stat(struct file *fp, struct stat *ub, struct proc *p)
 	memset(ub, 0, sizeof (*ub));
 	ub->st_mode = S_IFSOCK;
 	solock(so);
-	if ((so->so_state & SS_CANTRCVMORE) == 0 || so->so_rcv.sb_cc != 0)
+	if ((so->so_rcv.sb_state & SS_CANTRCVMORE) == 0 ||
+	    so->so_rcv.sb_cc != 0)
 		ub->st_mode |= S_IRUSR | S_IRGRP | S_IROTH;
-	if ((so->so_state & SS_CANTSENDMORE) == 0)
+	if ((so->so_snd.sb_state & SS_CANTSENDMORE) == 0)
 		ub->st_mode |= S_IWUSR | S_IWGRP | S_IWOTH;
 	ub->st_uid = so->so_euid;
 	ub->st_gid = so->so_egid;

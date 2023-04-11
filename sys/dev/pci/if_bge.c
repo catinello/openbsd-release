@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_bge.c,v 1.398 2022/03/11 18:00:45 mpi Exp $	*/
+/*	$OpenBSD: if_bge.c,v 1.400 2023/01/18 23:31:37 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2001 Wind River Systems
@@ -2961,14 +2961,14 @@ bge_attach(struct device *parent, struct device *self, void *aux)
 		    sizeof(struct bge_ring_data));
 		goto fail_3;
 	}
-	DPRINTFN(5, ("bus_dmamem_create\n"));
+	DPRINTFN(5, ("bus_dmamap_create\n"));
 	if (bus_dmamap_create(sc->bge_dmatag, sizeof(struct bge_ring_data), 1,
 	    sizeof(struct bge_ring_data), 0,
 	    BUS_DMA_NOWAIT, &sc->bge_ring_map)) {
 		printf(": can't create dma map\n");
 		goto fail_4;
 	}
-	DPRINTFN(5, ("bus_dmamem_load\n"));
+	DPRINTFN(5, ("bus_dmamap_load\n"));
 	if (bus_dmamap_load(sc->bge_dmatag, sc->bge_ring_map, kva,
 			    sizeof(struct bge_ring_data), NULL,
 			    BUS_DMA_NOWAIT)) {
@@ -3160,10 +3160,10 @@ bge_detach(struct device *self, int flags)
 	struct bge_softc *sc = (struct bge_softc *)self;
 	struct ifnet *ifp = &sc->arpcom.ac_if;
 
+	bge_stop(sc, 1);
+
 	if (sc->bge_intrhand)
 		pci_intr_disestablish(sc->bge_pa.pa_pc, sc->bge_intrhand);
-
-	bge_stop(sc, 1);
 
 	/* Detach any PHYs we might have. */
 	if (LIST_FIRST(&sc->bge_mii.mii_phys) != NULL)

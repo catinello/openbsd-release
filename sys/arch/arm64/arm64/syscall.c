@@ -1,4 +1,4 @@
-/* $OpenBSD: syscall.c,v 1.10 2022/01/01 18:52:36 kettenis Exp $ */
+/* $OpenBSD: syscall.c,v 1.13 2023/02/11 23:07:26 deraadt Exp $ */
 /*
  * Copyright (c) 2015 Dale Rahn <drahn@dalerahn.com>
  *
@@ -35,7 +35,7 @@ svc_handler(trapframe_t *frame)
 {
 	struct proc *p = curproc;
 	const struct sysent *callp;
-	int code, error;
+	int code, error, indirect = -1;
 	u_int nap = 8, nargs;
 	register_t *ap, *args, copyargs[MAXARGS], rval[2];
 
@@ -54,10 +54,7 @@ svc_handler(trapframe_t *frame)
 
 	switch (code) {	
 	case SYS_syscall:
-		code = *ap++;
-		nap--;
-		break;
-        case SYS___syscall:
+		indirect = code;
 		code = *ap++;
 		nap--;
 		break;
@@ -82,15 +79,13 @@ svc_handler(trapframe_t *frame)
 	}
 
 	rval[0] = 0;
-	rval[1] = frame->tf_x[1];
+	rval[1] = 0;
 
-	error = mi_syscall(p, code, callp, args, rval);
+	error = mi_syscall(p, code, indirect, callp, args, rval);
 
 	switch (error) {
 	case 0:
 		frame->tf_x[0] = rval[0];
-		frame->tf_x[1] = rval[1];
-
 		frame->tf_spsr &= ~PSR_C;	/* carry bit */
 		break;
 
@@ -122,7 +117,6 @@ child_return(void *arg)
 	struct trapframe *frame = p->p_addr->u_pcb.pcb_tf;
 
 	frame->tf_x[0] = 0;
-	frame->tf_x[1] = 1;
 	frame->tf_spsr &= ~PSR_C;	/* carry bit */
 
 	KERNEL_UNLOCK();

@@ -1,4 +1,4 @@
-/*	$OpenBSD: frontend.c,v 1.73 2022/03/13 15:14:01 florian Exp $	*/
+/*	$OpenBSD: frontend.c,v 1.77 2023/02/08 08:01:25 tb Exp $	*/
 
 /*
  * Copyright (c) 2018 Florian Obser <florian@openbsd.org>
@@ -996,7 +996,8 @@ synthesize_dns64_answer(struct pending_query *pq)
 }
 
 void
-resend_dns64_query(struct pending_query *opq) {
+resend_dns64_query(struct pending_query *opq)
+{
 	struct pending_query	*pq;
 	struct query_imsg	 query_imsg;
 	int			 rcode;
@@ -1706,10 +1707,13 @@ tcp_request(int fd, short events, void *arg)
 		sldns_buffer_flip(pq->qbuf);
 		len = sldns_buffer_read_u16(pq->qbuf);
 		tmp = sldns_buffer_new(len);
-		pq->abuf = sldns_buffer_new(len);
-
-		if (!tmp || !pq->abuf)
+		if (tmp == NULL)
 			goto fail;
+		pq->abuf = sldns_buffer_new(len);
+		if (pq->abuf == NULL) {
+			sldns_buffer_free(tmp);
+			goto fail;
+		}
 
 		rem = sldns_buffer_remaining(pq->qbuf);
 		sldns_buffer_write(tmp, sldns_buffer_current(pq->qbuf),
@@ -1756,7 +1760,7 @@ tcp_timeout(int fd, short events, void *arg)
 }
 
 void
-check_available_af()
+check_available_af(void)
 {
 	static int		 available_af = HAVE_IPV4 | HAVE_IPV6;
 	static int		 rtable = -1;

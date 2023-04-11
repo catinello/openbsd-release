@@ -142,7 +142,7 @@ $R="mm0";
 	 &xor	($a4,$a2);		# a2=a4^a2^a4
 	 &mov	(&DWP(5*4,"esp"),$a1);	# a1^a4
 	 &xor	($a4,$a1);		# a1^a2^a4
-	&sar	(@i[1],31);		# broardcast 30th bit
+	&sar	(@i[1],31);		# broadcast 30th bit
 	&and	($lo,$b);
 	 &mov	(&DWP(6*4,"esp"),$a2);	# a2^a4
 	&and	(@i[1],$b);
@@ -200,7 +200,8 @@ $R="mm0";
 # void bn_GF2m_mul_2x2(BN_ULONG *r, BN_ULONG a1, BN_ULONG a0, BN_ULONG b1, BN_ULONG b0);
 &function_begin_B("bn_GF2m_mul_2x2");
 if (!$x86only) {
-	&picmeup("edx","OPENSSL_ia32cap_P");
+	&picsetup("edx");
+	&picsymbol("edx", "OPENSSL_ia32cap_P", "edx");
 	&mov	("eax",&DWP(0,"edx"));
 	&mov	("edx",&DWP(4,"edx"));
 	&test	("eax","\$IA32CAP_MASK0_MMX");	# check MMX bit
@@ -307,7 +308,5 @@ if ($sse2) {
 	&pop	("ebp");
 	&ret	();
 &function_end_B("bn_GF2m_mul_2x2");
-
-&asciz	("GF(2^m) Multiplication for x86, CRYPTOGAMS by <appro\@openssl.org>");
 
 &asm_finish();

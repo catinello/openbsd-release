@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2_msg.c,v 1.87 2022/09/21 22:32:11 tobhe Exp $	*/
+/*	$OpenBSD: ikev2_msg.c,v 1.90 2022/12/06 09:07:33 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2019 Tobias Heider <tobias.heider@stusta.de>
@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <signal.h>
+#include <endian.h>
 #include <errno.h>
 #include <err.h>
 #include <event.h>
@@ -279,7 +280,7 @@ ikev2_msg_send(struct iked *env, struct iked_message *msg)
 	exchange = hdr->ike_exchange;
 	flags = hdr->ike_flags;
 	logit(exchange == IKEV2_EXCHANGE_INFORMATIONAL ?  LOG_DEBUG : LOG_INFO,
-	    "%ssend %s %s %u peer %s local %s, %ld bytes%s",
+	    "%ssend %s %s %u peer %s local %s, %zu bytes%s",
 	    SPI_IH(hdr),
 	    print_map(exchange, ikev2_exchange_map),
 	    (flags & IKEV2_FLAG_RESPONSE) ? "res" : "req",
@@ -811,7 +812,8 @@ ikev2_send_encrypted_fragments(struct iked *env, struct iked_sa *sa,
 	    sa->sa_encr == NULL ||
 	    sa->sa_integr == NULL) {
 		log_debug("%s: invalid SA", __func__);
-		goto done;
+		ikestat_inc(env, ikes_frag_send_failures);
+		return ret;
 	}
 
 	sa_fam = ((struct sockaddr *)&sa->sa_local.addr)->sa_family;

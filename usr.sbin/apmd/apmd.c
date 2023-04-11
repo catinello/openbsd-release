@@ -1,4 +1,4 @@
-/*	$OpenBSD: apmd.c,v 1.109 2022/02/18 22:54:13 deraadt Exp $	*/
+/*	$OpenBSD: apmd.c,v 1.111 2023/03/08 04:43:13 guenther Exp $	*/
 
 /*
  *  Copyright (c) 1995, 1996 John T. Kohl
@@ -75,7 +75,6 @@ void do_etc_file(const char *file);
 void error(const char *fmt, const char *arg);
 void set_driver_messages(int fd, int mode);
 
-/* ARGSUSED */
 void
 sigexit(int signo)
 {
@@ -480,7 +479,6 @@ main(int argc, char *argv[])
 				errx(1, "battery percentage is %s: %s", errstr,
 				    optarg);
 			break;
-		case '?':
 		default:
 			usage();
 		}

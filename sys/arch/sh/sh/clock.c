@@ -1,4 +1,4 @@
-/*	$OpenBSD: clock.c,v 1.11 2020/10/20 15:59:17 cheloha Exp $	*/
+/*	$OpenBSD: clock.c,v 1.13 2023/03/12 22:18:58 cheloha Exp $	*/
 /*	$NetBSD: clock.c,v 1.32 2006/09/05 11:09:36 uwe Exp $	*/
 
 /*-
@@ -33,6 +33,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
+#include <sys/clockintr.h>
 #include <sys/device.h>
 #include <sys/timetc.h>
 
@@ -47,9 +48,6 @@
 
 #define	NWDOG 0
 
-#ifndef HZ
-#define	HZ		64
-#endif
 #define	MINYEAR		2002	/* "today" */
 #define	SH_RTC_CLOCK	16384	/* Hz */
 
@@ -205,7 +203,7 @@ sh_clock_get_pclock(void)
 void
 setstatclockrate(int newhz)
 {
-	/* XXX not yet */
+	clockintr_setstatclockrate(newhz);
 }
 
 u_int
@@ -257,9 +255,14 @@ cpu_initclocks(void)
 		panic("No PCLOCK information.");
 
 	/* Set global variables. */
-	hz = HZ;
 	tick = 1000000 / hz;
 	tick_nsec = 1000000000 / hz;
+
+	stathz = hz;
+	profhz = stathz;
+	clockintr_init(0);
+
+	clockintr_cpu_init(NULL);
 
 	/*
 	 * Use TMU channel 0 as hard clock
@@ -332,7 +335,7 @@ sh3_clock_intr(void *arg) /* trap frame */
 	/* clear underflow status */
 	_reg_bclr_2(SH3_TCR0, TCR_UNF);
 
-	hardclock(arg);
+	clockintr_dispatch(arg);
 
 	return (1);
 }
@@ -353,7 +356,7 @@ sh4_clock_intr(void *arg) /* trap frame */
 	/* clear underflow status */
 	_reg_bclr_2(SH4_TCR0, TCR_UNF);
 
-	hardclock(arg);
+	clockintr_dispatch(arg);
 
 	return (1);
 }

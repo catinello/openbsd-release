@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_fork.c,v 1.242 2022/08/14 01:58:27 jsg Exp $	*/
+/*	$OpenBSD: kern_fork.c,v 1.246 2023/02/10 14:34:17 visa Exp $	*/
 /*	$NetBSD: kern_fork.c,v 1.29 1996/02/09 18:59:34 christos Exp $	*/
 
 /*
@@ -198,7 +198,7 @@ process_initialize(struct process *pr, struct proc *p)
 	rw_init(&pr->ps_lock, "pslock");
 	mtx_init(&pr->ps_mtx, IPL_HIGH);
 
-	timeout_set_kclock(&pr->ps_realit_to, realitexpire, pr,
+	timeout_set_flags(&pr->ps_realit_to, realitexpire, pr,
 	    KCLOCK_UPTIME, 0);
 	timeout_set(&pr->ps_rucheck_to, rucheck, pr);
 }
@@ -465,7 +465,7 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
 	/*
 	 * Notify any interested parties about the new process.
 	 */
-	KNOTE(&curpr->ps_klist, NOTE_FORK | pr->ps_pid);
+	knote_locked(&curpr->ps_klist, NOTE_FORK | pr->ps_pid);
 
 	/*
 	 * Update stats now that we know the fork was successful.
@@ -502,10 +502,8 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
 	/*
 	 * Return child pid to parent process
 	 */
-	if (retval != NULL) {
-		retval[0] = pr->ps_pid;
-		retval[1] = 0;
-	}
+	if (retval != NULL)
+		*retval = pr->ps_pid;
 	return (0);
 }
 
@@ -537,6 +535,7 @@ thread_fork(struct proc *curp, void *stack, void *tcb, pid_t *tidptr,
 	p = thread_new(curp, uaddr);
 	atomic_setbits_int(&p->p_flag, P_THREAD);
 	sigstkinit(&p->p_sigstk);
+	memset(p->p_name, 0, sizeof p->p_name);
 
 	/* other links */
 	p->p_p = pr;
@@ -574,8 +573,7 @@ thread_fork(struct proc *curp, void *stack, void *tcb, pid_t *tidptr,
 	/*
 	 * Return tid to parent thread and copy it out to userspace
 	 */
-	retval[0] = tid = p->p_tid + THREAD_PID_OFFSET;
-	retval[1] = 0;
+	*retval = tid = p->p_tid + THREAD_PID_OFFSET;
 	if (tidptr != NULL) {
 		if (copyout(&tid, tidptr, sizeof(tid)))
 			psignal(curp, SIGSEGV);

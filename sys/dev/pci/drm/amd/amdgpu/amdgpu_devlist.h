@@ -173,8 +173,15 @@ static const struct pci_matchid amdgpu_devices[] = {
 	{0x1002, 0x73EF },
 	{0x1002, 0x73FF },
 
+	/* Aldebaran */
+	{0x1002, 0x7408 },
+	{0x1002, 0x740C },
+	{0x1002, 0x740F },
+	{0x1002, 0x7410 },
+
 	/* CYAN_SKILLFISH */
 	{0x1002, 0x13FE },
+	{0x1002, 0x143F },
 
 	/* BEIGE_GOBY */
 	{0x1002, 0x7420 },
@@ -183,4 +190,27 @@ static const struct pci_matchid amdgpu_devices[] = {
 	{0x1002, 0x7423 },
 	{0x1002, 0x7424 },
 	{0x1002, 0x743F },
+
+	/*
+	 * amdgpu/amdgpu_discovery.c amdgpu_discovery_set_ip_blocks()
+	 * display/dc/core/dc_resource.c resource_parse_asic_id()
+	 */
+
+	/* GC 10.3.6, DCN 3.1.5, APU, Ryzen 7000 "Raphael" */
+	{0x1002, 0x164e },
+
+	/* GC 10.3.7, DCN 3.1.6, APU, Ryzen 7020 "Mendocino" */
+	{0x1002, 0x1506 },
+
+	/* GC 11.0.0, DCN 3.2.0, dGPU, Radeon RX 7900 XT/XTX "Navi 31" */
+	{0x1002, 0x744c },
+
+	/* GC 11.0.1, DCN 3.1.4, APU */
+
+	/* GC 11.0.2, DCN 3.2.1, dGPU, "Navi 33" */
+	{0x1002, 0x7480 },
+	{0x1002, 0x7483 },
+
+	/* GC 11.0.3, DCN 3.2.0, dGPU */
+	/* GC 11.0.4, DCN 3.1.4, APU */
 };

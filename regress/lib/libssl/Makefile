@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.49 2022/08/27 09:23:17 jsing Exp $
+#	$OpenBSD: Makefile,v 1.51 2022/11/05 21:58:24 jsing Exp $
 
 SUBDIR += api
 SUBDIR += asn1
@@ -7,6 +7,7 @@ SUBDIR += bytestring
 SUBDIR += ciphers
 SUBDIR += client
 SUBDIR += dtls
+SUBDIR += exporter
 SUBDIR += handshake
 SUBDIR += pqueue
 SUBDIR += quic
@@ -23,6 +24,7 @@ SUBDIR += verify
 
 # Things that take a long time should go below here. 
 SUBDIR += openssl-ruby
+SUBDIR += rust-openssl
 SUBDIR += tlsfuzzer
 SUBDIR += interop
 

@@ -1,4 +1,4 @@
-/* $OpenBSD: acpihpet.c,v 1.29 2022/09/12 10:58:05 cheloha Exp $ */
+/* $OpenBSD: acpihpet.c,v 1.31 2023/02/04 19:19:37 cheloha Exp $ */
 /*
  * Copyright (c) 2005 Thorsten Lockert <tholo@sigmasoft.com>
  *
@@ -43,7 +43,6 @@ void		acpihpet_w(bus_space_tag_t _iot, bus_space_handle_t _ioh,
 
 static struct timecounter hpet_timecounter = {
 	.tc_get_timecount = acpihpet_gettime,
-	.tc_poll_pps = 0,
 	.tc_counter_mask = 0xffffffff,
 	.tc_frequency = 0,
 	.tc_name = 0,
@@ -109,6 +108,8 @@ acpihpet_activate(struct device *self, int act)
 
 	switch (act) {
 	case DVACT_SUSPEND:
+		delay_fini(acpihpet_delay);
+
 		/* stop, then save */
 		bus_space_write_4(sc->sc_iot, sc->sc_ioh,
 		    HPET_CONFIGURATION, sc->sc_conf);
@@ -169,6 +170,8 @@ acpihpet_activate(struct device *self, int act)
 		    HPET_TIMER2_COMPARE, sc->sc_save.timers[2].compare);
 		bus_space_write_4(sc->sc_iot, sc->sc_ioh,
 		    HPET_CONFIGURATION, sc->sc_conf | 1);
+
+		delay_init(acpihpet_delay, 2000);
 		break;
 	}
 

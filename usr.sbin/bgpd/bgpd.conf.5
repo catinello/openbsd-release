@@ -1,4 +1,4 @@
-.\" $OpenBSD: bgpd.conf.5,v 1.226 2022/07/21 12:34:19 claudio Exp $
+.\" $OpenBSD: bgpd.conf.5,v 1.233 2023/03/13 18:31:54 jmc Exp $
 .\"
 .\" Copyright (c) 2004 Claudio Jeker <claudio@openbsd.org>
 .\" Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -16,12 +16,12 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: July 21 2022 $
+.Dd $Mdocdate: March 13 2023 $
 .Dt BGPD.CONF 5
 .Os
 .Sh NAME
 .Nm bgpd.conf
-.Nd Border Gateway Protocol daemon configuration file
+.Nd BGP routing daemon configuration file
 .Sh DESCRIPTION
 The
 .Xr bgpd 8
@@ -426,12 +426,16 @@ may be defined, against which
 will validate the origin of each prefix.
 The
 .Ic roa-set
-is merged with the tables received via
+and the
+.Ic aspa-set
+are merged with the corresponding tables received via
 .Ic rtr
 sessions.
 .Pp
 A set definition can span multiple lines, and an optional comma is allowed
 between elements.
+The same set can be defined more than once, in this case the definitions are
+merged into one common set.
 .Pp
 .Bl -tag -width Ds -compact
 .It Xo
@@ -443,6 +447,30 @@ An
 stores AS numbers, and can be used with the AS specific parameter in
 .Sx FILTER
 rules.
+.Pp
+.It Xo
+.Ic aspa-set
+.Ic { Ic customer-as Ar as-number
+.Op Ic expires Ar seconds
+.Ic provider-as Ic { Ar as-number
+.Op Ic inet Ns | Ns Ic inet6
+.Ic ... Ic } ... Ic }
+.Xc
+The
+.Ic aspa-set
+holds a collection of
+.Em Validated ASPA Payloads Pq VAPs .
+Each as AS_PATH received from an eBGP peer is checked against the
+.Ic aspa-set ,
+and the ASPA Validation State (AVS) is set.
+.Ic expires
+can be set to the seconds since Epoch until when this VAP is valid.
+.Bd -literal -offset indent
+roa-set {
+	customer-as 64511 provider-as { 64496 65496 }
+	customer-as 64496 provider-as { 65496 64544 }
+}
+.Ed
 .Pp
 .It Xo
 .Ic origin-set Ar name
@@ -730,7 +758,7 @@ More than one
 .Ic import-target
 can be specified.
 .Pp
-.It Ic network Ar arguments ...
+.It Ic network Ar argument ...
 Announce the given networks within this VPN;
 see the
 .Sx NETWORK ANNOUNCEMENTS
@@ -933,19 +961,11 @@ The default is
 .Pp
 .It Xo
 .Ic announce policy
-.Pq Ic no Ns | Ns Ar role
-.Op Ic enforce
+.Pq Ic yes Ns | Ns Ic no Ns | Ns Ic enforce
 .Xc
 If set to
-.Ic no ,
-do not add the open policy role capability.
-The role can be one of
-.Ar provider ,
-.Ar customer ,
-.Ar rs ,
-.Ar rs-client ,
-or
-.Ar peer .
+.Ic yes ,
+add the open policy role capability.
 If the role of the neighbor does not correspond to the expected role then
 the session will be closed.
 If
@@ -1311,6 +1331,26 @@ setting.
 .It Ic rib Ar name
 Bind the neighbor to the specified RIB.
 .Pp
+.It Ic role Ar role
+Set the local role for this eBGP session.
+Setting a role is required for ASPA verification, the open policy role
+capability and Only-To-Customer (OTC) attribute of RFC 9234.
+The role can be one of
+.Ar none ,
+.Ar provider ,
+.Ar customer ,
+.Ar rs ,
+.Ar rs-client ,
+or
+.Ar peer .
+If the role is set to
+.Ar none
+the
+.Ic announce Ic policy
+will also be disabled.
+On iBGP session the role setting is ignored and forced to
+.Ar none .
+.Pp
 .It Ic route-reflector Op Ar address
 Act as an RFC 4456
 .Em route-reflector
@@ -1500,6 +1540,14 @@ deny from any AS { 1, 2, 3 }
 deny from any { AS 1, source-as 2, transit-as 3 }
 deny from any { AS { 1, 2, 3 }, source-as 4, transit-as 5 }
 .Ed
+.Pp
+.It Xo
+.Ic avs
+.Pq Ic valid | unknown | invalid
+.Xc
+This rule applies only to
+.Em UPDATES
+where the ASPA Validation State (AVS) matches.
 .Pp
 .It Xo
 .Ic community

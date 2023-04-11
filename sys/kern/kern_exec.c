@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_exec.c,v 1.231 2022/08/14 01:58:27 jsg Exp $	*/
+/*	$OpenBSD: kern_exec.c,v 1.246 2023/02/21 14:31:07 deraadt Exp $	*/
 /*	$NetBSD: kern_exec.c,v 1.75 1996/02/09 18:59:28 christos Exp $	*/
 
 /*-
@@ -37,6 +37,7 @@
 #include <sys/systm.h>
 #include <sys/filedesc.h>
 #include <sys/proc.h>
+#include <sys/user.h>
 #include <sys/mount.h>
 #include <sys/malloc.h>
 #include <sys/pool.h>
@@ -66,6 +67,8 @@
 #include <sys/timetc.h>
 
 struct uvm_object *sigobject;		/* shared sigcode object */
+vaddr_t sigcode_va;
+vsize_t sigcode_sz;
 struct uvm_object *timekeep_object;
 struct timekeep *timekeep;
 
@@ -265,10 +268,20 @@ sys_execve(struct proc *p, void *v, register_t *retval)
 #ifdef MACHINE_STACK_GROWS_UP
 	size_t slen;
 #endif
+	vaddr_t pc = PROC_PC(p);
 	char *stack;
 	struct ps_strings arginfo;
-	struct vmspace *vm;
+	struct vmspace *vm = p->p_vmspace;
 	struct vnode *otvp;
+
+	if (vm->vm_execve &&
+	    (pc >= vm->vm_execve_end || pc < vm->vm_execve)) {
+		printf("%s(%d): execve %lx outside %lx-%lx\n", pr->ps_comm,
+		    pr->ps_pid, pc, vm->vm_execve, vm->vm_execve_end);
+		p->p_p->ps_acflag |= AEXECVE;
+		sigabort(p);
+		return (0);
+	}
 
 	/* get other threads to stop */
 	if ((error = single_thread_set(p, SINGLE_UNWIND, 1)))
@@ -466,13 +479,13 @@ sys_execve(struct proc *p, void *v, register_t *retval)
 #ifdef MACHINE_STACK_GROWS_UP
 	pr->ps_strings = (vaddr_t)vm->vm_maxsaddr + sgap;
         if (uvm_map_protect(&vm->vm_map, (vaddr_t)vm->vm_maxsaddr,
-            trunc_page(pr->ps_strings), PROT_NONE, TRUE))
+            trunc_page(pr->ps_strings), PROT_NONE, 0, TRUE, FALSE))
                 goto exec_abort;
 #else
 	pr->ps_strings = (vaddr_t)vm->vm_minsaddr - sizeof(arginfo) - sgap;
         if (uvm_map_protect(&vm->vm_map,
             round_page(pr->ps_strings + sizeof(arginfo)),
-            (vaddr_t)vm->vm_minsaddr, PROT_NONE, TRUE))
+            (vaddr_t)vm->vm_minsaddr, PROT_NONE, 0, TRUE, FALSE))
                 goto exec_abort;
 #endif
 
@@ -491,6 +504,8 @@ sys_execve(struct proc *p, void *v, register_t *retval)
 	/* Now copy argc, args & environ to new stack */
 	if (!copyargs(&pack, &arginfo, stack, argp))
 		goto exec_abort;
+
+	pr->ps_auxinfo = (vaddr_t)pack.ep_auxinfo;
 
 	/* copy out the process's ps_strings structure */
 	if (copyout(&arginfo, (char *)pr->ps_strings, sizeof(arginfo)))
@@ -661,6 +676,8 @@ sys_execve(struct proc *p, void *v, register_t *retval)
 	timespecclear(&p->p_tu.tu_runtime);
 	p->p_tu.tu_uticks = p->p_tu.tu_sticks = p->p_tu.tu_iticks = 0;
 
+	memset(p->p_name, 0, sizeof p->p_name);
+
 	km_free(argp, NCARGS, &kv_exec, &kp_pageable);
 
 	pool_put(&namei_pool, nid.ni_cnd.cn_pnbuf);
@@ -669,7 +686,7 @@ sys_execve(struct proc *p, void *v, register_t *retval)
 	/*
 	 * notify others that we exec'd
 	 */
-	KNOTE(&pr->ps_klist, NOTE_EXEC);
+	knote_locked(&pr->ps_klist, NOTE_EXEC);
 
 	/* map the process's timekeep page, needs to be before exec_elf_fixup */
 	if (exec_timekeep_map(pr))
@@ -679,9 +696,9 @@ sys_execve(struct proc *p, void *v, register_t *retval)
 	if (exec_elf_fixup(p, &pack) != 0)
 		goto free_pack_abort;
 #ifdef MACHINE_STACK_GROWS_UP
-	setregs(p, &pack, (u_long)stack + slen, retval);
+	setregs(p, &pack, (u_long)stack + slen, &arginfo);
 #else
-	setregs(p, &pack, (u_long)stack, retval);
+	setregs(p, &pack, (u_long)stack, &arginfo);
 #endif
 
 	/* map the process's signal trampoline code */
@@ -711,7 +728,8 @@ sys_execve(struct proc *p, void *v, register_t *retval)
 	atomic_clearbits_int(&pr->ps_flags, PS_INEXEC);
 	single_thread_clear(p, P_SUSPSIG);
 
-	return (0);
+	/* setregs() sets up all the registers, so just 'return' */
+	return EJUSTRETURN;
 
 bad:
 	/* free the vmspace-creation commands, and release their references */
@@ -823,9 +841,8 @@ exec_sigcode_map(struct process *pr)
 	 * memory) that we keep a permanent reference to and that we map
 	 * in all processes that need this sigcode. The creation is simple,
 	 * we create an object, add a permanent reference to it, map it in
-	 * kernel space, copy out the sigcode to it and unmap it.
-	 * Then we map it with PROT_READ|PROT_EXEC into the process just
-	 * the way sys_mmap would map it.
+	 * kernel space, copy out the sigcode to it and unmap it.  Then we map
+	 * it with PROT_EXEC into the process just the way sys_mmap would map it.
 	 */
 	if (sigobject == NULL) {
 		extern int sigfillsiz;
@@ -851,18 +868,24 @@ exec_sigcode_map(struct process *pr)
 			left -= chunk;
 		}
 		memcpy((caddr_t)va, sigcode, sz);
-		uvm_unmap(kernel_map, va, va + round_page(sz));
+
+		(void) uvm_map_protect(kernel_map, va, round_page(sz),
+		    PROT_READ, 0, FALSE, FALSE);
+		sigcode_va = va;
+		sigcode_sz = round_page(sz);
 	}
 
 	pr->ps_sigcode = 0; /* no hint */
 	uao_reference(sigobject);
 	if (uvm_map(&pr->ps_vmspace->vm_map, &pr->ps_sigcode, round_page(sz),
-	    sigobject, 0, 0, UVM_MAPFLAG(PROT_READ | PROT_EXEC,
+	    sigobject, 0, 0, UVM_MAPFLAG(PROT_EXEC,
 	    PROT_READ | PROT_WRITE | PROT_EXEC, MAP_INHERIT_COPY,
 	    MADV_RANDOM, UVM_FLAG_COPYONW | UVM_FLAG_SYSCALL))) {
 		uao_detach(sigobject);
 		return (ENOMEM);
 	}
+	uvm_map_immutable(&pr->ps_vmspace->vm_map, pr->ps_sigcode,
+	    pr->ps_sigcode + round_page(sz), 1);
 
 	/* Calculate PC at point of sigreturn entry */
 	pr->ps_sigcoderet = pr->ps_sigcode + (sigcoderet - sigcode);
@@ -911,6 +934,8 @@ exec_timekeep_map(struct process *pr)
 		uao_detach(timekeep_object);
 		return (ENOMEM);
 	}
+	uvm_map_immutable(&pr->ps_vmspace->vm_map, pr->ps_timekeep,
+	    pr->ps_timekeep + timekeep_sz, 1);
 
 	return (0);
 }

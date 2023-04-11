@@ -1,4 +1,4 @@
-/*	$OpenBSD: function.c,v 1.50 2020/11/23 06:21:52 halex Exp $	*/
+/*	$OpenBSD: function.c,v 1.53 2023/03/08 04:43:10 guenther Exp $	*/
 
 /*-
  * Copyright (c) 1990, 1993
@@ -1396,7 +1396,7 @@ c_perm(char *perm, char ***ignored, int unused)
 /*
  * -print functions --
  *
- *	Always true, causes the current pathame to be written to
+ *	Always true, causes the current pathname to be written to
  *	standard output.
  */
 int
@@ -1406,7 +1406,6 @@ f_print(PLAN *plan, FTSENT *entry)
 	return(1);
 }
 
-/* ARGSUSED */
 int
 f_print0(PLAN *plan, FTSENT *entry)
 {
@@ -1576,7 +1575,7 @@ c_user(char *username, char ***ignored, int unused)
 /*
  * -xdev functions --
  *
- *	Always true, causes find not to decend past directories that have a
+ *	Always true, causes find not to descend past directories that have a
  *	different device ID (st_dev, see stat() S5.6.2 [POSIX.1])
  */
 PLAN *
@@ -1679,9 +1678,8 @@ c_or(char *ignore, char ***ignored, int unused)
  *
  *	At the moment, only N_EXEC has state. Two kinds: 1)
  * 	lists of files to feed to subprocesses 2) State on exit
- *	statusses of past subprocesses.
+ *	status of past subprocesses.
  */
-/* ARGSUSED1 */
 int
 plan_cleanup(PLAN *plan, void *arg)
 {

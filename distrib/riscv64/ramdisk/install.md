@@ -1,4 +1,4 @@
-#	$OpenBSD: install.md,v 1.6 2022/02/06 11:29:18 visa Exp $
+#	$OpenBSD: install.md,v 1.8 2023/03/07 17:29:42 kn Exp $
 #
 #
 # Copyright (c) 1996 The NetBSD Foundation, Inc.
@@ -32,6 +32,7 @@
 # machine dependent section of installation/upgrade script.
 #
 
+MDBOOTSR=y
 NCPU=$(sysctl -n hw.ncpufound)
 
 md_installboot() {
@@ -120,7 +121,7 @@ __EOT
 				disk_has $_disk mbr openbsd && return
 				echo -n "No OpenBSD partition in MBR,"
 			fi
-			echo "try again." ;;
+			echo " try again." ;;
 		esac
 	done
 }

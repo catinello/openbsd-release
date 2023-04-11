@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_urtwn.c,v 1.103 2022/08/21 07:56:31 kevlo Exp $	*/
+/*	$OpenBSD: if_urtwn.c,v 1.105 2023/03/08 04:43:08 guenther Exp $	*/
 
 /*-
  * Copyright (c) 2010 Damien Bergamini <damien.bergamini@free.fr>
@@ -900,7 +900,6 @@ urtwn_calib_to(void *arg)
 	usbd_ref_decr(sc->sc_udev);
 }
 
-/* ARGSUSED */
 void
 urtwn_calib_cb(struct urtwn_softc *sc, void *arg)
 {
@@ -1000,7 +999,6 @@ urtwn_updateslot(struct ieee80211com *ic)
 	urtwn_do_async(sc, urtwn_updateslot_cb, NULL, 0);
 }
 
-/* ARGSUSED */
 void
 urtwn_updateslot_cb(struct urtwn_softc *sc, void *arg)
 {
@@ -1020,7 +1018,6 @@ urtwn_updateedca(struct ieee80211com *ic)
 	urtwn_do_async(sc, urtwn_updateedca_cb, NULL, 0);
 }
 
-/* ARGSUSED */
 void
 urtwn_updateedca_cb(struct urtwn_softc *sc, void *arg)
 {
@@ -1659,7 +1656,7 @@ urtwn_tx(void *cookie, struct mbuf *m, struct ieee80211_node *ni)
 		qos = ieee80211_get_qos(wh);
 		tid = qos & IEEE80211_QOS_TID;
 		qid = ieee80211_up_to_ac(ic, tid);
-	} else if ((wh->i_fc[1] & IEEE80211_FC0_TYPE_MASK)
+	} else if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK)
 	    != IEEE80211_FC0_TYPE_DATA) {
 		/* Use AC VO for management frames. */
 		qid = EDCA_AC_VO;

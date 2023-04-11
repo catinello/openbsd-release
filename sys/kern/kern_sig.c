@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_sig.c,v 1.299 2022/08/14 01:58:27 jsg Exp $	*/
+/*	$OpenBSD: kern_sig.c,v 1.305 2023/02/10 14:34:17 visa Exp $	*/
 /*	$NetBSD: kern_sig.c,v 1.54 1996/04/22 01:38:32 christos Exp $	*/
 
 /*
@@ -640,17 +640,10 @@ sys_thrkill(struct proc *cp, void *v, register_t *retval)
 
 	if (((u_int)signum) >= NSIG)
 		return (EINVAL);
-	if (tid > THREAD_PID_OFFSET) {
-		if ((p = tfind(tid - THREAD_PID_OFFSET)) == NULL)
-			return (ESRCH);
 
-		/* can only kill threads in the same process */
-		if (p->p_p != cp->p_p)
-			return (ESRCH);
-	} else if (tid == 0)
-		p = cp;
-	else
-		return (EINVAL);
+	p = tid ? tfind_user(tid, cp->p_p) : cp;
+	if (p == NULL)
+		return (ESRCH);
 
 	/* optionally require the target thread to have the given tcb addr */
 	tcb = SCARG(uap, tcb);
@@ -992,7 +985,7 @@ ptsignal(struct proc *p, int signum, enum signal_type type)
 	}
 
 	if (type != SPROPAGATED)
-		KNOTE(&pr->ps_klist, NOTE_SIGNAL | signum);
+		knote_locked(&pr->ps_klist, NOTE_SIGNAL | signum);
 
 	prop = sigprop[signum];
 
@@ -1642,6 +1635,11 @@ coredump(struct proc *p)
 
 	atomic_setbits_int(&pr->ps_flags, PS_COREDUMP);
 
+#ifdef PMAP_CHECK_COPYIN
+	/* disable copyin checks, so we can write out text sections if needed */
+	p->p_vmspace->vm_map.check_copyin_count = 0;
+#endif
+
 	/* Don't dump if will exceed file size limit. */
 	if (USPACE + ptoa(vm->vm_dsize + vm->vm_ssize) >= lim_cur(RLIMIT_CORE))
 		return (EFBIG);
@@ -1875,8 +1873,13 @@ sys___thrsigdivert(struct proc *p, void *v, register_t *retval)
 
 	if (error == 0) {
 		*retval = si.si_signo;
-		if (SCARG(uap, info) != NULL)
+		if (SCARG(uap, info) != NULL) {
 			error = copyout(&si, SCARG(uap, info), sizeof(si));
+#ifdef KTRACE
+			if (error == 0 && KTRPOINT(p, KTR_STRUCT))
+				ktrsiginfo(p, &si);
+#endif
+		}
 	} else if (error == ERESTART && SCARG(uap, timeout) != NULL) {
 		/*
 		 * Restarting is wrong if there's a timeout, as it'll be

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rsync.c,v 1.43 2022/09/02 17:39:51 claudio Exp $ */
+/*	$OpenBSD: rsync.c,v 1.46 2022/12/28 21:30:18 jmc Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -19,7 +19,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
-#include <assert.h>
 #include <err.h>
 #include <errno.h>
 #include <poll.h>
@@ -56,7 +55,7 @@ static TAILQ_HEAD(, rsync)	states = TAILQ_HEAD_INITIALIZER(states);
  * Return the base of a rsync URI (rsync://hostname/module). The
  * caRepository provided by the RIR CAs point deeper than they should
  * which would result in many rsync calls for almost every subdirectory.
- * This is inefficent so instead crop the URI to a common base.
+ * This is inefficient so instead crop the URI to a common base.
  * The returned string needs to be freed by the caller.
  */
 char *
@@ -158,6 +157,7 @@ exec_rsync(const char *prog, const char *bind_addr, char *uri, char *dst,
 		args[i++] = "--include=*.mft";
 		args[i++] = "--include=*.roa";
 		args[i++] = "--include=*.asa";
+		args[i++] = "--include=*.tak";
 		args[i++] = "--exclude=*";
 		if (bind_addr != NULL) {
 			args[i++] = "--address";

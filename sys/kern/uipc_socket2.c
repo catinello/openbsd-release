@@ -1,4 +1,4 @@
-/*	$OpenBSD: uipc_socket2.c,v 1.128 2022/09/05 14:56:09 bluhm Exp $	*/
+/*	$OpenBSD: uipc_socket2.c,v 1.136 2023/02/10 14:34:17 visa Exp $	*/
 /*	$NetBSD: uipc_socket2.c,v 1.11 1996/02/04 02:17:55 christos Exp $	*/
 
 /*
@@ -41,7 +41,6 @@
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/signalvar.h>
-#include <sys/event.h>
 #include <sys/pool.h>
 
 /*
@@ -142,7 +141,9 @@ soisdisconnecting(struct socket *so)
 {
 	soassertlocked(so);
 	so->so_state &= ~SS_ISCONNECTING;
-	so->so_state |= (SS_ISDISCONNECTING|SS_CANTRCVMORE|SS_CANTSENDMORE);
+	so->so_state |= SS_ISDISCONNECTING;
+	so->so_rcv.sb_state |= SS_CANTRCVMORE;
+	so->so_snd.sb_state |= SS_CANTSENDMORE;
 	wakeup(&so->so_timeo);
 	sowwakeup(so);
 	sorwakeup(so);
@@ -153,7 +154,9 @@ soisdisconnected(struct socket *so)
 {
 	soassertlocked(so);
 	so->so_state &= ~(SS_ISCONNECTING|SS_ISCONNECTED|SS_ISDISCONNECTING);
-	so->so_state |= (SS_CANTRCVMORE|SS_CANTSENDMORE|SS_ISDISCONNECTED);
+	so->so_state |= SS_ISDISCONNECTED;
+	so->so_rcv.sb_state |= SS_CANTRCVMORE;
+	so->so_snd.sb_state |= SS_CANTSENDMORE;
 	wakeup(&so->so_timeo);
 	sowwakeup(so);
 	sorwakeup(so);
@@ -168,7 +171,7 @@ soisdisconnected(struct socket *so)
  * Connstatus may be 0 or SS_ISCONNECTED.
  */
 struct socket *
-sonewconn(struct socket *head, int connstatus)
+sonewconn(struct socket *head, int connstatus, int wait)
 {
 	struct socket *so;
 	int persocket = solock_persocket(head);
@@ -185,7 +188,7 @@ sonewconn(struct socket *head, int connstatus)
 		return (NULL);
 	if (head->so_qlen + head->so_q0len > head->so_qlimit * 3)
 		return (NULL);
-	so = soalloc(PR_NOWAIT | PR_ZERO);
+	so = soalloc(wait);
 	if (so == NULL)
 		return (NULL);
 	so->so_type = head->so_type;
@@ -209,12 +212,8 @@ sonewconn(struct socket *head, int connstatus)
 	/*
 	 * Inherit watermarks but those may get clamped in low mem situations.
 	 */
-	if (soreserve(so, head->so_snd.sb_hiwat, head->so_rcv.sb_hiwat)) {
-		if (persocket)
-			sounlock(so);
-		pool_put(&socket_pool, so);
-		return (NULL);
-	}
+	if (soreserve(so, head->so_snd.sb_hiwat, head->so_rcv.sb_hiwat))
+		goto fail;
 	so->so_snd.sb_wat = head->so_snd.sb_wat;
 	so->so_snd.sb_lowat = head->so_snd.sb_lowat;
 	so->so_snd.sb_timeo_nsecs = head->so_snd.sb_timeo_nsecs;
@@ -222,9 +221,6 @@ sonewconn(struct socket *head, int connstatus)
 	so->so_rcv.sb_lowat = head->so_rcv.sb_lowat;
 	so->so_rcv.sb_timeo_nsecs = head->so_rcv.sb_timeo_nsecs;
 
-	klist_init(&so->so_rcv.sb_sel.si_note, &socket_klistops, so);
-	klist_init(&so->so_snd.sb_sel.si_note, &socket_klistops, so);
-	sigio_init(&so->so_sigio);
 	sigio_copy(&so->so_sigio, &head->so_sigio);
 
 	soqinsque(head, so, 0);
@@ -238,7 +234,7 @@ sonewconn(struct socket *head, int connstatus)
 		sounlock(head);
 	}
 
-	error = pru_attach(so, 0);
+	error = pru_attach(so, 0, wait);
 
 	if (persocket) {
 		sounlock(so);
@@ -255,13 +251,7 @@ sonewconn(struct socket *head, int connstatus)
 
 	if (error) {
 		soqremque(so, 0);
-		if (persocket)
-			sounlock(so);
-		sigio_free(&so->so_sigio);
-		klist_free(&so->so_rcv.sb_sel.si_note);
-		klist_free(&so->so_snd.sb_sel.si_note);
-		pool_put(&socket_pool, so);
-		return (NULL);
+		goto fail;
 	}
 
 	if (connstatus) {
@@ -276,6 +266,16 @@ sonewconn(struct socket *head, int connstatus)
 		sounlock(so);
 
 	return (so);
+
+fail:
+	if (persocket)
+		sounlock(so);
+	sigio_free(&so->so_sigio);
+	klist_free(&so->so_rcv.sb_klist);
+	klist_free(&so->so_snd.sb_klist);
+	pool_put(&socket_pool, so);
+
+	return (NULL);
 }
 
 void
@@ -334,7 +334,7 @@ void
 socantsendmore(struct socket *so)
 {
 	soassertlocked(so);
-	so->so_state |= SS_CANTSENDMORE;
+	so->so_snd.sb_state |= SS_CANTSENDMORE;
 	sowwakeup(so);
 }
 
@@ -342,7 +342,7 @@ void
 socantrcvmore(struct socket *so)
 {
 	soassertlocked(so);
-	so->so_state |= SS_CANTRCVMORE;
+	so->so_rcv.sb_state |= SS_CANTRCVMORE;
 	sorwakeup(so);
 }
 
@@ -545,7 +545,7 @@ sowakeup(struct socket *so, struct sockbuf *sb)
 	}
 	if (sb->sb_flags & SB_ASYNC)
 		pgsigio(&so->so_sigio, SIGIO, 0);
-	KNOTE(&sb->sb_sel.si_note, 0);
+	knote_locked(&sb->sb_klist, 0);
 }
 
 /*

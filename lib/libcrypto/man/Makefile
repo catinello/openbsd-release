@@ -1,4 +1,4 @@
-# $OpenBSD: Makefile,v 1.234 2022/07/13 20:54:39 schwarze Exp $
+# $OpenBSD: Makefile,v 1.243 2023/03/16 15:06:17 tb Exp $
 
 .include <bsd.own.mk>
 
@@ -19,6 +19,7 @@ MAN=	\
 	ASN1_TYPE_get.3 \
 	ASN1_UNIVERSALSTRING_to_string.3 \
 	ASN1_bn_print.3 \
+	ASN1_buf_print.3 \
 	ASN1_generate_nconf.3 \
 	ASN1_get_object.3 \
 	ASN1_item_d2i.3 \
@@ -34,8 +35,10 @@ MAN=	\
 	AUTHORITY_KEYID_new.3 \
 	BASIC_CONSTRAINTS_new.3 \
 	BF_set_key.3 \
+	BIO_accept.3 \
 	BIO_ctrl.3 \
 	BIO_dump.3 \
+	BIO_dup_chain.3 \
 	BIO_f_asn1.3 \
 	BIO_f_base64.3 \
 	BIO_f_buffer.3 \
@@ -55,6 +58,7 @@ MAN=	\
 	BIO_s_accept.3 \
 	BIO_s_bio.3 \
 	BIO_s_connect.3 \
+	BIO_s_datagram.3 \
 	BIO_s_fd.3 \
 	BIO_s_file.3 \
 	BIO_s_mem.3 \
@@ -72,10 +76,14 @@ MAN=	\
 	BN_copy.3 \
 	BN_generate_prime.3 \
 	BN_get0_nist_prime_521.3 \
+	BN_GF2m_add.3 \
+	BN_kronecker.3 \
 	BN_mod_inverse.3 \
 	BN_mod_mul_montgomery.3 \
 	BN_mod_mul_reciprocal.3 \
+	BN_mod_sqrt.3 \
 	BN_new.3 \
+	BN_nist_mod_521.3 \
 	BN_num_bytes.3 \
 	BN_rand.3 \
 	BN_set_bit.3 \
@@ -165,6 +173,7 @@ MAN=	\
 	ESS_SIGNING_CERT_new.3 \
 	EVP_AEAD_CTX_init.3 \
 	EVP_BytesToKey.3 \
+	EVP_CIPHER_meth_new.3 \
 	EVP_DigestInit.3 \
 	EVP_DigestSignInit.3 \
 	EVP_DigestVerifyInit.3 \

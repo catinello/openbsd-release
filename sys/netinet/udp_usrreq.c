@@ -1,4 +1,4 @@
-/*	$OpenBSD: udp_usrreq.c,v 1.302 2022/09/05 14:56:09 bluhm Exp $	*/
+/*	$OpenBSD: udp_usrreq.c,v 1.305 2023/01/22 12:05:44 mvs Exp $	*/
 /*	$NetBSD: udp_usrreq.c,v 1.28 1996/03/16 23:54:03 christos Exp $	*/
 
 /*
@@ -132,7 +132,6 @@ const struct pr_usrreqs udp_usrreqs = {
 	.pru_disconnect	= udp_disconnect,
 	.pru_shutdown	= udp_shutdown,
 	.pru_send	= udp_send,
-	.pru_abort	= udp_abort,
 	.pru_control	= in_control,
 	.pru_sockaddr	= in_sockaddr,
 	.pru_peeraddr	= in_peeraddr,
@@ -149,7 +148,6 @@ const struct pr_usrreqs udp6_usrreqs = {
 	.pru_disconnect	= udp_disconnect,
 	.pru_shutdown	= udp_shutdown,
 	.pru_send	= udp_send,
-	.pru_abort	= udp_abort,
 	.pru_control	= in6_control,
 	.pru_sockaddr	= in6_sockaddr,
 	.pru_peeraddr	= in6_peeraddr,
@@ -402,7 +400,7 @@ udp_input(struct mbuf **mp, int *offp, int proto, int af)
 		rw_enter_write(&udbtable.inpt_notify);
 		mtx_enter(&udbtable.inpt_mtx);
 		TAILQ_FOREACH(inp, &udbtable.inpt_queue, inp_queue) {
-			if (inp->inp_socket->so_state & SS_CANTRCVMORE)
+			if (inp->inp_socket->so_rcv.sb_state & SS_CANTRCVMORE)
 				continue;
 #ifdef INET6
 			/* don't accept it if AF does not match */
@@ -1079,7 +1077,7 @@ release:
 }
 
 int
-udp_attach(struct socket *so, int proto)
+udp_attach(struct socket *so, int proto, int wait)
 {
 	int error;
 
@@ -1090,7 +1088,7 @@ udp_attach(struct socket *so, int proto)
 		return error;
 
 	NET_ASSERT_LOCKED();
-	if ((error = in_pcballoc(so, &udbtable)))
+	if ((error = in_pcballoc(so, &udbtable, wait)))
 		return error;
 #ifdef INET6
 	if (sotoinpcb(so)->inp_flags & INP_IPV6)
@@ -1258,19 +1256,6 @@ udp_send(struct socket *so, struct mbuf *m, struct mbuf *addr,
 		error = udp_output(inp, m, addr, control);
 
 	return (error);
-}
-
-int
-udp_abort(struct socket *so)
-{
-	struct inpcb *inp = sotoinpcb(so);
-
-	soassertlocked(so);
-
-	soisdisconnected(so);
-	in_pcbdetach(inp);
-
-	return (0);
 }
 
 /*

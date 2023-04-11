@@ -1,4 +1,4 @@
-/*	$OpenBSD: validate.c,v 1.45 2022/09/03 14:41:47 job Exp $ */
+/*	$OpenBSD: validate.c,v 1.55 2023/03/06 16:04:52 job Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -15,15 +15,12 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/socket.h>
-
 #include <arpa/inet.h>
 #include <assert.h>
 #include <ctype.h>
 #include <err.h>
 #include <fcntl.h>
 #include <inttypes.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -290,6 +287,8 @@ valid_uri(const char *uri, size_t usz, const char *proto)
 
 	if (proto != NULL) {
 		s = strlen(proto);
+		if (s >= usz)
+			return 0;
 		if (strncasecmp(uri, proto, s) != 0)
 			return 0;
 	}
@@ -365,20 +364,22 @@ build_crls(const struct crl *crl, STACK_OF(X509_CRL) **crls)
 }
 
 /*
- * Validate the X509 certificate.  If crl is NULL don't check CRL.
- * Returns 1 for valid certificates, returns 0 if there is a verify error
+ * Validate the X509 certificate. Returns 1 for valid certificates,
+ * returns 0 if there is a verify error and sets *errstr to the error
+ * returned by X509_verify_cert_error_string().
  */
 int
 valid_x509(char *file, X509_STORE_CTX *store_ctx, X509 *x509, struct auth *a,
-    struct crl *crl, int nowarn)
+    struct crl *crl, const char **errstr)
 {
 	X509_VERIFY_PARAM	*params;
 	ASN1_OBJECT		*cp_oid;
 	STACK_OF(X509)		*chain;
 	STACK_OF(X509_CRL)	*crls = NULL;
 	unsigned long		 flags;
-	int			 c;
+	int			 error;
 
+	*errstr = NULL;
 	build_chain(a, &chain);
 	build_crls(crl, &crls);
 
@@ -395,6 +396,7 @@ valid_x509(char *file, X509_STORE_CTX *store_ctx, X509 *x509, struct auth *a,
 		cryptoerrx("X509_VERIFY_PARAM_add0_policy");
 
 	flags = X509_V_FLAG_CRL_CHECK;
+	flags |= X509_V_FLAG_POLICY_CHECK;
 	flags |= X509_V_FLAG_EXPLICIT_POLICY;
 	flags |= X509_V_FLAG_INHIBIT_MAP;
 	X509_STORE_CTX_set_flags(store_ctx, flags);
@@ -403,9 +405,8 @@ valid_x509(char *file, X509_STORE_CTX *store_ctx, X509 *x509, struct auth *a,
 	X509_STORE_CTX_set0_crls(store_ctx, crls);
 
 	if (X509_verify_cert(store_ctx) <= 0) {
-		c = X509_STORE_CTX_get_error(store_ctx);
-		if (!nowarn || verbose > 1)
-			warnx("%s: %s", file, X509_verify_cert_error_string(c));
+		error = X509_STORE_CTX_get_error(store_ctx);
+		*errstr = X509_verify_cert_error_string(error);
 		X509_STORE_CTX_cleanup(store_ctx);
 		sk_X509_free(chain);
 		sk_X509_CRL_free(crls);
@@ -520,4 +521,111 @@ valid_aspa(const char *fn, struct cert *cert, struct aspa *aspa)
 	warnx("%s: ASPA: uncovered Customer ASID: %u", fn, aspa->custasid);
 
 	return 0;
+}
+
+/*
+ * Validate Geofeed prefixes: check that the prefixes are contained.
+ * Returns 1 if valid, 0 otherwise.
+ */
+int
+valid_geofeed(const char *fn, struct cert *cert, struct geofeed *g)
+{
+	size_t	 i;
+	char	 buf[64];
+
+	for (i = 0; i < g->geoipsz; i++) {
+		if (ip_addr_check_covered(g->geoips[i].ip->afi,
+		    g->geoips[i].ip->min, g->geoips[i].ip->max, cert->ips,
+		    cert->ipsz) > 0)
+			continue;
+
+		ip_addr_print(&g->geoips[i].ip->ip, g->geoips[i].ip->afi, buf,
+		    sizeof(buf));
+		warnx("%s: Geofeed: uncovered IP: %s", fn, buf);
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * Validate whether a given string is a valid UUID.
+ * Returns 1 if valid, 0 otherwise.
+ */
+int
+valid_uuid(const char *s)
+{
+	int n = 0;
+
+	while (1) {
+		switch (n) {
+		case 8:
+		case 13:
+		case 18:
+		case 23:
+			if (s[n] != '-')
+				return 0;
+			break;
+		/* Check UUID is version 4 */
+		case 14:
+			if (s[n] != '4')
+				return 0;
+			break;
+		/* Check UUID variant is 1 */
+		case 19:
+			if (s[n] != '8' && s[n] != '9' && s[n] != 'a' &&
+			    s[n] != 'A' && s[n] != 'b' && s[n] != 'B')
+				return 0;
+			break;
+		case 36:
+			return s[n] == '\0';
+		default:
+			if (!isxdigit((unsigned char)s[n]))
+				return 0;
+			break;
+		}
+		n++;
+	}
+}
+
+int
+valid_ca_pkey(const char *fn, EVP_PKEY *pkey)
+{
+	RSA		*rsa;
+	const BIGNUM	*rsa_e;
+	int		 key_bits;
+
+	if (pkey == NULL) {
+		warnx("%s: failure, pkey is NULL", fn);
+		return 0;
+	}
+
+	if (EVP_PKEY_base_id(pkey) != EVP_PKEY_RSA) {
+		warnx("%s: Expected EVP_PKEY_RSA, got %d", fn,
+		    EVP_PKEY_base_id(pkey));
+		return 0;
+	}
+
+	if ((key_bits = EVP_PKEY_bits(pkey)) != 2048) {
+		warnx("%s: RFC 7935: expected 2048-bit modulus, got %d bits",
+		    fn, key_bits);
+		return 0;
+	}
+
+	if ((rsa = EVP_PKEY_get0_RSA(pkey)) == NULL) {
+		warnx("%s: failed to extract RSA public key", fn);
+		return 0;
+	}
+
+	if ((rsa_e = RSA_get0_e(rsa)) == NULL) {
+		warnx("%s: failed to get RSA exponent", fn);
+		return 0;
+	}
+
+	if (!BN_is_word(rsa_e, 65537)) {
+		warnx("%s: incorrect exponent (e) in RSA public key", fn);
+		return 0;
+	}
+
+	return 1;
 }

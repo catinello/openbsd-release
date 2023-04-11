@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_usrreq.c,v 1.208 2022/09/13 09:05:47 mvs Exp $	*/
+/*	$OpenBSD: tcp_usrreq.c,v 1.217 2023/03/14 00:24:05 yasuoka Exp $	*/
 /*	$NetBSD: tcp_usrreq.c,v 1.20 1996/02/13 23:44:16 christos Exp $	*/
 
 /*
@@ -153,13 +153,8 @@ const struct pr_usrreqs tcp6_usrreqs = {
 };
 #endif
 
-static int pr_slowhz = PR_SLOWHZ;
 const struct sysctl_bounded_args tcpctl_vars[] = {
-	{ TCPCTL_SLOWHZ, &pr_slowhz, SYSCTL_INT_READONLY },
 	{ TCPCTL_RFC1323, &tcp_do_rfc1323, 0, 1 },
-	{ TCPCTL_KEEPINITTIME, &tcptv_keep_init, 1, 3 * TCPTV_KEEP_INIT },
-	{ TCPCTL_KEEPIDLE, &tcp_keepidle, 1, 5 * TCPTV_KEEP_IDLE },
-	{ TCPCTL_KEEPINTVL, &tcp_keepintvl, 1, 3 * TCPTV_KEEPINTVL },
 	{ TCPCTL_SACK, &tcp_do_sack, 0, 1 },
 	{ TCPCTL_MSSDFLT, &tcp_mssdflt, TCP_MSS, 65535 },
 	{ TCPCTL_RSTPPSLIMIT, &tcp_rst_ppslim, 1, 1000 * 1000 },
@@ -214,7 +209,7 @@ tcp_fill_info(struct tcpcb *tp, struct socket *so, struct mbuf *m)
 {
 	struct proc *p = curproc;
 	struct tcp_info *ti;
-	u_int t = 1000000 / PR_SLOWHZ;
+	u_int t = 1000;		/* msec => usec */
 	uint32_t now;
 
 	if (sizeof(*ti) > MLEN) {
@@ -225,7 +220,7 @@ tcp_fill_info(struct tcpcb *tp, struct socket *so, struct mbuf *m)
 	ti = mtod(m, struct tcp_info *);
 	m->m_len = sizeof(*ti);
 	memset(ti, 0, sizeof(*ti));
-	now = READ_ONCE(tcp_now);
+	now = tcp_now();
 
 	ti->tcpi_state = tp->t_state;
 	if ((tp->t_flags & TF_REQ_TSTMP) && (tp->t_flags & TF_RCVD_TSTMP))
@@ -460,7 +455,7 @@ tcp_ctloutput(int op, struct socket *so, int level, int optname,
  * buffer space, and entering LISTEN state to accept connections.
  */
 int
-tcp_attach(struct socket *so, int proto)
+tcp_attach(struct socket *so, int proto, int wait)
 {
 	struct tcpcb *tp;
 	struct inpcb *inp;
@@ -477,11 +472,11 @@ tcp_attach(struct socket *so, int proto)
 	}
 
 	NET_ASSERT_LOCKED();
-	error = in_pcballoc(so, &tcbtable);
+	error = in_pcballoc(so, &tcbtable, wait);
 	if (error)
 		return (error);
 	inp = sotoinpcb(so);
-	tp = tcp_newtcpcb(inp);
+	tp = tcp_newtcpcb(inp, wait);
 	if (tp == NULL) {
 		unsigned int nofd = so->so_state & SS_NOFDREF;	/* XXX */
 
@@ -775,7 +770,7 @@ tcp_shutdown(struct socket *so)
 		ostate = tp->t_state;
 	}
 
-	if (so->so_state & SS_CANTSENDMORE)
+	if (so->so_snd.sb_state & SS_CANTSENDMORE)
 		goto out;
 
 	socantsendmore(so);
@@ -865,18 +860,17 @@ out:
 /*
  * Abort the TCP.
  */
-int
+void
 tcp_abort(struct socket *so)
 {
 	struct inpcb *inp;
 	struct tcpcb *tp, *otp = NULL;
-	int error;
 	short ostate;
 
 	soassertlocked(so);
 
-	if ((error = tcp_sogetpcb(so, &inp, &tp)))
-		return (error);
+	if (tcp_sogetpcb(so, &inp, &tp))
+		return;
 
 	if (so->so_options & SO_DEBUG) {
 		otp = tp;
@@ -887,7 +881,6 @@ tcp_abort(struct socket *so)
 
 	if (otp)
 		tcp_trace(TA_USER, ostate, tp, otp, NULL, PRU_ABORT, 0);
-	return (0);
 }
 
 int
@@ -922,7 +915,7 @@ tcp_rcvoob(struct socket *so, struct mbuf *m, int flags)
 		return (error);
 
 	if ((so->so_oobmark == 0 &&
-	    (so->so_state & SS_RCVATMARK) == 0) ||
+	    (so->so_rcv.sb_state & SS_RCVATMARK) == 0) ||
 	    so->so_options & SO_OOBINLINE ||
 	    tp->t_oobflags & TCPOOB_HADDATA) {
 		error = EINVAL;
@@ -1377,6 +1370,36 @@ tcp_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
 		return (ENOTDIR);
 
 	switch (name[0]) {
+	case TCPCTL_KEEPINITTIME:
+		NET_LOCK();
+		nval = tcptv_keep_init / TCP_TIME(1);
+		error = sysctl_int_bounded(oldp, oldlenp, newp, newlen, &nval,
+		    1, 3 * (TCPTV_KEEP_INIT / TCP_TIME(1)));
+		if (!error)
+			tcptv_keep_init = TCP_TIME(nval);
+		NET_UNLOCK();
+		return (error);
+
+	case TCPCTL_KEEPIDLE:
+		NET_LOCK();
+		nval = tcp_keepidle / TCP_TIME(1);
+		error = sysctl_int_bounded(oldp, oldlenp, newp, newlen, &nval,
+		    1, 5 * (TCPTV_KEEP_IDLE / TCP_TIME(1)));
+		if (!error)
+			tcp_keepidle = TCP_TIME(nval);
+		NET_UNLOCK();
+		return (error);
+
+	case TCPCTL_KEEPINTVL:
+		NET_LOCK();
+		nval = tcp_keepintvl / TCP_TIME(1);
+		error = sysctl_int_bounded(oldp, oldlenp, newp, newlen, &nval,
+		    1, 3 * (TCPTV_KEEPINTVL / TCP_TIME(1)));
+		if (!error)
+			tcp_keepintvl = TCP_TIME(nval);
+		NET_UNLOCK();
+		return (error);
+
 	case TCPCTL_BADDYNAMIC:
 		NET_LOCK();
 		error = sysctl_struct(oldp, oldlenp, newp, newlen,
@@ -1523,7 +1546,7 @@ tcp_update_sndspace(struct tcpcb *tp)
 
 /*
  * Scale the recv buffer by looking at how much data was transferred in
- * on approximated RTT. If more than a big part of the recv buffer was
+ * one approximated RTT. If more than a big part of the recv buffer was
  * transferred during that time we increase the buffer by a constant.
  * In low memory situation try to shrink the buffer to the initial size.
  */

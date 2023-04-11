@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_input.c,v 1.380 2022/09/03 19:22:19 bluhm Exp $	*/
+/*	$OpenBSD: tcp_input.c,v 1.387 2023/03/14 00:24:05 yasuoka Exp $	*/
 /*	$NetBSD: tcp_input.c,v 1.23 1996/02/13 23:43:44 christos Exp $	*/
 
 /*
@@ -127,7 +127,7 @@ int tcp_ackdrop_ppslim = 100;		/* 100pps */
 int tcp_ackdrop_ppslim_count = 0;
 struct timeval tcp_ackdrop_ppslim_last;
 
-#define TCP_PAWS_IDLE	(24 * 24 * 60 * 60 * PR_SLOWHZ)
+#define TCP_PAWS_IDLE	TCP_TIME(24 * 24 * 60 * 60)
 
 /* for modulo comparisons of timestamps */
 #define TSTMP_LT(a,b)	((int)((a)-(b)) < 0)
@@ -181,7 +181,7 @@ do { \
 	    (ifp && (ifp->if_flags & IFF_LOOPBACK))) \
 		tp->t_flags |= TF_ACKNOW; \
 	else \
-		TCP_TIMER_ARM_MSEC(tp, TCPT_DELACK, tcp_delack_msecs); \
+		TCP_TIMER_ARM(tp, TCPT_DELACK, tcp_delack_msecs); \
 	if_put(ifp); \
 } while (0)
 
@@ -340,7 +340,7 @@ tcp_flush_queue(struct tcpcb *tp)
 		nq = TAILQ_NEXT(q, tcpqe_q);
 		TAILQ_REMOVE(&tp->t_segq, q, tcpqe_q);
 		ND6_HINT(tp);
-		if (so->so_state & SS_CANTRCVMORE)
+		if (so->so_rcv.sb_state & SS_CANTRCVMORE)
 			m_freem(q->tcpqe_m);
 		else
 			sbappendstream(so, &so->so_rcv, q->tcpqe_m);
@@ -390,7 +390,7 @@ tcp_input(struct mbuf **mp, int *offp, int proto, int af)
 
 	opti.ts_present = 0;
 	opti.maxseg = 0;
-	now = READ_ONCE(tcp_now);
+	now = tcp_now();
 
 	/*
 	 * RFC1122 4.2.3.10, p. 104: discard bcast/mcast SYN
@@ -1041,19 +1041,18 @@ findpcb:
 			 * Drop TCP, IP headers and TCP options then add data
 			 * to socket buffer.
 			 */
-			if (so->so_state & SS_CANTRCVMORE)
+			if (so->so_rcv.sb_state & SS_CANTRCVMORE)
 				m_freem(m);
 			else {
-				if (opti.ts_present && opti.ts_ecr) {
-					if (tp->rfbuf_ts < opti.ts_ecr &&
-					    opti.ts_ecr - tp->rfbuf_ts < hz) {
-						tcp_update_rcvspace(tp);
-						/* Start over with next RTT. */
-						tp->rfbuf_cnt = 0;
-						tp->rfbuf_ts = 0;
-					} else
-						tp->rfbuf_cnt += tlen;
-				}
+				if (tp->t_srtt != 0 && tp->rfbuf_ts != 0 &&
+				    now - tp->rfbuf_ts > (tp->t_srtt >>
+				    (TCP_RTT_SHIFT + TCP_RTT_BASE_SHIFT))) {
+					tcp_update_rcvspace(tp);
+					/* Start over with next RTT. */
+					tp->rfbuf_cnt = 0;
+					tp->rfbuf_ts = 0;
+				} else
+					tp->rfbuf_cnt += tlen;
 				m_adj(m, iphlen + off);
 				sbappendstream(so, &so->so_rcv, m);
 			}
@@ -1085,10 +1084,6 @@ findpcb:
 		win = 0;
 	tp->rcv_wnd = imax(win, (int)(tp->rcv_adv - tp->rcv_nxt));
 	}
-
-	/* Reset receive buffer auto scaling when not in bulk receive mode. */
-	tp->rfbuf_cnt = 0;
-	tp->rfbuf_ts = 0;
 
 	switch (tp->t_state) {
 
@@ -1799,7 +1794,7 @@ trimthenstep6:
 				 * specification, but if we don't get a FIN
 				 * we'll hang forever.
 				 */
-				if (so->so_state & SS_CANTRCVMORE) {
+				if (so->so_rcv.sb_state & SS_CANTRCVMORE) {
 					tp->t_flags |= TF_BLOCKOUTPUT;
 					soisdisconnected(so);
 					tp->t_flags &= ~TF_BLOCKOUTPUT;
@@ -1906,7 +1901,7 @@ step6:
 			so->so_oobmark = so->so_rcv.sb_cc +
 			    (tp->rcv_up - tp->rcv_nxt) - 1;
 			if (so->so_oobmark == 0)
-				so->so_state |= SS_RCVATMARK;
+				so->so_rcv.sb_state |= SS_RCVATMARK;
 			sohasoutofband(so);
 			tp->t_oobflags &= ~(TCPOOB_HAVEDATA | TCPOOB_HADDATA);
 		}
@@ -1949,7 +1944,7 @@ dodata:							/* XXX */
 			tiflags = th->th_flags & TH_FIN;
 			tcpstat_pkt(tcps_rcvpack, tcps_rcvbyte, tlen);
 			ND6_HINT(tp);
-			if (so->so_state & SS_CANTRCVMORE)
+			if (so->so_rcv.sb_state & SS_CANTRCVMORE)
 				m_freem(m);
 			else {
 				m_adj(m, hdroptlen);
@@ -2693,8 +2688,7 @@ tcp_pulloutofband(struct socket *so, u_int urgent, struct mbuf *m, int off)
 void
 tcp_xmit_timer(struct tcpcb *tp, int rtt)
 {
-	short delta;
-	short rttmin;
+	int delta, rttmin;
 
 	if (rtt < 0)
 		rtt = 0;
@@ -2755,7 +2749,8 @@ tcp_xmit_timer(struct tcpcb *tp, int rtt)
 	 * statistical, we have to test that we don't drop below
 	 * the minimum feasible timer (which is 2 ticks).
 	 */
-	rttmin = min(max(rtt + 2, tp->t_rttmin), TCPTV_REXMTMAX);
+	rttmin = min(max(tp->t_rttmin, rtt + 2 * (TCP_TIME(1) / hz)),
+	    TCPTV_REXMTMAX);
 	TCPT_RANGESET(tp->t_rxtcur, TCP_REXMTVAL(tp), rttmin, TCPTV_REXMTMAX);
 
 	/*
@@ -3173,7 +3168,7 @@ do {									\
 	    TCPTV_REXMTMAX);						\
 	if (!timeout_initialized(&(sc)->sc_timer))			\
 		timeout_set_proc(&(sc)->sc_timer, syn_cache_timer, (sc)); \
-	timeout_add(&(sc)->sc_timer, (sc)->sc_rxtcur * (hz / PR_SLOWHZ)); \
+	timeout_add_msec(&(sc)->sc_timer, (sc)->sc_rxtcur);		\
 } while (/*CONSTCOND*/0)
 
 void
@@ -3346,7 +3341,7 @@ syn_cache_timer(void *arg)
 	if (sc->sc_flags & SCF_DEAD)
 		goto out;
 
-	now = READ_ONCE(tcp_now);
+	now = tcp_now();
 
 	if (__predict_false(sc->sc_rxtshift == TCP_MAXRXTSHIFT)) {
 		/* Drop it -- too many retransmissions. */
@@ -3510,7 +3505,7 @@ syn_cache_get(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 	 * the connection, abort it.
 	 */
 	oso = so;
-	so = sonewconn(so, SS_ISCONNECTED);
+	so = sonewconn(so, SS_ISCONNECTED, M_DONTWAIT);
 	if (so == NULL)
 		goto resetandabort;
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: compress.h,v 1.14 2021/01/18 00:46:58 mortimer Exp $	*/
+/*	$OpenBSD: compress.h,v 1.16 2022/12/26 19:16:00 jmc Exp $	*/
 
 /*
  * Copyright (c) 1997 Michael Shalayeff
@@ -38,7 +38,7 @@ struct z_info {
 };
 
 /*
- * making it any bigger does not affect perfomance very much.
+ * making it any bigger does not affect performance very much.
  * actually this value is just a little bit better than 8192.
  */
 #define Z_BUFSIZE 16384
@@ -65,13 +65,16 @@ extern int zread(void *, char *, int);
 extern int zwrite(void *, const char *, int);
 extern int z_close(void *, struct z_info *, const char *, struct stat *);
 
-
 extern void *gz_ropen(int, char *, int);
 extern void *gz_wopen(int, char *, int, u_int32_t);
 extern int gz_read(void *, char *, int);
 extern int gz_write(void *, const char *, int);
 extern int gz_close(void *, struct z_info *, const char *, struct stat *);
 extern int gz_flush(void *, int);
+
+extern void *zip_ropen(int, char *, int);
+extern int zip_read(void *, char *, int);
+extern int zip_close(void *, struct z_info *, const char *, struct stat *);
 
 extern void *null_ropen(int, char *, int);
 extern void *null_wopen(int, char *, int, u_int32_t);

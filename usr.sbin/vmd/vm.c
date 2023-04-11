@@ -1,4 +1,4 @@
-/*	$OpenBSD: vm.c,v 1.73 2022/09/01 22:01:40 dv Exp $	*/
+/*	$OpenBSD: vm.c,v 1.83 2023/02/06 20:33:34 dv Exp $	*/
 
 /*
  * Copyright (c) 2015 Mike Larkin <mlarkin@openbsd.org>
@@ -16,7 +16,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/param.h>	/* PAGE_SIZE */
+#include <sys/param.h>	/* PAGE_SIZE, MAXCOMLEN */
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/queue.h>
@@ -46,6 +46,7 @@
 #include <limits.h>
 #include <poll.h>
 #include <pthread.h>
+#include <pthread_np.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,7 @@
 #include "i8259.h"
 #include "loadfile.h"
 #include "mc146818.h"
+#include "mmio.h"
 #include "ns8250.h"
 #include "pci.h"
 #include "virtio.h"
@@ -67,6 +69,8 @@
 
 #define MB(x)	(x * 1024UL * 1024UL)
 #define GB(x)	(x * 1024UL * 1024UL * 1024UL)
+
+#define MMIO_NOTYET 0
 
 io_fn_t ioports_map[MAX_PORTS];
 
@@ -271,7 +275,7 @@ loadfile_bios(gzFile fp, off_t size, struct vcpu_reg_state *vrs)
  *
  * 1. validates and create the new VM
  * 2. opens the imsg control channel to the parent and drops more privilege
- * 3. drops additional privleges by calling pledge(2)
+ * 3. drops additional privileges by calling pledge(2)
  * 4. loads the kernel from the disk image or file descriptor
  * 5. runs the VM's VCPU loops.
  *
@@ -289,7 +293,7 @@ start_vm(struct vmd_vm *vm, int fd)
 	struct vmop_create_params *vmc = &vm->vm_params;
 	struct vm_create_params	*vcp = &vmc->vmc_params;
 	struct vcpu_reg_state	 vrs;
-	int			 nicfds[VMM_MAX_NICS_PER_VM];
+	int			 nicfds[VM_MAX_NICS_PER_VM];
 	int			 ret;
 	gzFile			 fp;
 	size_t			 i;
@@ -379,7 +383,7 @@ start_vm(struct vmd_vm *vm, int fd)
 	if (fcntl(con_fd, F_SETFL, O_NONBLOCK) == -1)
 		fatal("failed to set nonblocking mode on console");
 
-	for (i = 0; i < VMM_MAX_NICS_PER_VM; i++)
+	for (i = 0; i < VM_MAX_NICS_PER_VM; i++)
 		nicfds[i] = vm->vm_ifs[i].vif_fd;
 
 	event_init();
@@ -560,7 +564,7 @@ send_vm(int fd, struct vm_create_params *vcp)
 
 	vmc = calloc(1, sizeof(struct vmop_create_params));
 	if (vmc == NULL) {
-		log_warn("%s: calloc error geting vmc", __func__);
+		log_warn("%s: calloc error getting vmc", __func__);
 		ret = -1;
 		goto err;
 	}
@@ -896,6 +900,7 @@ create_memory_map(struct vm_create_params *vcp)
 	len = LOWMEM_KB * 1024;
 	vcp->vcp_memranges[0].vmr_gpa = 0x0;
 	vcp->vcp_memranges[0].vmr_size = len;
+	vcp->vcp_memranges[0].vmr_type = VM_MEM_RAM;
 	mem_bytes -= len;
 
 	/*
@@ -910,12 +915,14 @@ create_memory_map(struct vm_create_params *vcp)
 	len = MB(1) - (LOWMEM_KB * 1024);
 	vcp->vcp_memranges[1].vmr_gpa = LOWMEM_KB * 1024;
 	vcp->vcp_memranges[1].vmr_size = len;
+	vcp->vcp_memranges[1].vmr_type = VM_MEM_RESERVED;
 	mem_bytes -= len;
 
 	/* If we have less than 2MB remaining, still create a 2nd BIOS area. */
 	if (mem_bytes <= MB(2)) {
 		vcp->vcp_memranges[2].vmr_gpa = VMM_PCI_MMIO_BAR_END;
 		vcp->vcp_memranges[2].vmr_size = MB(2);
+		vcp->vcp_memranges[2].vmr_type = VM_MEM_RESERVED;
 		vcp->vcp_nmemranges = 3;
 		return;
 	}
@@ -936,18 +943,27 @@ create_memory_map(struct vm_create_params *vcp)
 	/* Third memory region: area above 1MB to MMIO region */
 	vcp->vcp_memranges[2].vmr_gpa = MB(1);
 	vcp->vcp_memranges[2].vmr_size = above_1m;
+	vcp->vcp_memranges[2].vmr_type = VM_MEM_RAM;
 
-	/* Fourth region: 2nd copy of BIOS above MMIO ending at 4GB */
-	vcp->vcp_memranges[3].vmr_gpa = VMM_PCI_MMIO_BAR_END + 1;
-	vcp->vcp_memranges[3].vmr_size = MB(2);
+	/* Fourth region: PCI MMIO range */
+	vcp->vcp_memranges[3].vmr_gpa = VMM_PCI_MMIO_BAR_BASE;
+	vcp->vcp_memranges[3].vmr_size = VMM_PCI_MMIO_BAR_END -
+	    VMM_PCI_MMIO_BAR_BASE + 1;
+	vcp->vcp_memranges[3].vmr_type = VM_MEM_MMIO;
 
-	/* Fifth region: any remainder above 4GB */
+	/* Fifth region: 2nd copy of BIOS above MMIO ending at 4GB */
+	vcp->vcp_memranges[4].vmr_gpa = VMM_PCI_MMIO_BAR_END + 1;
+	vcp->vcp_memranges[4].vmr_size = MB(2);
+	vcp->vcp_memranges[4].vmr_type = VM_MEM_RESERVED;
+
+	/* Sixth region: any remainder above 4GB */
 	if (above_4g > 0) {
-		vcp->vcp_memranges[4].vmr_gpa = GB(4);
-		vcp->vcp_memranges[4].vmr_size = above_4g;
-		vcp->vcp_nmemranges = 5;
+		vcp->vcp_memranges[5].vmr_gpa = GB(4);
+		vcp->vcp_memranges[5].vmr_size = above_4g;
+		vcp->vcp_memranges[5].vmr_type = VM_MEM_RAM;
+		vcp->vcp_nmemranges = 6;
 	} else
-		vcp->vcp_nmemranges = 4;
+		vcp->vcp_nmemranges = 5;
 }
 
 /*
@@ -1025,10 +1041,10 @@ vmm_create_vm(struct vm_create_params *vcp)
 	    vcp->vcp_nmemranges > VMM_MAX_MEM_RANGES)
 		return (EINVAL);
 
-	if (vcp->vcp_ndisks > VMM_MAX_DISKS_PER_VM)
+	if (vcp->vcp_ndisks > VM_MAX_DISKS_PER_VM)
 		return (EINVAL);
 
-	if (vcp->vcp_nnics > VMM_MAX_NICS_PER_VM)
+	if (vcp->vcp_nnics > VM_MAX_NICS_PER_VM)
 		return (EINVAL);
 
 	if (ioctl(env->vmd_fd, VMM_IOC_CREATE, vcp) == -1)
@@ -1090,15 +1106,8 @@ init_emulated_hw(struct vmop_create_params *vmc, int child_cdrom,
 	for (i = COM1_DATA; i <= COM1_SCR; i++)
 		ioports_map[i] = vcpu_exit_com;
 
-	/* Init QEMU fw_cfg interface */
-	fw_cfg_init(vmc);
-	ioports_map[FW_CFG_IO_SELECT] = vcpu_exit_fw_cfg;
-	ioports_map[FW_CFG_IO_DATA] = vcpu_exit_fw_cfg;
-	ioports_map[FW_CFG_IO_DMA_ADDR_HIGH] = vcpu_exit_fw_cfg_dma;
-	ioports_map[FW_CFG_IO_DMA_ADDR_LOW] = vcpu_exit_fw_cfg_dma;
-
 	/* Initialize PCI */
-	for (i = VMM_PCI_IO_BAR_BASE; i <= VMM_PCI_IO_BAR_END; i++)
+	for (i = VM_PCI_IO_BAR_BASE; i <= VM_PCI_IO_BAR_END; i++)
 		ioports_map[i] = vcpu_exit_pci;
 
 	ioports_map[PCI_MODE1_ADDRESS_REG] = vcpu_exit_pci;
@@ -1110,7 +1119,18 @@ init_emulated_hw(struct vmop_create_params *vmc, int child_cdrom,
 
 	/* Initialize virtio devices */
 	virtio_init(current_vm, child_cdrom, child_disks, child_taps);
+
+	/*
+	 * Init QEMU fw_cfg interface. Must be done last for pci hardware
+	 * detection.
+	 */
+	fw_cfg_init(vmc);
+	ioports_map[FW_CFG_IO_SELECT] = vcpu_exit_fw_cfg;
+	ioports_map[FW_CFG_IO_DATA] = vcpu_exit_fw_cfg;
+	ioports_map[FW_CFG_IO_DMA_ADDR_HIGH] = vcpu_exit_fw_cfg_dma;
+	ioports_map[FW_CFG_IO_DMA_ADDR_LOW] = vcpu_exit_fw_cfg_dma;
 }
+
 /*
  * restore_emulated_hw
  *
@@ -1156,7 +1176,7 @@ restore_emulated_hw(struct vm_create_params *vcp, int fd,
 	ioports_map[FW_CFG_IO_DMA_ADDR_LOW] = vcpu_exit_fw_cfg_dma;
 
 	/* Initialize PCI */
-	for (i = VMM_PCI_IO_BAR_BASE; i <= VMM_PCI_IO_BAR_END; i++)
+	for (i = VM_PCI_IO_BAR_BASE; i <= VM_PCI_IO_BAR_END; i++)
 		ioports_map[i] = vcpu_exit_pci;
 
 	ioports_map[PCI_MODE1_ADDRESS_REG] = vcpu_exit_pci;
@@ -1196,6 +1216,7 @@ run_vm(int child_cdrom, int child_disks[][VM_MAX_BASE_PER_DISK],
 	size_t i;
 	int ret;
 	pthread_t *tid, evtid;
+	char tname[MAXCOMLEN + 1];
 	struct vm_run_params **vrp;
 	void *exit_status;
 
@@ -1214,10 +1235,10 @@ run_vm(int child_cdrom, int child_disks[][VM_MAX_BASE_PER_DISK],
 	if (vcp->vcp_ncpus > VMM_MAX_VCPUS_PER_VM)
 		return (EINVAL);
 
-	if (vcp->vcp_ndisks > VMM_MAX_DISKS_PER_VM)
+	if (vcp->vcp_ndisks > VM_MAX_DISKS_PER_VM)
 		return (EINVAL);
 
-	if (vcp->vcp_nnics > VMM_MAX_NICS_PER_VM)
+	if (vcp->vcp_nnics > VM_MAX_NICS_PER_VM)
 		return (EINVAL);
 
 	if (vcp->vcp_nmemranges == 0 ||
@@ -1338,6 +1359,9 @@ run_vm(int child_cdrom, int child_disks[][VM_MAX_BASE_PER_DISK],
 			    __func__, i);
 			return (ret);
 		}
+
+		snprintf(tname, sizeof(tname), "vcpu-%zu", i);
+		pthread_set_name_np(tid[i], tname);
 	}
 
 	log_debug("%s: waiting on events for VM %s", __func__, vcp->vcp_name);
@@ -1347,6 +1371,7 @@ run_vm(int child_cdrom, int child_disks[][VM_MAX_BASE_PER_DISK],
 		log_warn("%s: could not create event thread", __func__);
 		return (ret);
 	}
+	pthread_set_name_np(evtid, "event");
 
 	for (;;) {
 		ret = pthread_cond_wait(&threadcond, &threadmutex);
@@ -1582,7 +1607,7 @@ vcpu_pic_intr(uint32_t vm_id, uint32_t vcpu_id, uint8_t intr)
  * Handle all I/O to the emulated PCI subsystem.
  *
  * Parameters:
- *  vrp: vcpu run paramters containing guest state for this exit
+ *  vrp: vcpu run parameters containing guest state for this exit
  *
  * Return value:
  *  Interrupt to inject to the guest VM, or 0xFF if no interrupt should
@@ -1606,7 +1631,7 @@ vcpu_exit_pci(struct vm_run_params *vrp)
 	case PCI_MODE1_DATA_REG + 3:
 		pci_handle_data_reg(vrp);
 		break;
-	case VMM_PCI_IO_BAR_BASE ... VMM_PCI_IO_BAR_END:
+	case VM_PCI_IO_BAR_BASE ... VM_PCI_IO_BAR_END:
 		intr = pci_handle_io(vrp);
 		break;
 	default:
@@ -1633,6 +1658,25 @@ vcpu_exit_inout(struct vm_run_params *vrp)
 	struct vm_exit *vei = vrp->vrp_exit;
 	uint8_t intr = 0xFF;
 
+	if (vei->vei.vei_rep || vei->vei.vei_string) {
+#ifdef MMIO_DEBUG
+		log_info("%s: %s%s%s %d-byte, enc=%d, data=0x%08x, port=0x%04x",
+		    __func__,
+		    vei->vei.vei_rep == 0 ? "" : "REP ",
+		    vei->vei.vei_dir == VEI_DIR_IN ? "IN" : "OUT",
+		    vei->vei.vei_string == 0 ? "" : "S",
+		    vei->vei.vei_size, vei->vei.vei_encoding,
+		    vei->vei.vei_data, vei->vei.vei_port);
+		log_info("%s: ECX = 0x%llx, RDX = 0x%llx, RSI = 0x%llx",
+		    __func__,
+		    vei->vrs.vrs_gprs[VCPU_REGS_RCX],
+		    vei->vrs.vrs_gprs[VCPU_REGS_RDX],
+		    vei->vrs.vrs_gprs[VCPU_REGS_RSI]);
+#endif /* MMIO_DEBUG */
+		fatalx("%s: can't emulate REP prefixed IN(S)/OUT(S)",
+		    __func__);
+	}
+
 	if (ioports_map[vei->vei.vei_port] != NULL)
 		intr = ioports_map[vei->vei.vei_port](vrp);
 	else if (vei->vei.vei_dir == VEI_DIR_IN)
@@ -1657,27 +1701,72 @@ vcpu_exit_inout(struct vm_run_params *vrp)
 int
 vcpu_exit_eptviolation(struct vm_run_params *vrp)
 {
-	int ret = 0;
-	uint8_t fault_type;
 	struct vm_exit *ve = vrp->vrp_exit;
-
-	fault_type = ve->vee.vee_fault_type;
-	switch (fault_type) {
+	int ret = 0;
+#if MMIO_NOTYET
+	struct x86_insn insn;
+	uint64_t va, pa;
+	size_t len = 15;		/* Max instruction length in x86. */
+#endif /* MMIO_NOTYET */
+	switch (ve->vee.vee_fault_type) {
 	case VEE_FAULT_HANDLED:
 		log_debug("%s: fault already handled", __func__);
 		break;
+
+#if MMIO_NOTYET
 	case VEE_FAULT_MMIO_ASSIST:
-		log_warnx("%s: mmio assist required: rip=0x%llx", __progname,
-		    ve->vrs.vrs_gprs[VCPU_REGS_RIP]);
-		ret = EFAULT;
+		/* Intel VMX might give us the length of the instruction. */
+		if (ve->vee.vee_insn_info & VEE_LEN_VALID)
+			len = ve->vee.vee_insn_len;
+
+		if (len > 15)
+			fatalx("%s: invalid instruction length %lu", __func__,
+			    len);
+
+		/* If we weren't given instruction bytes, we need to fetch. */
+		if (!(ve->vee.vee_insn_info & VEE_BYTES_VALID)) {
+			memset(ve->vee.vee_insn_bytes, 0,
+			    sizeof(ve->vee.vee_insn_bytes));
+			va = ve->vrs.vrs_gprs[VCPU_REGS_RIP];
+
+			/* XXX Only support instructions that fit on 1 page. */
+			if ((va & PAGE_MASK) + len > PAGE_SIZE) {
+				log_warnx("%s: instruction might cross page "
+				    "boundary", __func__);
+				ret = EINVAL;
+				break;
+			}
+
+			ret = translate_gva(ve, va, &pa, PROT_EXEC);
+			if (ret != 0) {
+				log_warnx("%s: failed gva translation",
+				    __func__);
+				break;
+			}
+
+			ret = read_mem(pa, ve->vee.vee_insn_bytes, len);
+			if (ret != 0) {
+				log_warnx("%s: failed to fetch instruction "
+				    "bytes from 0x%llx", __func__, pa);
+				break;
+			}
+		}
+
+		ret = insn_decode(ve, &insn);
+		if (ret == 0)
+			ret = insn_emulate(ve, &insn);
 		break;
+#endif /* MMIO_NOTYET */
+
 	case VEE_FAULT_PROTECT:
 		log_debug("%s: EPT Violation: rip=0x%llx", __progname,
 		    ve->vrs.vrs_gprs[VCPU_REGS_RIP]);
 		ret = EFAULT;
 		break;
+
 	default:
-		fatalx("%s: invalid fault_type %d", __progname, fault_type);
+		fatalx("%s: invalid fault_type %d", __progname,
+		    ve->vee.vee_fault_type);
 		/* UNREACHED */
 	}
 
@@ -1925,6 +2014,47 @@ read_mem(paddr_t src, void *buf, size_t len)
 }
 
 /*
+ * hvaddr_mem
+ *
+ * Translate a guest physical address to a host virtual address, checking the
+ * provided memory range length to confirm it's contiguous within the same
+ * guest memory range (vm_mem_range).
+ *
+ * Parameters:
+ *  gpa: guest physical address to translate
+ *  len: number of bytes in the intended range
+ *
+ * Return values:
+ *  void* to host virtual memory on success
+ *  NULL on error, setting errno to:
+ *    EFAULT: gpa falls outside guest memory ranges
+ *    EINVAL: requested len extends beyond memory range
+ */
+void *
+hvaddr_mem(paddr_t gpa, size_t len)
+{
+	struct vm_mem_range *vmr;
+	size_t off;
+
+	vmr = find_gpa_range(&current_vm->vm_params.vmc_params, gpa, len);
+	if (vmr == NULL) {
+		log_warnx("%s: failed - invalid gpa: 0x%lx\n", __func__, gpa);
+		errno = EFAULT;
+		return (NULL);
+	}
+
+	off = gpa - vmr->vmr_gpa;
+	if (len > (vmr->vmr_size - off)) {
+		log_warnx("%s: failed - invalid memory range: gpa=0x%lx, "
+		    "len=%zu", __func__, gpa, len);
+		errno = EINVAL;
+		return (NULL);
+	}
+
+	return ((char *)vmr->vmr_va + off);
+}
+
+/*
  * vcpu_assert_pic_irq
  *
  * Injects the specified IRQ on the supplied vcpu/vm
@@ -2113,10 +2243,11 @@ get_input_data(struct vm_exit *vei, uint32_t *data)
  * Translates a guest virtual address to a guest physical address by walking
  * the currently active page table (if needed).
  *
- * Note - this function can possibly alter the supplied VCPU state.
- *  Specifically, it may inject exceptions depending on the current VCPU
- *  configuration, and may alter %cr2 on #PF. Consequently, this function
- *  should only be used as part of instruction emulation.
+ * XXX ensure translate_gva updates the A bit in the PTE
+ * XXX ensure translate_gva respects segment base and limits in i386 mode
+ * XXX ensure translate_gva respects segment wraparound in i8086 mode
+ * XXX ensure translate_gva updates the A bit in the segment selector
+ * XXX ensure translate_gva respects CR4.LMSLE if available
  *
  * Parameters:
  *  exit: The VCPU this translation should be performed for (guest MMU settings
@@ -2221,7 +2352,7 @@ translate_gva(struct vm_exit* exit, uint64_t va, uint64_t* pa, int mode)
 			return (EIO);
 		}
 
-		/* XXX: EINVAL if in 32bit and  PG_PS is 1 but CR4.PSE is 0 */
+		/* XXX: EINVAL if in 32bit and PG_PS is 1 but CR4.PSE is 0 */
 		if (pte & PG_PS)
 			break;
 

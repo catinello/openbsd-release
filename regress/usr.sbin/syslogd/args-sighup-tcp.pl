@@ -25,7 +25,7 @@ our %args = (
 	},
 	ktrace => {
 	    qr/syslogd  PSIG  SIGHUP caught handler/ => 1,
-	    qr/syslogd  RET   execve \d+/ => 2,
+	    qr/syslogd  RET   execve JUSTRETURN/ => 2,
 	},
 	loghost => '@tcp://127.0.0.1:$connectport',
 	loggrep => {
@@ -50,7 +50,7 @@ our %args = (
 	loggrep => {
 	    get_between2loggrep(),
 	    qr/Signal/ => 1,
-	    qr/Accepted/ => 2,
+	    qr/^Accepted$/ => 2,
 	},
     },
 );

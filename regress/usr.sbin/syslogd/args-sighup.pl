@@ -20,7 +20,7 @@ our %args = (
     syslogd => {
 	ktrace => {
 	    qr/syslogd  PSIG  SIGHUP caught handler/ => 1,
-	    qr/syslogd  RET   execve \d+/ => 2,
+	    qr/syslogd  RET   execve JUSTRETURN/ => 2,
 	},
 	loggrep => {
 	    qr/config file changed: dying/ => 0,
@@ -41,7 +41,7 @@ our %args = (
 	loggrep => {
 	    get_between2loggrep(),
 	    qr/Signal/ => 1,
-	    qr/Accepted/ => 1,
+	    qr/^Accepted$/ => 1,
 	},
     },
     check => sub {

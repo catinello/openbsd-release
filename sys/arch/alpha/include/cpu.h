@@ -1,4 +1,4 @@
-/* $OpenBSD: cpu.h,v 1.66 2022/08/10 10:41:35 miod Exp $ */
+/* $OpenBSD: cpu.h,v 1.69 2023/01/31 15:18:53 deraadt Exp $ */
 /* $NetBSD: cpu.h,v 1.45 2000/08/21 02:03:12 thorpej Exp $ */
 
 /*-
@@ -99,6 +99,7 @@ typedef union alpha_t_float {
 #include <machine/bus.h>
 #include <machine/intr.h>
 #include <sys/cdefs.h>
+#include <sys/clockintr.h>
 #include <sys/device.h>
 #include <sys/sched.h>
 #include <sys/srp.h>
@@ -140,11 +141,11 @@ void	machine_check(unsigned long, struct trapframe *, unsigned long,
 	    unsigned long);
 u_int64_t hwrpb_checksum(void);
 void	hwrpb_restart_setup(void);
+void	proc_trampoline(void);					/* MAGIC */
 void	regdump(struct trapframe *);
 void	regtoframe(struct reg *, struct trapframe *);
 void	savectx(struct pcb *);
 void    switch_exit(struct proc *);				/* MAGIC */
-void	switch_trampoline(void);				/* MAGIC */
 void	syscall(u_int64_t, struct trapframe *);
 void	trap(unsigned long, unsigned long, unsigned long, unsigned long,
 	    struct trapframe *);
@@ -212,6 +213,7 @@ struct cpu_info {
 #ifdef GPROF
 	struct gmonparam *ci_gmon;
 #endif
+	struct clockintr_queue ci_queue;
 	char ci_panicbuf[512];
 };
 
@@ -440,6 +442,8 @@ intr_restore(u_long s)
 {
 	splx((int)s);
 }
+
+#define copyinsn(p, v, ip)	copyin32((v), (ip))
 
 #endif /* _KERNEL */
 #endif /* _MACHINE_CPU_H_ */

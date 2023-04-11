@@ -1,4 +1,4 @@
-/*	$OpenBSD: extern.h,v 1.156 2022/09/03 21:24:02 job Exp $ */
+/*	$OpenBSD: extern.h,v 1.175 2023/03/13 19:51:49 job Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -23,15 +23,6 @@
 
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
-
-/*
- * Distrusted hosts (loaded from skipfile).
- */
-struct skiplistentry {
-	LIST_ENTRY(skiplistentry)	 entry;
-	char				*value; /* FQDN */
-};
-LIST_HEAD(skiplist, skiplistentry);
 
 /*
  * Enumeration for ASN.1 explicit tags in RSC eContent
@@ -148,7 +139,9 @@ struct cert {
 	enum cert_purpose	 purpose; /* BGPSec or CA */
 	char		*pubkey; /* Subject Public Key Info */
 	X509		*x509; /* the cert */
-	time_t		 expires; /* do not use after */
+	time_t		 notbefore; /* cert's Not Before */
+	time_t		 notafter; /* cert's Not After */
+	time_t		 expires; /* when the signature path expires */
 };
 
 /*
@@ -183,6 +176,8 @@ enum rtype {
 	RTYPE_FILE,
 	RTYPE_RSC,
 	RTYPE_ASPA,
+	RTYPE_TAK,
+	RTYPE_GEOFEED,
 };
 
 enum location {
@@ -212,11 +207,14 @@ struct mft {
 	char		*seqnum; /* manifestNumber */
 	char		*aia; /* AIA */
 	char		*aki; /* AKI */
+	char		*sia; /* SIA signedObject */
 	char		*ski; /* SKI */
 	char		*crl; /* CRL file name */
 	unsigned char	 crlhash[SHA256_DIGEST_LENGTH];
-	time_t		 valid_since;
-	time_t		 valid_until;
+	time_t		 signtime; /* CMS signing-time attribute */
+	time_t		 thisupdate; /* from the eContent */
+	time_t		 nextupdate; /* from the eContent */
+	time_t		 expires; /* when the signature path expires */
 	size_t		 filesz; /* number of filenames */
 	unsigned int	 repoid;
 	int		 stale; /* if a stale manifest */
@@ -247,8 +245,12 @@ struct roa {
 	int		 valid; /* validated resources */
 	char		*aia; /* AIA */
 	char		*aki; /* AKI */
+	char		*sia; /* SIA signedObject */
 	char		*ski; /* SKI */
-	time_t		 expires; /* do not use after */
+	time_t		 signtime; /* CMS signing-time attribute */
+	time_t		 notbefore; /* EE cert's Not Before */
+	time_t		 notafter; /* EE cert's Not After */
+	time_t		 expires; /* when the signature path expires */
 };
 
 struct rscfile {
@@ -271,7 +273,65 @@ struct rsc {
 	char		*aia; /* AIA */
 	char		*aki; /* AKI */
 	char		*ski; /* SKI */
-	time_t		 expires; /* Not After of the RSC EE */
+	time_t		 signtime; /* CMS signing-time attribute */
+	time_t		 notbefore; /* EE cert's Not Before */
+	time_t		 notafter; /* Not After of the RSC EE */
+	time_t		 expires; /* when the signature path expires */
+};
+
+/*
+ * Datastructure representing the TAKey sequence inside TAKs.
+ */
+struct takey {
+	char		**comments; /* Comments */
+	size_t		 commentsz; /* number of Comments */
+	char		**uris; /* CertificateURI */
+	size_t		 urisz; /* number of CertificateURIs */
+	unsigned char	*pubkey; /* DER encoded SubjectPublicKeyInfo */
+	size_t		 pubkeysz;
+	char		*ski; /* hex encoded SubjectKeyIdentifier of pubkey */
+};
+
+/*
+ * A Signed TAL (TAK) draft-ietf-sidrops-signed-tal-12
+ */
+struct tak {
+	int		 talid; /* TAK covered by what TAL */
+	struct takey	*current;
+	struct takey	*predecessor;
+	struct takey	*successor;
+	char		*aia; /* AIA */
+	char		*aki; /* AKI */
+	char		*sia; /* SIA signed Object */
+	char		*ski; /* SKI */
+	time_t		 signtime; /* CMS signing-time attribute */
+	time_t		 notbefore; /* EE cert's Not Before */
+	time_t		 notafter; /* Not After of the TAK EE */
+	time_t		 expires; /* when the signature path expires */
+};
+
+/*
+ * A single geofeed record
+ */
+struct geoip {
+	struct cert_ip	*ip;
+	char		*loc;
+};
+
+/*
+ * A geofeed file
+ */
+struct geofeed {
+	struct geoip	*geoips; /* Prefix + location entry in the CSV */
+	size_t		 geoipsz; /* number of IPs */
+	char		*aia; /* AIA */
+	char		*aki; /* AKI */
+	char		*ski; /* SKI */
+	time_t		 signtime; /* CMS signing-time attribute */
+	time_t		 notbefore; /* EE cert's Not Before */
+	time_t		 notafter; /* Not After of the Geofeed EE */
+	time_t		 expires; /* when the signature path expires */
+	int		 valid; /* all resources covered */
 };
 
 /*
@@ -281,7 +341,12 @@ struct gbr {
 	char		*vcard;
 	char		*aia; /* AIA */
 	char		*aki; /* AKI */
+	char		*sia; /* SIA signedObject */
 	char		*ski; /* SKI */
+	time_t		 signtime; /* CMS signing-time attribute */
+	time_t		 notbefore; /* EE cert's Not Before */
+	time_t		 notafter; /* Not After of the GBR EE */
+	time_t		 expires; /* when the signature path expires */
 };
 
 struct aspa_provider {
@@ -297,22 +362,25 @@ struct aspa {
 	int			 talid; /* TAL the ASPA is chained up to */
 	char			*aia; /* AIA */
 	char			*aki; /* AKI */
+	char			*sia; /* SIA signedObject */
 	char			*ski; /* SKI */
-	uint32_t	 	 custasid; /* the customerASID */
+	uint32_t		 custasid; /* the customerASID */
 	struct aspa_provider	*providers; /* the providers */
 	size_t			 providersz; /* number of providers */
-	time_t		 	 expires; /* NotAfter of the ASPA EE cert */
+	time_t			 signtime; /* CMS signing-time attribute */
+	time_t		 	 notbefore; /* EE cert's Not Before */
+	time_t			 notafter; /* notAfter of the ASPA EE cert */
+	time_t			 expires; /* when the signature path expires */
 };
 
 /*
  * A Validated ASPA Payload (VAP) tree element.
- * To ease transformation, this struct mimicks ASPA RTR PDU structure.
+ * To ease transformation, this struct mimics ASPA RTR PDU structure.
  */
 struct vap {
 	RB_ENTRY(vap)		 entry;
-	enum afi		 afi;
 	uint32_t		 custasid;
-	uint32_t		*providers;
+	struct aspa_provider	*providers;
 	size_t			 providersz;
 	time_t			 expires;
 };
@@ -330,6 +398,7 @@ struct vrp {
 	RB_ENTRY(vrp)	entry;
 	struct ip_addr	addr;
 	int		talid; /* covered by which TAL */
+	unsigned int	repoid;
 	uint32_t	asid;
 	enum afi	afi;
 	unsigned char	maxlength;
@@ -365,8 +434,8 @@ struct crl {
 	RB_ENTRY(crl)	 entry;
 	char		*aki;
 	X509_CRL	*x509_crl;
-	time_t		 issued;	/* do not use before */
-	time_t		 expires;	/* do not use after */
+	time_t		 lastupdate;	/* do not use before */
+	time_t		 nextupdate;	/* do not use after */
 };
 /*
  * Tree of CRLs sorted by uri
@@ -443,9 +512,23 @@ struct entity {
 	unsigned int	 repoid;	/* repository identifier */
 	int		 talid;		/* tal identifier */
 	enum rtype	 type;		/* type of entity (not RTYPE_EOF) */
-	enum location	 location;	/* which directroy the file lives in */
+	enum location	 location;	/* which directory the file lives in */
 };
 TAILQ_HEAD(entityq, entity);
+
+enum stype {
+	STYPE_OK,
+	STYPE_FAIL,
+	STYPE_INVALID,
+	STYPE_STALE,
+	STYPE_BGPSEC,
+	STYPE_TOTAL,
+	STYPE_UNIQUE,
+	STYPE_DEC_UNIQUE,
+	STYPE_BOTH,
+	STYPE_ONLY_IPV4,
+	STYPE_ONLY_IPV6,
+};
 
 struct repo;
 struct filepath;
@@ -455,40 +538,50 @@ RB_HEAD(filepath_tree, filepath);
 /*
  * Statistics collected during run-time.
  */
+struct repostats {
+	uint32_t	 certs; /* certificates */
+	uint32_t	 certs_fail; /* invalid certificate */
+	uint32_t	 mfts; /* total number of manifests */
+	uint32_t	 mfts_fail; /* failing syntactic parse */
+	uint32_t	 mfts_stale; /* stale manifests */
+	uint32_t	 roas; /* route origin authorizations */
+	uint32_t	 roas_fail; /* failing syntactic parse */
+	uint32_t	 roas_invalid; /* invalid resources */
+	uint32_t	 aspas; /* ASPA objects */
+	uint32_t	 aspas_fail; /* ASPA objects failing syntactic parse */
+	uint32_t	 aspas_invalid; /* ASPAs with invalid customerASID */
+	uint32_t	 brks; /* number of BGPsec Router Key (BRK) certs */
+	uint32_t	 crls; /* revocation lists */
+	uint32_t	 gbrs; /* ghostbuster records */
+	uint32_t	 taks; /* signed TAL objects */
+	uint32_t	 vaps; /* total number of Validated ASPA Payloads */
+	uint32_t	 vaps_uniqs; /* total number of unique VAPs */
+	uint32_t	 vaps_pas; /* total number of providers */
+	uint32_t	 vaps_pas4; /* total number of IPv4 only providers */
+	uint32_t	 vaps_pas6; /* total number of IPv6 only providers */
+	uint32_t	 vrps; /* total number of Validated ROA Payloads */
+	uint32_t	 vrps_uniqs; /* number of unique vrps */
+	struct timespec	 sync_time;	/* time to sync repo */
+};
+
 struct stats {
-	size_t	 tals; /* total number of locators */
-	size_t	 mfts; /* total number of manifests */
-	size_t	 mfts_fail; /* failing syntactic parse */
-	size_t	 mfts_stale; /* stale manifests */
-	size_t	 certs; /* certificates */
-	size_t	 certs_fail; /* invalid certificate */
-	size_t	 roas; /* route origin authorizations */
-	size_t	 roas_fail; /* failing syntactic parse */
-	size_t	 roas_invalid; /* invalid resources */
-	size_t	 repos; /* repositories */
-	size_t	 rsync_repos; /* synced rsync repositories */
-	size_t	 rsync_fails; /* failed rsync repositories */
-	size_t	 http_repos; /* synced http repositories */
-	size_t	 http_fails; /* failed http repositories */
-	size_t	 rrdp_repos; /* synced rrdp repositories */
-	size_t	 rrdp_fails; /* failed rrdp repositories */
-	size_t	 crls; /* revocation lists */
-	size_t	 gbrs; /* ghostbuster records */
-	size_t	 aspas; /* ASPA objects */
-	size_t	 aspas_fail; /* ASPA objects failing syntactic parse */
-	size_t	 aspas_invalid; /* ASPAs with invalid customerASID */
-	size_t	 vaps; /* total number of Validated ASPA Payloads */
-	size_t	 vaps_uniqs; /* total number of unique VAPs */
-	size_t	 vrps; /* total number of vrps */
-	size_t	 uniqs; /* number of unique vrps */
-	size_t	 del_files; /* number of files removed in cleanup */
-	size_t	 extra_files; /* number of superfluous files */
-	size_t	 del_dirs; /* number of directories removed in cleanup */
-	size_t	 brks; /* number of BGPsec Router Key (BRK) certificates */
-	size_t	 skiplistentries; /* number of skiplist entries */
-	struct timeval	elapsed_time;
-	struct timeval	user_time;
-	struct timeval	system_time;
+	uint32_t	 tals; /* total number of locators */
+	uint32_t	 repos; /* repositories */
+	uint32_t	 rsync_repos; /* synced rsync repositories */
+	uint32_t	 rsync_fails; /* failed rsync repositories */
+	uint32_t	 http_repos; /* synced http repositories */
+	uint32_t	 http_fails; /* failed http repositories */
+	uint32_t	 rrdp_repos; /* synced rrdp repositories */
+	uint32_t	 rrdp_fails; /* failed rrdp repositories */
+	uint32_t	 del_files; /* number of files removed in cleanup */
+	uint32_t	 extra_files; /* number of superfluous files */
+	uint32_t	 del_dirs; /* number of dirs removed in cleanup */
+	uint32_t	 skiplistentries; /* number of skiplist entries */
+
+	struct repostats	repo_stats;
+	struct timespec		elapsed_time;
+	struct timespec		user_time;
+	struct timespec		system_time;
 };
 
 struct ibuf;
@@ -497,9 +590,11 @@ struct msgbuf;
 /* global variables */
 extern int verbose;
 extern int filemode;
+extern int excludeaspa;
 extern const char *tals[];
 extern const char *taldescs[];
 extern unsigned int talrepocnt[];
+extern struct repostats talstats[];
 extern int talsz;
 
 /* Routines for RPKI entities. */
@@ -533,21 +628,30 @@ void		 roa_free(struct roa *);
 struct roa	*roa_parse(X509 **, const char *, const unsigned char *,
 		    size_t);
 struct roa	*roa_read(struct ibuf *);
-void		 roa_insert_vrps(struct vrp_tree *, struct roa *, size_t *,
-		    size_t *);
+void		 roa_insert_vrps(struct vrp_tree *, struct roa *,
+		    struct repo *);
 
 void		 gbr_free(struct gbr *);
 struct gbr	*gbr_parse(X509 **, const char *, const unsigned char *,
 		    size_t);
 
+void		 geofeed_free(struct geofeed *);
+struct geofeed	*geofeed_parse(X509 **, const char *, char *, size_t);
+
 void		 rsc_free(struct rsc *);
 struct rsc	*rsc_parse(X509 **, const char *, const unsigned char *,
 		    size_t);
 
+void		 takey_free(struct takey *);
+void		 tak_free(struct tak *);
+struct tak	*tak_parse(X509 **, const char *, const unsigned char *,
+		    size_t);
+struct tak	*tak_read(struct ibuf *);
+
 void		 aspa_buffer(struct ibuf *, const struct aspa *);
 void		 aspa_free(struct aspa *);
-void		 aspa_insert_vaps(struct vap_tree *, struct aspa *, size_t *,
-		    size_t *);
+void		 aspa_insert_vaps(struct vap_tree *, struct aspa *,
+		    struct repo *);
 struct aspa	*aspa_parse(X509 **, const char *, const unsigned char *,
 		    size_t);
 struct aspa	*aspa_read(struct ibuf *);
@@ -573,15 +677,21 @@ int		 valid_filename(const char *, size_t);
 int		 valid_uri(const char *, size_t, const char *);
 int		 valid_origin(const char *, const char *);
 int		 valid_x509(char *, X509_STORE_CTX *, X509 *, struct auth *,
-		    struct crl *, int);
+		    struct crl *, const char **);
 int		 valid_rsc(const char *, struct cert *, struct rsc *);
 int		 valid_econtent_version(const char *, const ASN1_INTEGER *);
 int		 valid_aspa(const char *, struct cert *, struct aspa *);
+int		 valid_geofeed(const char *, struct cert *, struct geofeed *);
+int		 valid_uuid(const char *);
+int		 valid_ca_pkey(const char *, EVP_PKEY *);
 
 /* Working with CMS. */
 unsigned char	*cms_parse_validate(X509 **, const char *,
 		    const unsigned char *, size_t,
-		    const ASN1_OBJECT *, size_t *);
+		    const ASN1_OBJECT *, size_t *, time_t *);
+int		 cms_parse_validate_detached(X509 **, const char *,
+		    const unsigned char *, size_t,
+		    const ASN1_OBJECT *, BIO *, time_t *);
 
 /* Work with RFC 3779 IP addresses, prefixes, ranges. */
 
@@ -643,11 +753,19 @@ int		 rrdp_handle_file(unsigned int, enum publish_type, char *,
 char		*repo_basedir(const struct repo *, int);
 unsigned int	 repo_id(const struct repo *);
 const char	*repo_uri(const struct repo *);
+void		 repo_fetch_uris(const struct repo *, const char **,
+		    const char **);
+int		 repo_synced(const struct repo *);
+int		 repo_talid(const struct repo *);
 struct repo	*ta_lookup(int, struct tal *);
 struct repo	*repo_lookup(int, const char *, const char *);
 struct repo	*repo_byid(unsigned int);
 int		 repo_queued(struct repo *, struct entity *);
 void		 repo_cleanup(struct filepath_tree *, int);
+int		 repo_check_timeout(int);
+void		 repo_stat_inc(struct repo *, enum rtype, enum stype);
+void		 repo_stats_collect(void (*)(const struct repo *,
+		    const struct repostats *, void *), void *);
 void		 repo_free(void);
 
 void		 rsync_finish(unsigned int, int);
@@ -662,7 +780,6 @@ void		 rrdp_fetch(unsigned int, const char *, const char *,
 		    struct rrdp_session *);
 void		 rrdp_abort(unsigned int);
 void		 rrdp_http_done(unsigned int, enum http_result, const char *);
-int		 repo_check_timeout(int);
 
 /* Logging (though really used for OpenSSL errors). */
 
@@ -702,8 +819,10 @@ struct ibuf	*io_buf_recvfd(int, struct ibuf **);
 void		 x509_init_oid(void);
 int		 x509_get_aia(X509 *, const char *, char **);
 int		 x509_get_aki(X509 *, const char *, char **);
+int		 x509_get_sia(X509 *, const char *, char **);
 int		 x509_get_ski(X509 *, const char *, char **);
-int		 x509_get_expire(X509 *, const char *, time_t *);
+int		 x509_get_notbefore(X509 *, const char *, time_t *);
+int		 x509_get_notafter(X509 *, const char *, time_t *);
 int		 x509_get_crl(X509 *, const char *, char **);
 char		*x509_crl_get_aki(X509_CRL *, const char *);
 char		*x509_get_pubkey(X509 *, const char *);
@@ -713,7 +832,8 @@ char		*x509_convert_seqnum(const char *, const ASN1_INTEGER *);
 int		 x509_location(const char *, const char *, const char *,
 		    GENERAL_NAME *, char **);
 int		 x509_inherits(X509 *);
-int	 	 x509_any_inherits(X509 *);
+int		 x509_any_inherits(X509 *);
+time_t		 x509_find_expires(time_t, struct auth *, struct crl_tree *);
 
 /* printers */
 char		*time2str(time_t);
@@ -726,6 +846,8 @@ void		 roa_print(const X509 *, const struct roa *);
 void		 gbr_print(const X509 *, const struct gbr *);
 void		 rsc_print(const X509 *, const struct rsc *);
 void		 aspa_print(const X509 *, const struct aspa *);
+void		 tak_print(const X509 *, const struct tak *);
+void		 geofeed_print(const X509 *, const struct geofeed *);
 
 /* Output! */
 
@@ -734,6 +856,7 @@ extern int	 outformats;
 #define FORMAT_BIRD	0x02
 #define FORMAT_CSV	0x04
 #define FORMAT_JSON	0x08
+#define FORMAT_OMETRIC	0x10
 
 int		 outputfiles(struct vrp_tree *v, struct brk_tree *b,
 		    struct vap_tree *, struct stats *);
@@ -749,6 +872,8 @@ int		 output_bird2(FILE *, struct vrp_tree *, struct brk_tree *,
 int		 output_csv(FILE *, struct vrp_tree *, struct brk_tree *,
 		    struct vap_tree *, struct stats *);
 int		 output_json(FILE *, struct vrp_tree *, struct brk_tree *,
+		    struct vap_tree *, struct stats *);
+int		 output_ometric(FILE *, struct vrp_tree *, struct brk_tree *,
 		    struct vap_tree *, struct stats *);
 
 void		logx(const char *fmt, ...)

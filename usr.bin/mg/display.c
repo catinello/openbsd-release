@@ -1,4 +1,4 @@
-/*	$OpenBSD: display.c,v 1.48 2017/07/06 19:27:37 schwarze Exp $	*/
+/*	$OpenBSD: display.c,v 1.50 2023/03/08 04:43:11 guenther Exp $	*/
 
 /* This file is in the public domain. */
 
@@ -38,7 +38,7 @@ struct video {
 
 #define VFCHG	0x0001			/* Changed.			 */
 #define VFHBAD	0x0002			/* Hash and cost are bad.	 */
-#define VFEXT	0x0004			/* extended line (beond ncol)	 */
+#define VFEXT	0x0004			/* extended line (beyond ncol)	 */
 
 /*
  * SCORE structures hold the optimal
@@ -102,7 +102,6 @@ extern int globalwd;
  * Since we don't have variables (we probably should) these are command
  * processors for changing the values of mode flags.
  */
-/* ARGSUSED */
 int
 linenotoggle(int f, int n)
 {
@@ -116,7 +115,6 @@ linenotoggle(int f, int n)
 	return (TRUE);
 }
 
-/* ARGSUSED */
 int
 colnotoggle(int f, int n)
 {
@@ -685,7 +683,7 @@ updext(int currow, int curcol)
 	lbound = curcol - (curcol % (ncol >> 1)) - (ncol >> 2);
 
 	/*
-	 * scan through the line outputing characters to the virtual screen
+	 * scan through the line outputting characters to the virtual screen
 	 * once we reach the left edge
 	 */
 	vtmove(currow, -lbound);		/* start scanning offscreen */

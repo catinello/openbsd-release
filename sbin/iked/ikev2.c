@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2.c,v 1.353 2022/09/21 22:32:10 tobhe Exp $	*/
+/*	$OpenBSD: ikev2.c,v 1.365 2023/03/10 19:26:06 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2019 Tobias Heider <tobias.heider@stusta.de>
@@ -32,6 +32,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <signal.h>
+#include <endian.h>
 #include <errno.h>
 #include <err.h>
 #include <event.h>
@@ -56,7 +57,7 @@ void	 ikev2_log_proposal(struct iked_sa *, struct iked_proposals *);
 void	 ikev2_log_cert_info(const char *, struct iked_id *);
 
 void	 ikev2_run(struct privsep *, struct privsep_proc *, void *);
-void	 ikev2_shutdown(struct privsep_proc *);
+void	 ikev2_shutdown(void);
 int	 ikev2_dispatch_parent(int, struct privsep_proc *, struct imsg *);
 int	 ikev2_dispatch_cert(int, struct privsep_proc *, struct imsg *);
 int	 ikev2_dispatch_control(int, struct privsep_proc *, struct imsg *);
@@ -195,10 +196,10 @@ static struct privsep_proc procs[] = {
 	{ "control",	PROC_CONTROL,	ikev2_dispatch_control }
 };
 
-pid_t
+void
 ikev2(struct privsep *ps, struct privsep_proc *p)
 {
-	return (proc_run(ps, p, procs, nitems(procs), ikev2_run, NULL));
+	proc_run(ps, p, procs, nitems(procs), ikev2_run, NULL);
 }
 
 void
@@ -217,9 +218,9 @@ ikev2_run(struct privsep *ps, struct privsep_proc *p, void *arg)
 }
 
 void
-ikev2_shutdown(struct privsep_proc *p)
+ikev2_shutdown(void)
 {
-	struct iked		*env = p->p_env;
+	struct iked		*env = iked_env;
 
 	ibuf_release(env->sc_certreq);
 	env->sc_certreq = NULL;
@@ -229,7 +230,7 @@ ikev2_shutdown(struct privsep_proc *p)
 int
 ikev2_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked		*env = p->p_env;
+	struct iked		*env = iked_env;
 	struct iked_sa		*sa, *satmp;
 	struct iked_policy	*pol, *old;
 
@@ -267,14 +268,8 @@ ikev2_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 			if (old != sa->sa_policy) {
 				/* Cleanup old policy */
 				TAILQ_REMOVE(&old->pol_sapeers, sa, sa_peer_entry);
-				if (old->pol_flags & IKED_POLICY_REFCNT)
-					policy_unref(env, old);
-
-				if (sa->sa_policy->pol_flags & IKED_POLICY_REFCNT) {
-					log_info("%s: sa %p old pol %p pol_refcnt %d",
-					    __func__, sa, sa->sa_policy, sa->sa_policy->pol_refcnt);
-					policy_ref(env, sa->sa_policy);
-				}
+				policy_unref(env, old);
+				policy_ref(env, sa->sa_policy);
 				TAILQ_INSERT_TAIL(&sa->sa_policy->pol_sapeers, sa, sa_peer_entry);
 			}
 		}
@@ -311,7 +306,7 @@ ikev2_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 int
 ikev2_dispatch_cert(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked		*env = p->p_env;
+	struct iked		*env = iked_env;
 	struct iked_sahdr	 sh;
 	struct iked_sa		*sa;
 	uint8_t			 type;
@@ -511,7 +506,7 @@ ikev2_dispatch_cert(int fd, struct privsep_proc *p, struct imsg *imsg)
 int
 ikev2_dispatch_control(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked		*env = p->p_env;
+	struct iked		*env = iked_env;
 
 	switch (imsg->hdr.type) {
 	case IMSG_CTL_RESET_ID:
@@ -669,7 +664,7 @@ ikev2_recv(struct iked *env, struct iked_message *msg)
 
 	logit(hdr->ike_exchange == IKEV2_EXCHANGE_INFORMATIONAL ?
 	    LOG_DEBUG : LOG_INFO,
-	    "%srecv %s %s %u peer %s local %s, %ld bytes, policy '%s'",
+	    "%srecv %s %s %u peer %s local %s, %zu bytes, policy '%s'",
 	    SPI_IH(hdr),
 	    print_map(hdr->ike_exchange, ikev2_exchange_map),
 	    msg->msg_response ? "res" : "req",
@@ -978,15 +973,13 @@ ikev2_ike_auth_recv(struct iked *env, struct iked_sa *sa,
 			    SPI_SA(sa, __func__));
 			ikev2_send_auth_failed(env, sa);
 			TAILQ_REMOVE(&old->pol_sapeers, sa, sa_peer_entry);
-			if (old->pol_flags & IKED_POLICY_REFCNT)
-				policy_unref(env, old);
+			policy_unref(env, old);
 			return (-1);
 		}
 		if (msg->msg_policy != old) {
 			/* Clean up old policy */
 			TAILQ_REMOVE(&old->pol_sapeers, sa, sa_peer_entry);
-			if (old->pol_flags & IKED_POLICY_REFCNT)
-				policy_unref(env, old);
+			policy_unref(env, old);
 
 			/* Update SA with new policy*/
 			if (sa_new(env, sa->sa_hdr.sh_ispi,
@@ -1018,8 +1011,7 @@ ikev2_ike_auth_recv(struct iked *env, struct iked_sa *sa,
 			log_warnx("%s: policy mismatch", SPI_SA(sa, __func__));
 			ikev2_send_auth_failed(env, sa);
 			TAILQ_REMOVE(&old->pol_sapeers, sa, sa_peer_entry);
-			if (old->pol_flags & IKED_POLICY_REFCNT)
-				policy_unref(env, old);
+			policy_unref(env, old);
 			return (-1);
 		}
 		/* restore */
@@ -3032,7 +3024,7 @@ ikev2_handle_delete(struct iked *env, struct iked_message *msg,
 	uint64_t		 spi64, spi = 0;
 	uint32_t		 spi32;
 	uint8_t			*buf;
-	size_t			 found = 0, failed = 0;
+	size_t			 found = 0;
 	int			 ret = -1;
 	size_t			 i, sz, cnt, len;
 
@@ -3099,9 +3091,7 @@ ikev2_handle_delete(struct iked *env, struct iked_message *msg,
 		}
 
 		if (ikev2_childsa_delete(env, sa, msg->msg_del_protoid, spi,
-		    &localspi[i], 0) == -1)
-			failed++;
-		else {
+		    &localspi[i], 0) != -1) {
 			found++;
 
 			/* append SPI to log buffer */
@@ -4165,7 +4155,7 @@ ikev2_send_create_child_sa(struct iked *env, struct iked_sa *sa,
 	len = ibuf_size(nonce);
 
 	if ((xform = config_findtransform(&pol->pol_proposals, IKEV2_XFORMTYPE_DH,
-	    protoid)) && group_get(xform->xform_id) != IKEV2_XFORMDH_NONE) {
+	    protoid)) && xform->xform_id != IKEV2_XFORMDH_NONE) {
 		log_debug("%s: enable PFS", __func__);
 		ikev2_sa_cleanup_dh(sa);
 		if (proposed_group) {
@@ -5613,10 +5603,8 @@ ikev2_sa_responder(struct iked *env, struct iked_sa *sa, struct iked_sa *osa,
 		TAILQ_REMOVE(&old->pol_sapeers, sa, sa_peer_entry);
 		TAILQ_INSERT_TAIL(&sa->sa_policy->pol_sapeers,
 		    sa, sa_peer_entry);
-		if (old->pol_flags & IKED_POLICY_REFCNT)
-			policy_unref(env, old);
-		if (sa->sa_policy->pol_flags & IKED_POLICY_REFCNT)
-			policy_ref(env, sa->sa_policy);
+		policy_unref(env, old);
+		policy_ref(env, sa->sa_policy);
 	}
 
 	sa_state(env, sa, IKEV2_STATE_SA_INIT);
@@ -6433,6 +6421,7 @@ ikev2_childsa_enable(struct iked *env, struct iked_sa *sa)
 	uint16_t		 encrid = 0, integrid = 0, groupid = 0;
 	size_t			 encrlen = 0, integrlen = 0;
 	int			 esn = 0;
+	int			 ret = -1;
 
 	TAILQ_FOREACH(csa, &sa->sa_childsas, csa_entry) {
 		if (csa->csa_rekey || csa->csa_loaded)
@@ -6450,7 +6439,7 @@ ikev2_childsa_enable(struct iked *env, struct iked_sa *sa)
 			log_debug("%s: failed to load CHILD SA spi %s",
 			    __func__, print_spi(csa->csa_spi.spi,
 			    csa->csa_spi.spi_size));
-			return (-1);
+			goto done;
 		}
 		if (ipcomp) {
 			if (pfkey_sa_add(env, ipcomp, csa) != 0) {
@@ -6526,7 +6515,7 @@ ikev2_childsa_enable(struct iked *env, struct iked_sa *sa)
 
 		if (pfkey_flow_add(env, flow) != 0) {
 			log_debug("%s: failed to load flow", __func__);
-			return (-1);
+			goto done;
 		}
 
 		if ((oflow = RB_FIND(iked_flows, &env->sc_activeflows, flow))
@@ -6594,9 +6583,12 @@ ikev2_childsa_enable(struct iked *env, struct iked_sa *sa)
 	if (ibuf_strlen(flowbuf))
 		log_info("%s: loaded flows: %.*s", SPI_SA(sa, __func__),
 		    ibuf_strlen(flowbuf), ibuf_data(flowbuf));
+
+	ret = 0;
+ done:
 	ibuf_release(spibuf);
 	ibuf_release(flowbuf);
-	return (0);
+	return (ret);
 }
 
 int
@@ -6932,8 +6924,8 @@ ikev2_print_id(struct iked_id *id, char *idstr, size_t idstrlen)
 	    strlcat(idstr, "/", idstrlen) >= idstrlen)
 		return (-1);
 
-	idstr += strlen(idstr);
 	idstrlen -= strlen(idstr);
+	idstr += strlen(idstr);
 
 	switch (id->id_type) {
 	case IKEV2_ID_IPV4:
@@ -6974,10 +6966,10 @@ ikev2_print_id(struct iked_id *id, char *idstr, size_t idstrlen)
 		if ((str = ca_asn1_name(ptr, len)) == NULL)
 			return (-1);
 		if (strlcpy(idstr, str, idstrlen) >= idstrlen) {
-			free(str);
+			OPENSSL_free(str);
 			return (-1);
 		}
-		free(str);
+		OPENSSL_free(str);
 		break;
 	default:
 		/* XXX test */

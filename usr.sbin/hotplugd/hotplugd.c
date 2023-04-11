@@ -1,4 +1,4 @@
-/*	$OpenBSD: hotplugd.c,v 1.17 2021/07/12 15:09:21 beck Exp $	*/
+/*	$OpenBSD: hotplugd.c,v 1.19 2023/03/08 04:43:13 guenther Exp $	*/
 /*
  * Copyright (c) 2004 Alexander Yurchenko <grange@openbsd.org>
  *
@@ -67,7 +67,6 @@ main(int argc, char *argv[])
 		case 'd':
 			device = optarg;
 			break;
-		case '?':
 		default:
 			usage();
 			/* NOTREACHED */
@@ -174,7 +173,6 @@ exec_script(const char *file, int class, char *name)
 	}
 }
 
-/* ARGSUSED */
 void
 sigchild(int signum)
 {
@@ -212,7 +210,6 @@ sigchild(int signum)
 	errno = saved_errno;
 }
 
-/* ARGSUSED */
 void
 sigquit(int signum)
 {

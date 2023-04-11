@@ -1,4 +1,4 @@
-/*	$OpenBSD: chpass.c,v 1.48 2021/10/24 21:24:16 deraadt Exp $	*/
+/*	$OpenBSD: chpass.c,v 1.50 2023/03/08 04:43:10 guenther Exp $	*/
 /*	$NetBSD: chpass.c,v 1.8 1996/05/15 21:50:43 jtc Exp $	*/
 
 /*-
@@ -84,7 +84,6 @@ main(int argc, char *argv[])
 			op = NEWSH;
 			arg = optarg;
 			break;
-		case '?':
 		default:
 			usage();
 		}
@@ -229,7 +228,6 @@ baduser(void)
 	errx(1, "%s", strerror(EACCES));
 }
 
-/* ARGSUSED */
 void
 kbintr(int signo)
 {

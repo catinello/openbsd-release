@@ -1,4 +1,4 @@
-/*	$OpenBSD: lastcomm.c,v 1.30 2021/12/13 16:37:37 deraadt Exp $	*/
+/*	$OpenBSD: lastcomm.c,v 1.33 2023/02/21 14:31:07 deraadt Exp $	*/
 /*	$NetBSD: lastcomm.c,v 1.9 1995/10/22 01:43:42 ghudson Exp $	*/
 
 /*
@@ -77,7 +77,6 @@ main(int argc, char *argv[])
 		case 'f':
 			acctfile = optarg;
 			break;
-		case '?':
 		default:
 			usage();
 		}
@@ -107,6 +106,8 @@ main(int argc, char *argv[])
 		err(1, "%s", acctfile);
 
 	for (;;) {
+		char commpid[sizeof(ab.ac_comm) + 13];
+
 		if (fread(&ab, sizeof(struct acct), 1, fp) != 1)
 			err(1, "%s", acctfile);
 
@@ -118,12 +119,14 @@ main(int argc, char *argv[])
 			    p < &ab.ac_comm[sizeof ab.ac_comm] && *p; ++p)
 				if (!isprint((unsigned char)*p))
 					*p = '?';
+		snprintf(commpid, sizeof(commpid), "%s[%d]",
+		    ab.ac_comm, ab.ac_pid);
 		if (!*argv || requested(argv, &ab)) {
 			t = expand(ab.ac_utime) + expand(ab.ac_stime);
 			(void)printf("%-*.*s %-7s %-*.*s %-*.*s %6.2f secs %.16s",
-			    (int)sizeof ab.ac_comm,
-			    (int)sizeof ab.ac_comm,
-			    ab.ac_comm, flagbits(ab.ac_flag), UT_NAMESIZE,
+			    (int)sizeof commpid,
+			    (int)sizeof commpid,
+			    commpid, flagbits(ab.ac_flag), UT_NAMESIZE,
 			    UT_NAMESIZE, user_from_uid(ab.ac_uid, 0),
 			    UT_LINESIZE, UT_LINESIZE, getdev(ab.ac_tty),
 			    t / (double)AHZ, ctime(&ab.ac_btime));
@@ -174,6 +177,7 @@ flagbits(int f)
 	BIT(APLEDGE, 'P');
 	BIT(ATRAP, 'T');
 	BIT(AUNVEIL, 'U');
+	BIT(AEXECVE, 'E');
 	*p = '\0';
 	return (flags);
 }

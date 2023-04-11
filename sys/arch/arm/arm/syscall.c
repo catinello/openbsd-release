@@ -1,4 +1,4 @@
-/*	$OpenBSD: syscall.c,v 1.24 2021/12/09 00:26:11 guenther Exp $	*/
+/*	$OpenBSD: syscall.c,v 1.26 2023/02/11 23:07:26 deraadt Exp $	*/
 /*	$NetBSD: syscall.c,v 1.24 2003/11/14 19:03:17 scw Exp $	*/
 
 /*-
@@ -94,7 +94,7 @@ swi_handler(trapframe_t *frame)
 {
 	struct proc *p = curproc;
 	const struct sysent *callp;
-	int code, error;
+	int code, error, indirect = -1;
 	u_int nap = 4, nargs;
 	register_t *ap, *args, copyargs[MAXARGS], rval[2];
 
@@ -118,13 +118,9 @@ swi_handler(trapframe_t *frame)
 
 	switch (code) {	
 	case SYS_syscall:
+		indirect = code;
 		code = *ap++;
 		nap--;
-		break;
-        case SYS___syscall:
-		code = ap[_QUAD_LOWWORD];
-		ap += 2;
-		nap -= 2;
 		break;
 	}
 
@@ -149,7 +145,7 @@ swi_handler(trapframe_t *frame)
 	rval[0] = 0;
 	rval[1] = frame->tf_r1;
 
-	error = mi_syscall(p, code, callp, args, rval);
+	error = mi_syscall(p, code, indirect, callp, args, rval);
 
 	switch (error) {
 	case 0:

@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_resource.c,v 1.74 2022/05/28 03:47:43 deraadt Exp $	*/
+/*	$OpenBSD: kern_resource.c,v 1.77 2023/02/04 19:33:03 cheloha Exp $	*/
 /*	$NetBSD: kern_resource.c,v 1.38 1996/10/23 07:19:38 matthias Exp $	*/
 
 /*-
@@ -52,6 +52,7 @@
 #include <sys/syscallargs.h>
 
 #include <uvm/uvm_extern.h>
+#include <uvm/uvm.h>
 
 /* Resource usage check interval in msec */
 #define RUCHECK_INTERVAL	1000
@@ -328,8 +329,8 @@ dosetrlimit(struct proc *p, u_int which, struct rlimit *limp)
 			addr = trunc_page(addr);
 			size = round_page(size);
 			KERNEL_LOCK();
-			(void) uvm_map_protect(&vm->vm_map,
-					      addr, addr+size, prot, FALSE);
+			(void) uvm_map_protect(&vm->vm_map, addr,
+			    addr+size, prot, UVM_ET_STACK, FALSE, FALSE);
 			KERNEL_UNLOCK();
 		}
 	}
@@ -409,7 +410,6 @@ calctsru(struct tusage *tup, struct timespec *up, struct timespec *sp,
     struct timespec *ip)
 {
 	u_quad_t st, ut, it;
-	int freq;
 
 	st = tup->tu_sticks;
 	ut = tup->tu_uticks;
@@ -423,16 +423,14 @@ calctsru(struct tusage *tup, struct timespec *up, struct timespec *sp,
 		return;
 	}
 
-	freq = stathz ? stathz : hz;
-
-	st = st * 1000000000 / freq;
+	st = st * 1000000000 / stathz;
 	sp->tv_sec = st / 1000000000;
 	sp->tv_nsec = st % 1000000000;
-	ut = ut * 1000000000 / freq;
+	ut = ut * 1000000000 / stathz;
 	up->tv_sec = ut / 1000000000;
 	up->tv_nsec = ut % 1000000000;
 	if (ip != NULL) {
-		it = it * 1000000000 / freq;
+		it = it * 1000000000 / stathz;
 		ip->tv_sec = it / 1000000000;
 		ip->tv_nsec = it % 1000000000;
 	}

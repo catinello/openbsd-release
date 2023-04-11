@@ -1,4 +1,4 @@
-/*	$OpenBSD: sndioctl.c,v 1.17 2021/12/25 16:25:07 ratchov Exp $	*/
+/*	$OpenBSD: sndioctl.c,v 1.19 2023/01/31 21:38:01 ratchov Exp $	*/
 /*
  * Copyright (c) 2014-2020 Alexandre Ratchov <alex@caoua.org>
  *
@@ -710,7 +710,7 @@ cmd(char *line)
 			fprintf(stderr, "%s.%s: expects value\n", astr, func);
 			exit(1);
 		}
-		/* FALLTROUGH */
+		/* FALLTHROUGH */
 	case SIOCTL_VEC:
 	case SIOCTL_LIST:
 		for (i = g; i != NULL; i = nextpar(i)) {
@@ -839,7 +839,7 @@ list(void)
 /*
  * register a new knob/button, called from the poll() loop.  this may be
  * called when label string changes, in which case we update the
- * existing label widged rather than inserting a new one.
+ * existing label widget rather than inserting a new one.
  */
 void
 ondesc(void *arg, struct sioctl_desc *d, int curval)
@@ -1027,7 +1027,7 @@ main(int argc, char **argv)
 			exit(1);
 		}
 		for (;;) {
-                       fflush(stdout);
+                	fflush(stdout);
 			nfds = sioctl_pollfd(hdl, pfds, POLLIN);
 			if (nfds == 0)
 				break;

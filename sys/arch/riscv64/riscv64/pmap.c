@@ -1,4 +1,4 @@
-/*	$OpenBSD: pmap.c,v 1.23 2022/09/10 20:35:29 miod Exp $	*/
+/*	$OpenBSD: pmap.c,v 1.29 2023/01/11 11:10:25 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2019-2020 Brian Bamsch <bbamsch@google.com>
@@ -30,6 +30,8 @@
 #include <machine/riscvreg.h>
 #include <machine/sbi.h>
 
+#include <dev/ofw/fdt.h>
+
 #ifdef MULTIPROCESSOR
 
 static inline int
@@ -39,8 +41,6 @@ pmap_is_active(struct pmap *pm, struct cpu_info *ci)
 }
 
 #endif
-
-int sifive_cip_1200_errata;
 
 void
 do_tlb_flush_page(pmap_t pm, vaddr_t va)
@@ -57,8 +57,23 @@ do_tlb_flush_page(pmap_t pm, vaddr_t va)
 			hart_mask |= (1UL << ci->ci_hartid);
 	}
 
-	if (hart_mask != 0)
+	/*
+	 * From the RISC-V privileged spec:
+	 *
+	 * SFENCE.VMA orders only the local hart's implicit references
+	 * to the memory-management data structures. Consequently, other
+	 * harts must be notified separately when the memory-management
+	 * data structures have been modified. One approach is to use 1)
+	 * a local data fence to ensure local writes are visible
+	 * globally, then 2) an interprocessor interrupt to the other
+	 * thread, then 3) a local SFENCE.VMA in the interrupt handler
+	 * of the remote thread, and finally 4) signal back to
+	 * originating thread that operation is complete.
+	 */
+	if (hart_mask != 0) {
+		membar_sync();
 		sbi_remote_sfence_vma(&hart_mask, va, PAGE_SIZE);
+	}
 #endif
 
 	sfence_vma_page(va);
@@ -79,8 +94,23 @@ do_tlb_flush(pmap_t pm)
 			hart_mask |= (1UL << ci->ci_hartid);
 	}
 
-	if (hart_mask != 0)
+	/*
+	 * From the RISC-V privileged spec:
+	 *
+	 * SFENCE.VMA orders only the local hart's implicit references
+	 * to the memory-management data structures. Consequently, other
+	 * harts must be notified separately when the memory-management
+	 * data structures have been modified. One approach is to use 1)
+	 * a local data fence to ensure local writes are visible
+	 * globally, then 2) an interprocessor interrupt to the other
+	 * thread, then 3) a local SFENCE.VMA in the interrupt handler
+	 * of the remote thread, and finally 4) signal back to
+	 * originating thread that operation is complete.
+	 */
+	if (hart_mask != 0) {
+		membar_sync();
 		sbi_remote_sfence_vma(&hart_mask, 0, -1);
+	}
 #endif
 
 	sfence_vma();
@@ -204,6 +234,9 @@ struct mem_region *pmap_allocated = &pmap_allocated_regions[0];
 int pmap_cnt_avail, pmap_cnt_allocated;
 uint64_t pmap_avail_kvo;
 
+paddr_t pmap_cached_start, pmap_cached_end;
+paddr_t pmap_uncached_start, pmap_uncached_end;
+
 static inline void
 pmap_lock(struct pmap *pmap)
 {
@@ -237,27 +270,30 @@ VP_IDX3(vaddr_t va)
 	return (va >> VP_IDX3_POS) & VP_IDX3_MASK;
 }
 
-// For RISC-V Machines, write without read permission is not a valid
-// combination of permission bits. These cases are mapped to R+W instead.
-// PROT_NONE grants read permissions because r = 0 | w = 0 | x = 0 is
-// reserved for non-leaf page table entries.
+/*
+ * On RISC-V, the encodings for write permission without read
+ * permission (r=0, w=1, x=0, or r=0, w=1, x=1) are reserved, so
+ * PROT_WRITE implies PROT_READ.  We need to handle PROT_NONE
+ * seperately (see pmap_pte_update()) since r=0, w=0, x=0 is reserved
+ * for non-leaf page table entries.
+ */
 const pt_entry_t ap_bits_user[8] = {
-	[PROT_NONE]				= PTE_U|PTE_A|PTE_R,
+	[PROT_NONE]				= 0,
 	[PROT_READ]				= PTE_U|PTE_A|PTE_R,
 	[PROT_WRITE]				= PTE_U|PTE_A|PTE_R|PTE_D|PTE_W,
 	[PROT_WRITE|PROT_READ]			= PTE_U|PTE_A|PTE_R|PTE_D|PTE_W,
-	[PROT_EXEC]				= PTE_U|PTE_A|PTE_X|PTE_R,
+	[PROT_EXEC]				= PTE_U|PTE_A|PTE_X,
 	[PROT_EXEC|PROT_READ]			= PTE_U|PTE_A|PTE_X|PTE_R,
 	[PROT_EXEC|PROT_WRITE]			= PTE_U|PTE_A|PTE_X|PTE_R|PTE_D|PTE_W,
 	[PROT_EXEC|PROT_WRITE|PROT_READ]	= PTE_U|PTE_A|PTE_X|PTE_R|PTE_D|PTE_W,
 };
 
 const pt_entry_t ap_bits_kern[8] = {
-	[PROT_NONE]				= PTE_A|PTE_R,
+	[PROT_NONE]				= 0,
 	[PROT_READ]				= PTE_A|PTE_R,
 	[PROT_WRITE]				= PTE_A|PTE_R|PTE_D|PTE_W,
 	[PROT_WRITE|PROT_READ]			= PTE_A|PTE_R|PTE_D|PTE_W,
-	[PROT_EXEC]				= PTE_A|PTE_X|PTE_R,
+	[PROT_EXEC]				= PTE_A|PTE_X,
 	[PROT_EXEC|PROT_READ]			= PTE_A|PTE_X|PTE_R,
 	[PROT_EXEC|PROT_WRITE]			= PTE_A|PTE_X|PTE_R|PTE_D|PTE_W,
 	[PROT_EXEC|PROT_WRITE|PROT_READ]	= PTE_A|PTE_X|PTE_R|PTE_D|PTE_W,
@@ -478,7 +514,6 @@ pmap_enter(pmap_t pm, vaddr_t va, paddr_t pa, vm_prot_t prot, int flags)
 	struct vm_page *pg;
 	int error;
 	int cache = PMAP_CACHE_WB;
-	int need_sync;
 
 	if (pa & PMAP_NOCACHE)
 		cache = PMAP_CACHE_CI;
@@ -534,6 +569,12 @@ pmap_enter(pmap_t pm, vaddr_t va, paddr_t pa, vm_prot_t prot, int flags)
 		pmap_enter_pv(pted, pg); /* only managed mem */
 	}
 
+	if (pg != NULL && (flags & PROT_EXEC)) {
+		if ((pg->pg_flags & PG_PMAP_EXE) == 0)
+			icache_flush();
+		atomic_setbits_int(&pg->pg_flags, PG_PMAP_EXE);
+	}
+
 	/*
 	 * Insert into table, if this mapping said it needed to be mapped
 	 * now.
@@ -543,13 +584,6 @@ pmap_enter(pmap_t pm, vaddr_t va, paddr_t pa, vm_prot_t prot, int flags)
 	}
 
 	tlb_flush_page(pm, va & ~PAGE_MASK);
-
-	if (pg != NULL && (flags & PROT_EXEC)) {
-		need_sync = ((pg->pg_flags & PG_PMAP_EXE) == 0);
-		atomic_setbits_int(&pg->pg_flags, PG_PMAP_EXE);
-		if (need_sync)
-			icache_flush();
-	}
 
 	error = 0;
 out:
@@ -631,6 +665,7 @@ _pmap_kenter_pa(vaddr_t va, paddr_t pa, vm_prot_t prot, int flags, int cache)
 {
 	pmap_t pm = pmap_kernel();
 	struct pte_desc *pted;
+	struct vm_page *pg;
 
 	pted = pmap_vp_lookup(pm, va, NULL);
 
@@ -657,6 +692,10 @@ _pmap_kenter_pa(vaddr_t va, paddr_t pa, vm_prot_t prot, int flags, int cache)
 	pmap_pte_insert(pted);
 
 	tlb_flush_page(pm, va & ~PAGE_MASK);
+
+	pg = PHYS_TO_VM_PAGE(pa);
+	if (pg && cache == PMAP_CACHE_CI)
+		cpu_dcache_wbinv_range(pa & ~PAGE_MASK, PAGE_SIZE);
 }
 
 void
@@ -741,6 +780,8 @@ pmap_fill_pte(pmap_t pm, vaddr_t va, paddr_t pa, struct pte_desc *pted,
 	case PMAP_CACHE_WT:
 		break;
 	case PMAP_CACHE_CI:
+		if (pa >= pmap_cached_start && pa <= pmap_cached_end)
+			pa += (pmap_uncached_start - pmap_cached_start);
 		break;
 	case PMAP_CACHE_DEV:
 		break;
@@ -1171,6 +1212,15 @@ pmap_bootstrap(long kvo, vaddr_t l1pt, vaddr_t kernelstart, vaddr_t kernelend,
 	vaddr_t vstart;
 	int i, j, k;
 	int lb_idx2, ub_idx2;
+	void *node;
+
+	node = fdt_find_node("/");
+	if (fdt_is_compatible(node, "starfive,jh7100")) {
+		pmap_cached_start = 0x0080000000ULL;
+		pmap_cached_end = 0x087fffffffULL;
+		pmap_uncached_start = 0x1000000000ULL;
+		pmap_uncached_end = 0x17ffffffffULL;
+	}
 
 	pmap_setup_avail(memstart, memend, kvo);
 	pmap_remove_avail(kernelstart + kvo, kernelend + kvo);
@@ -1407,6 +1457,7 @@ int
 pmap_extract(pmap_t pm, vaddr_t va, paddr_t *pap)
 {
 	struct pte_desc *pted;
+	paddr_t pa;
 
 	pmap_lock(pm);
 	pted = pmap_vp_lookup(pm, va, NULL);
@@ -1414,8 +1465,12 @@ pmap_extract(pmap_t pm, vaddr_t va, paddr_t *pap)
 		pmap_unlock(pm);
 		return 0;
 	}
-	if (pap != NULL)
-		*pap = (pted->pted_pte & PTE_RPGN) | (va & PAGE_MASK);
+	if (pap != NULL) {
+		pa = pted->pted_pte & PTE_RPGN;
+		if (pa >= pmap_uncached_start && pa <= pmap_uncached_end)
+			pa -= (pmap_uncached_start - pmap_cached_start);
+		*pap = pa | (va & PAGE_MASK);
+	}
 	pmap_unlock(pm);
 
 	return 1;
@@ -1435,6 +1490,10 @@ pmap_page_ro(pmap_t pm, vaddr_t va, vm_prot_t prot)
 
 	pted->pted_va &= ~PROT_WRITE;
 	pted->pted_pte &= ~PROT_WRITE;
+	if ((prot & PROT_READ) == 0) {
+		pted->pted_va &= ~PROT_READ;
+		pted->pted_pte &= ~PROT_READ;
+	}
 	if ((prot & PROT_EXEC) == 0) {
 		pted->pted_va &= ~PROT_EXEC;
 		pted->pted_pte &= ~PROT_EXEC;
@@ -1570,7 +1629,7 @@ pmap_pte_update(struct pte_desc *pted, uint64_t *pl3)
 		access_bits = ap_bits_user[pted->pted_pte & PROT_MASK];
 
 	pte = VP_Lx(pted->pted_pte) | access_bits | PTE_V;
-	*pl3 = pte;
+	*pl3 = access_bits ? pte : 0;
 }
 
 void
@@ -1615,7 +1674,6 @@ pmap_fault_fixup(pmap_t pm, vaddr_t va, vm_prot_t ftype)
 	struct vm_page *pg;
 	paddr_t pa;
 	pt_entry_t *pl3 = NULL;
-	int need_sync;
 	int retcode = 0;
 
 	pmap_lock(pm);
@@ -1690,23 +1748,22 @@ pmap_fault_fixup(pmap_t pm, vaddr_t va, vm_prot_t ftype)
 		goto done;
 	}
 
-	/* We actually made a change, so flush it and sync. */
-	pmap_pte_update(pted, pl3);
-
-	/* Flush tlb. */
-	tlb_flush_page(pm, va & ~PAGE_MASK);
-
 	/*
 	 * If this is a page that can be executed, make sure to invalidate
 	 * the instruction cache if the page has been modified or not used
 	 * yet.
 	 */
 	if (pted->pted_va & PROT_EXEC) {
-		need_sync = ((pg->pg_flags & PG_PMAP_EXE) == 0);
-		atomic_setbits_int(&pg->pg_flags, PG_PMAP_EXE);
-		if (need_sync)
+		if ((pg->pg_flags & PG_PMAP_EXE) == 0)
 			icache_flush();
+		atomic_setbits_int(&pg->pg_flags, PG_PMAP_EXE);
 	}
+
+	/* We actually made a change, so flush it and sync. */
+	pmap_pte_update(pted, pl3);
+
+	/* Flush tlb. */
+	tlb_flush_page(pm, va & ~PAGE_MASK);
 
 	retcode = 1;
 done:

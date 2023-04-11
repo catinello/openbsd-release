@@ -1,4 +1,4 @@
-/*	$OpenBSD: roa.c,v 1.52 2022/09/03 14:40:09 job Exp $ */
+/*	$OpenBSD: roa.c,v 1.65 2023/03/12 11:54:56 job Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -18,7 +18,6 @@
 
 #include <assert.h>
 #include <err.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,7 +85,7 @@ ASN1_SEQUENCE(ROAIPAddressFamily) = {
 } ASN1_SEQUENCE_END(ROAIPAddressFamily);
 
 ASN1_SEQUENCE(RouteOriginAttestation) = {
-	ASN1_IMP_OPT(RouteOriginAttestation, version, ASN1_INTEGER, 0),
+	ASN1_EXP_OPT(RouteOriginAttestation, version, ASN1_INTEGER, 0),
 	ASN1_SIMPLE(RouteOriginAttestation, asid, ASN1_INTEGER),
 	ASN1_SEQUENCE_OF(RouteOriginAttestation, ipAddrBlocks,
 	    ROAIPAddressFamily),
@@ -111,6 +110,7 @@ roa_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
 	long				 maxlen;
 	struct ip_addr			 ipaddr;
 	struct roa_ip			*res;
+	int				 ipaddrblocksz;
 	int				 i, j, rc = 0;
 
 	if ((roa = d2i_RouteOriginAttestation(NULL, &d, dsz)) == NULL) {
@@ -128,7 +128,14 @@ roa_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
 		goto out;
 	}
 
-	for (i = 0; i < sk_ROAIPAddressFamily_num(roa->ipAddrBlocks); i++) {
+	ipaddrblocksz = sk_ROAIPAddressFamily_num(roa->ipAddrBlocks);
+	if (ipaddrblocksz > 2) {
+		warnx("%s: draft-rfc6482bis: too many ipAddrBlocks "
+		    "(got %d, expected 1 or 2)", p->fn, ipaddrblocksz);
+		goto out;
+	}
+
+	for (i = 0; i < ipaddrblocksz; i++) {
 		addrfam = sk_ROAIPAddressFamily_value(roa->ipAddrBlocks, i);
 		addrs = addrfam->addresses;
 		addrsz = sk_ROAIPAddress_num(addrs);
@@ -204,47 +211,46 @@ roa_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 	struct parse	 p;
 	size_t		 cmsz;
 	unsigned char	*cms;
-	const ASN1_TIME	*at;
 	struct cert	*cert = NULL;
+	time_t		 signtime = 0;
 	int		 rc = 0;
 
 	memset(&p, 0, sizeof(struct parse));
 	p.fn = fn;
 
-	cms = cms_parse_validate(x509, fn, der, len, roa_oid, &cmsz);
+	cms = cms_parse_validate(x509, fn, der, len, roa_oid, &cmsz, &signtime);
 	if (cms == NULL)
 		return NULL;
 
 	if ((p.res = calloc(1, sizeof(struct roa))) == NULL)
 		err(1, NULL);
+	p.res->signtime = signtime;
 
 	if (!x509_get_aia(*x509, fn, &p.res->aia))
 		goto out;
 	if (!x509_get_aki(*x509, fn, &p.res->aki))
 		goto out;
+	if (!x509_get_sia(*x509, fn, &p.res->sia))
+		goto out;
 	if (!x509_get_ski(*x509, fn, &p.res->ski))
 		goto out;
-	if (p.res->aia == NULL || p.res->aki == NULL || p.res->ski == NULL) {
+	if (p.res->aia == NULL || p.res->aki == NULL || p.res->sia == NULL ||
+	    p.res->ski == NULL) {
 		warnx("%s: RFC 6487 section 4.8: "
-		    "missing AIA, AKI or SKI X509 extension", fn);
+		    "missing AIA, AKI, SIA, or SKI X509 extension", fn);
 		goto out;
 	}
 
-	at = X509_get0_notAfter(*x509);
-	if (at == NULL) {
-		warnx("%s: X509_get0_notAfter failed", fn);
+	if (!x509_get_notbefore(*x509, fn, &p.res->notbefore))
 		goto out;
-	}
-	if (x509_get_time(at, &p.res->expires) == -1) {
-		warnx("%s: ASN1_time_parse failed", fn);
+	if (!x509_get_notafter(*x509, fn, &p.res->notafter))
 		goto out;
-	}
 
 	if (!roa_parse_econtent(cms, cmsz, &p))
 		goto out;
 
 	if (x509_any_inherits(*x509)) {
-		warnx("%s: inherit elements not allowed", fn);
+		warnx("%s: inherit elements not allowed in EE cert", fn);
 		goto out;
 	}
 
@@ -287,6 +293,7 @@ roa_free(struct roa *p)
 		return;
 	free(p->aia);
 	free(p->aki);
+	free(p->sia);
 	free(p->ski);
 	free(p->ips);
 	free(p);
@@ -349,8 +356,7 @@ roa_read(struct ibuf *b)
  * number of addresses.
  */
 void
-roa_insert_vrps(struct vrp_tree *tree, struct roa *roa, size_t *vrps,
-    size_t *uniqs)
+roa_insert_vrps(struct vrp_tree *tree, struct roa *roa, struct repo *rp)
 {
 	struct vrp	*v, *found;
 	size_t		 i;
@@ -363,6 +369,10 @@ roa_insert_vrps(struct vrp_tree *tree, struct roa *roa, size_t *vrps,
 		v->maxlength = roa->ips[i].maxlength;
 		v->asid = roa->asid;
 		v->talid = roa->talid;
+		if (rp != NULL)
+			v->repoid = repo_id(rp);
+		else
+			v->repoid = 0;
 		v->expires = roa->expires;
 
 		/*
@@ -376,12 +386,17 @@ roa_insert_vrps(struct vrp_tree *tree, struct roa *roa, size_t *vrps,
 				/* update found with preferred data */
 				found->talid = v->talid;
 				found->expires = v->expires;
+				/* adjust unique count */
+				repo_stat_inc(repo_byid(found->repoid),
+				    RTYPE_ROA, STYPE_DEC_UNIQUE);
+				found->repoid = v->repoid;
+				repo_stat_inc(rp, RTYPE_ROA, STYPE_UNIQUE);
 			}
 			free(v);
 		} else
-			(*uniqs)++;
+			repo_stat_inc(rp, RTYPE_ROA, STYPE_UNIQUE);
 
-		(*vrps)++;
+		repo_stat_inc(rp, RTYPE_ROA, STYPE_TOTAL);
 	}
 }
 

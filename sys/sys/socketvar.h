@@ -1,4 +1,4 @@
-/*	$OpenBSD: socketvar.h,v 1.110 2022/09/05 14:56:09 bluhm Exp $	*/
+/*	$OpenBSD: socketvar.h,v 1.119 2023/01/27 18:46:34 mvs Exp $	*/
 /*	$NetBSD: socketvar.h,v 1.18 1996/02/09 18:25:38 christos Exp $	*/
 
 /*-
@@ -35,7 +35,7 @@
 #ifndef _SYS_SOCKETVAR_H_
 #define _SYS_SOCKETVAR_H_
 
-#include <sys/selinfo.h>			/* for struct selinfo */
+#include <sys/event.h>
 #include <sys/queue.h>
 #include <sys/sigio.h>				/* for struct sigio_ref */
 #include <sys/task.h>
@@ -121,8 +121,9 @@ struct socket {
 		short	sb_flags;	/* flags, see below */
 /* End area that is zeroed on flush. */
 #define	sb_endzero	sb_flags
+		short	sb_state;	/* socket state on sockbuf */
 		uint64_t sb_timeo_nsecs;/* timeout for read/write */
-		struct	selinfo sb_sel;	/* process selecting read/write */
+		struct klist sb_klist;	/* process selecting read/write */
 	} so_rcv, so_snd;
 #define	SB_MAX		(2*1024*1024)	/* default for max chars in sockbuf */
 #define	SB_LOCK		0x01		/* lock on data queue */
@@ -141,7 +142,16 @@ struct socket {
 
 /*
  * Socket state bits.
+ *
+ * NOTE: The following states should be used with corresponding socket's
+ * buffer `sb_state' only:
+ *
+ *	SS_CANTSENDMORE		with `so_snd'
+ *	SS_ISSENDING		with `so_snd'
+ *	SS_CANTRCVMORE		with `so_rcv'
+ *	SS_RCVATMARK		with `so_rcv'
  */
+
 #define	SS_NOFDREF		0x001	/* no file table ref any more */
 #define	SS_ISCONNECTED		0x002	/* socket connected to a peer */
 #define	SS_ISCONNECTING		0x004	/* in process of connecting to peer */
@@ -160,6 +170,7 @@ struct socket {
 
 #ifdef _KERNEL
 
+#include <sys/protosw.h>
 #include <lib/libkern/libkern.h>
 
 void	soassertlocked(struct socket *);
@@ -189,10 +200,9 @@ sorele(struct socket *so)
 static inline int
 sb_notify(struct socket *so, struct sockbuf *sb)
 {
-	KASSERT(sb == &so->so_rcv || sb == &so->so_snd);
 	soassertlocked(so);
 	return ((sb->sb_flags & (SB_WAIT|SB_ASYNC|SB_SPLICE)) != 0 ||
-	    !klist_empty(&sb->sb_sel.si_note));
+	    !klist_empty(&sb->sb_klist));
 }
 
 /*
@@ -204,7 +214,6 @@ sb_notify(struct socket *so, struct sockbuf *sb)
 static inline long
 sbspace(struct socket *so, struct sockbuf *sb)
 {
-	KASSERT(sb == &so->so_rcv || sb == &so->so_snd);
 	soassertlocked(so);
 	return lmin(sb->sb_hiwat - sb->sb_cc, sb->sb_mbmax - sb->sb_mbcnt);
 }
@@ -215,7 +224,7 @@ sbspace(struct socket *so, struct sockbuf *sb)
 
 /* are we sending on this socket? */
 #define	soissending(so) \
-    ((so)->so_state & SS_ISSENDING)
+    ((so)->so_snd.sb_state & SS_ISSENDING)
 
 /* can we read something from so? */
 static inline int
@@ -224,36 +233,44 @@ soreadable(struct socket *so)
 	soassertlocked(so);
 	if (isspliced(so))
 		return 0;
-	return (so->so_state & SS_CANTRCVMORE) || so->so_qlen || so->so_error ||
-	    so->so_rcv.sb_cc >= so->so_rcv.sb_lowat;
+	return (so->so_rcv.sb_state & SS_CANTRCVMORE) || so->so_qlen ||
+	    so->so_error || so->so_rcv.sb_cc >= so->so_rcv.sb_lowat;
 }
 
 /* can we write something to so? */
-#define	sowriteable(so) \
-    ((sbspace((so), &(so)->so_snd) >= (so)->so_snd.sb_lowat && \
-	(((so)->so_state & SS_ISCONNECTED) || \
-	  ((so)->so_proto->pr_flags & PR_CONNREQUIRED)==0)) || \
-    ((so)->so_state & SS_CANTSENDMORE) || (so)->so_error)
+static inline int
+sowriteable(struct socket *so)
+{
+	soassertlocked(so);
+	return ((sbspace(so, &so->so_snd) >= so->so_snd.sb_lowat &&
+	    ((so->so_state & SS_ISCONNECTED) ||
+	    (so->so_proto->pr_flags & PR_CONNREQUIRED)==0)) ||
+	    (so->so_snd.sb_state & SS_CANTSENDMORE) || so->so_error);
+}
 
 /* adjust counters in sb reflecting allocation of m */
-#define	sballoc(so, sb, m) do {						\
-	(sb)->sb_cc += (m)->m_len;					\
-	if ((m)->m_type != MT_CONTROL && (m)->m_type != MT_SONAME)	\
-		(sb)->sb_datacc += (m)->m_len;				\
-	(sb)->sb_mbcnt += MSIZE;					\
-	if ((m)->m_flags & M_EXT)					\
-		(sb)->sb_mbcnt += (m)->m_ext.ext_size;			\
-} while (/* CONSTCOND */ 0)
+static inline void
+sballoc(struct socket *so, struct sockbuf *sb, struct mbuf *m)
+{
+	sb->sb_cc += m->m_len;
+	if (m->m_type != MT_CONTROL && m->m_type != MT_SONAME)
+		sb->sb_datacc += m->m_len;
+	sb->sb_mbcnt += MSIZE;
+	if (m->m_flags & M_EXT)
+		sb->sb_mbcnt += m->m_ext.ext_size;
+}
 
 /* adjust counters in sb reflecting freeing of m */
-#define	sbfree(so, sb, m) do {						\
-	(sb)->sb_cc -= (m)->m_len;					\
-	if ((m)->m_type != MT_CONTROL && (m)->m_type != MT_SONAME)	\
-		(sb)->sb_datacc -= (m)->m_len;				\
-	(sb)->sb_mbcnt -= MSIZE;					\
-	if ((m)->m_flags & M_EXT)					\
-		(sb)->sb_mbcnt -= (m)->m_ext.ext_size;			\
-} while (/* CONSTCOND */ 0)
+static inline void
+sbfree(struct socket *so, struct sockbuf *sb, struct mbuf *m)
+{
+	sb->sb_cc -= m->m_len;
+	if (m->m_type != MT_CONTROL && m->m_type != MT_SONAME)
+		sb->sb_datacc -= m->m_len;
+	sb->sb_mbcnt -= MSIZE;
+	if (m->m_flags & M_EXT)
+		sb->sb_mbcnt -= m->m_ext.ext_size;
+}
 
 /*
  * Set lock on sockbuf sb; sleep if lock is already held.
@@ -331,7 +348,7 @@ void	soisconnecting(struct socket *);
 void	soisdisconnected(struct socket *);
 void	soisdisconnecting(struct socket *);
 int	solisten(struct socket *, int);
-struct socket *sonewconn(struct socket *, int);
+struct socket *sonewconn(struct socket *, int, int);
 void	soqinsque(struct socket *, struct socket *, int);
 int	soqremque(struct socket *, int);
 int	soreceive(struct socket *, struct mbuf **, struct uio *,

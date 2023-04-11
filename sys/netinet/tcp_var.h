@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_var.h,v 1.158 2022/09/13 09:05:47 mvs Exp $	*/
+/*	$OpenBSD: tcp_var.h,v 1.163 2023/03/14 00:24:05 yasuoka Exp $	*/
 /*	$NetBSD: tcp_var.h,v 1.17 1996/02/13 23:44:24 christos Exp $	*/
 
 /*
@@ -72,7 +72,7 @@ struct tcpcb {
 	struct timeout t_timer[TCPT_NTIMERS];	/* tcp timers */
 	short	t_state;		/* state of this connection */
 	short	t_rxtshift;		/* log(2) of rexmt exp. backoff */
-	short	t_rxtcur;		/* current retransmit value */
+	int	t_rxtcur;		/* current retransmit value */
 	short	t_dupacks;		/* consecutive dup acks recd */
 	u_short	t_maxseg;		/* maximum segment size */
 	char	t_force;		/* 1 if forcing out a byte */
@@ -166,9 +166,9 @@ struct tcpcb {
 	uint32_t t_sndacktime;		/* time last ack sent */
 	uint32_t t_rtttime;		/* time we started measuring rtt */
 	tcp_seq	t_rtseq;		/* sequence number being timed */
-	short	t_srtt;			/* smoothed round-trip time */
-	short	t_rttvar;		/* variance in round-trip time */
-	u_short	t_rttmin;		/* minimum rtt allowed */
+	int	t_srtt;			/* smoothed round-trip time */
+	int	t_rttvar;		/* variance in round-trip time */
+	u_int	t_rttmin;		/* minimum rtt allowed */
 	u_long	max_sndwnd;		/* largest window peer has offered */
 
 /* out-of-band data */
@@ -310,7 +310,7 @@ struct syn_cache_set {
 #define	TCP_RTT_SHIFT		3	/* shift for srtt; 5 bits frac. */
 #define	TCP_RTTVAR_SHIFT	2	/* shift for rttvar; 4 bits */
 #define	TCP_RTT_BASE_SHIFT	2	/* remaining 2 bit shift */
-#define	TCP_RTT_MAX		(1<<9)	/* maximum rtt */
+#define	TCP_RTT_MAX		(1<<18)	/* maximum rtt */
 
 /*
  * The initial retransmission should happen at rtt + 4 * rttvar.
@@ -481,7 +481,7 @@ struct	tcpstat {
 	{ "keepinittime",	CTLTYPE_INT }, \
 	{ "keepidle",	CTLTYPE_INT }, \
 	{ "keepintvl",	CTLTYPE_INT }, \
-	{ "slowhz",	CTLTYPE_INT }, \
+	{ NULL,	0 }, \
 	{ "baddynamic", CTLTYPE_STRUCT }, \
 	{ NULL,	0 }, \
 	{ NULL,	0 }, \
@@ -638,6 +638,14 @@ tcpstat_pkt(enum tcpstat_counters pcounter, enum tcpstat_counters bcounter,
 	counters_pkt(tcpcounters, pcounter, bcounter, v);
 }
 
+static inline uint32_t
+tcp_now(void)
+{
+	return (getnsecruntime() / 1000000);
+}
+
+#define TCP_TIME(_sec)	((_sec) * 1000)	/* tcp_now() is in milliseconds */
+
 extern	struct mutex tcp_timer_mtx;
 extern	const struct pr_usrreqs tcp_usrreqs;
 
@@ -647,7 +655,6 @@ extern	const struct pr_usrreqs tcp6_usrreqs;
 
 extern	struct pool tcpcb_pool;
 extern	struct inpcbtable tcbtable;	/* head of queue of active tcpcb's */
-extern	uint32_t tcp_now;		/* for RFC 1323 timestamps */
 extern	int tcp_do_rfc1323;	/* enabled/disabled? */
 extern	int tcptv_keep_init;	/* time to keep alive the initial SYN packet */
 extern	int tcp_mssdflt;	/* default maximum segment size */
@@ -696,7 +703,7 @@ void	tcp6_mtudisc(struct inpcb *, int);
 void	tcp6_mtudisc_callback(struct sockaddr_in6 *, u_int);
 #endif
 struct tcpcb *
-	 tcp_newtcpcb(struct inpcb *);
+	 tcp_newtcpcb(struct inpcb *, int);
 void	 tcp_notify(struct inpcb *, int);
 int	 tcp_output(struct tcpcb *);
 void	 tcp_pulloutofband(struct socket *, u_int, struct mbuf *, int);
@@ -717,7 +724,7 @@ void	 tcp_trace(short, short, struct tcpcb *, struct tcpcb *, caddr_t,
 struct tcpcb *
 	 tcp_usrclosed(struct tcpcb *);
 int	 tcp_sysctl(int *, u_int, void *, size_t *, void *, size_t);
-int	 tcp_attach(struct socket *, int);
+int	 tcp_attach(struct socket *, int, int);
 int	 tcp_detach(struct socket *);
 int	 tcp_bind(struct socket *, struct mbuf *, struct proc *);
 int	 tcp_listen(struct socket *);
@@ -728,7 +735,7 @@ int	 tcp_shutdown(struct socket *);
 void	 tcp_rcvd(struct socket *);
 int	 tcp_send(struct socket *, struct mbuf *, struct mbuf *,
 	     struct mbuf *);
-int	 tcp_abort(struct socket *);
+void	 tcp_abort(struct socket *);
 int	 tcp_sockaddr(struct socket *, struct mbuf *);
 int	 tcp_peeraddr(struct socket *, struct mbuf *);
 int	 tcp_sense(struct socket *, struct stat *);

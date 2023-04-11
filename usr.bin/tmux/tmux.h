@@ -1,4 +1,4 @@
-/* $OpenBSD: tmux.h,v 1.1181 2022/08/15 09:10:34 nicm Exp $ */
+/* $OpenBSD: tmux.h,v 1.1194 2023/02/05 21:15:33 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -131,12 +131,14 @@ struct winlink;
 #define KEYC_SHIFT           0x00400000000000ULL
 
 /* Key flag bits. */
-#define KEYC_LITERAL         0x01000000000000ULL
-#define KEYC_KEYPAD          0x02000000000000ULL
-#define KEYC_CURSOR          0x04000000000000ULL
+#define KEYC_LITERAL	     0x01000000000000ULL
+#define KEYC_KEYPAD	     0x02000000000000ULL
+#define KEYC_CURSOR	     0x04000000000000ULL
 #define KEYC_IMPLIED_META    0x08000000000000ULL
 #define KEYC_BUILD_MODIFIERS 0x10000000000000ULL
-#define KEYC_VI              0x20000000000000ULL
+#define KEYC_VI		     0x20000000000000ULL
+#define KEYC_EXTENDED	     0x40000000000000ULL
+#define KEYC_SENT	     0x80000000000000ULL
 
 /* Masks for key bits. */
 #define KEYC_MASK_MODIFIERS  0x00f00000000000ULL
@@ -542,6 +544,7 @@ enum tty_code_code {
 	TTYC_SMUL,
 	TTYC_SMULX,
 	TTYC_SMXX,
+	TTYC_SXL,
 	TTYC_SS,
 	TTYC_SWD,
 	TTYC_SYNC,
@@ -667,6 +670,14 @@ struct colour_palette {
 #define GRID_LINE_EXTENDED 0x2
 #define GRID_LINE_DEAD 0x4
 
+/* Grid string flags. */
+#define GRID_STRING_WITH_SEQUENCES 0x1
+#define GRID_STRING_ESCAPE_SEQUENCES 0x2
+#define GRID_STRING_TRIM_SPACES 0x4
+#define GRID_STRING_USED_ONLY 0x8
+#define GRID_STRING_EMPTY_CELLS 0x10
+
+/* Cell positions. */
 #define CELL_INSIDE 0
 #define CELL_TOPBOTTOM 1
 #define CELL_LEFTRIGHT 2
@@ -681,6 +692,7 @@ struct colour_palette {
 #define CELL_JOIN 11
 #define CELL_OUTSIDE 12
 
+/* Cell borders. */
 #define CELL_BORDERS " xqlkmjwvtun~"
 #define SIMPLE_BORDERS " |-+++++++++."
 #define PADDED_BORDERS "             "
@@ -1339,6 +1351,7 @@ struct tty_term {
 #define TERM_DECFRA 0x8
 #define TERM_RGBCOLOURS 0x10
 #define TERM_VT100LIKE 0x20
+#define TERM_SIXEL 0x40
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -1368,6 +1381,8 @@ struct tty {
 	u_int		 osy;
 
 	int		 mode;
+	int              fg;
+	int              bg;
 
 	u_int		 rlower;
 	u_int		 rupper;
@@ -1395,9 +1410,14 @@ struct tty {
 #define TTY_OPENED 0x20
 #define TTY_OSC52QUERY 0x40
 #define TTY_BLOCK 0x80
-#define TTY_HAVEDA 0x100
+#define TTY_HAVEDA 0x100 /* Primary DA. */
 #define TTY_HAVEXDA 0x200
 #define TTY_SYNCING 0x400
+#define TTY_HAVEDA2 0x800 /* Secondary DA. */
+#define TTY_HAVEFG 0x1000
+#define TTY_HAVEBG 0x2000
+#define TTY_ALL_REQUEST_FLAGS \
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVEFG|TTY_HAVEBG)
 	int		 flags;
 
 	struct tty_term	*term;
@@ -1792,6 +1812,7 @@ struct client {
 #define CLIENT_CONTROL_WAITEXIT 0x200000000ULL
 #define CLIENT_WINDOWSIZECHANGED 0x400000000ULL
 #define CLIENT_CLIPBOARDBUFFER 0x800000000ULL
+#define CLIENT_BRACKETPASTING 0x1000000000ULL
 #define CLIENT_ALLREDRAWFLAGS		\
 	(CLIENT_REDRAWWINDOW|		\
 	 CLIENT_REDRAWSTATUS|		\
@@ -2154,7 +2175,7 @@ void	notify_winlink(const char *, struct winlink *);
 void	notify_session_window(const char *, struct session *, struct window *);
 void	notify_window(const char *, struct window *);
 void	notify_pane(const char *, struct window_pane *);
-void	notify_paste_buffer(const char *);
+void	notify_paste_buffer(const char *, int);
 
 /* options.c */
 struct options	*options_create(struct options *);
@@ -2374,7 +2395,7 @@ void		tty_keys_free(struct tty *);
 int		tty_keys_next(struct tty *);
 
 /* arguments.c */
-void		 args_set(struct args *, u_char, struct args_value *);
+void		 args_set(struct args *, u_char, struct args_value *, int);
 struct args 	*args_create(void);
 struct args	*args_parse(const struct args_parse *, struct args_value *,
 		     u_int, char **);
@@ -2537,6 +2558,7 @@ u_int		 cmdq_next(struct client *);
 struct cmdq_item *cmdq_running(struct client *);
 void		 cmdq_guard(struct cmdq_item *, const char *, int);
 void printflike(2, 3) cmdq_print(struct cmdq_item *, const char *, ...);
+void 		 cmdq_print_data(struct cmdq_item *, int, struct evbuffer *);
 void printflike(2, 3) cmdq_error(struct cmdq_item *, const char *, ...);
 
 /* cmd-wait-for.c */
@@ -2591,7 +2613,9 @@ void	 file_print_buffer(struct client *, void *, size_t);
 void printflike(2, 3) file_error(struct client *, const char *, ...);
 void	 file_write(struct client *, const char *, int, const void *, size_t,
 	     client_file_cb, void *);
-void	 file_read(struct client *, const char *, client_file_cb, void *);
+struct client_file *file_read(struct client *, const char *, client_file_cb,
+	     void *);
+void	 file_cancel(struct client_file *);
 void	 file_push(struct client_file *);
 int	 file_write_left(struct client_files *);
 void	 file_write_open(struct client_files *, struct tmuxpeer *,
@@ -2603,6 +2627,7 @@ void	 file_read_open(struct client_files *, struct tmuxpeer *, struct imsg *,
 void	 file_write_ready(struct client_files *, struct imsg *);
 void	 file_read_data(struct client_files *, struct imsg *);
 void	 file_read_done(struct client_files *, struct imsg *);
+void	 file_read_cancel(struct client_files *, struct imsg *);
 
 /* server.c */
 extern struct tmuxproc *server_proc;
@@ -2653,6 +2678,7 @@ struct client_window *server_client_add_client_window(struct client *, u_int);
 struct window_pane *server_client_get_pane(struct client *);
 void	 server_client_set_pane(struct client *, struct window_pane *);
 void	 server_client_remove_pane(struct window_pane *);
+void	 server_client_print(struct client *, int, struct evbuffer *);
 
 /* server-fn.c */
 void	 server_redraw_client(struct client *);
@@ -2745,6 +2771,7 @@ int	 colour_fromstring(const char *s);
 int	 colour_256toRGB(int);
 int	 colour_256to16(int);
 int	 colour_byname(const char *);
+int	 colour_parseX11(const char *);
 void	 colour_palette_init(struct colour_palette *);
 void	 colour_palette_clear(struct colour_palette *);
 void	 colour_palette_free(struct colour_palette *);
@@ -2783,7 +2810,7 @@ void	 grid_clear_lines(struct grid *, u_int, u_int, u_int);
 void	 grid_move_lines(struct grid *, u_int, u_int, u_int, u_int);
 void	 grid_move_cells(struct grid *, u_int, u_int, u_int, u_int, u_int);
 char	*grid_string_cells(struct grid *, u_int, u_int, u_int,
-	     struct grid_cell **, int, int, int, struct screen *);
+	     struct grid_cell **, int, struct screen *);
 void	 grid_duplicate_lines(struct grid *, u_int, struct grid *, u_int,
 	     u_int);
 void	 grid_reflow(struct grid *, u_int);
@@ -3176,6 +3203,7 @@ void	control_notify_session_created(struct session *);
 void	control_notify_session_closed(struct session *);
 void	control_notify_session_window_changed(struct session *);
 void	control_notify_paste_buffer_changed(const char *);
+void	control_notify_paste_buffer_deleted(const char *);
 
 /* session.c */
 extern struct sessions sessions;
@@ -3265,11 +3293,11 @@ void		 menu_add_item(struct menu *, const struct menu_item *,
 		    struct cmdq_item *, struct client *,
 		    struct cmd_find_state *);
 void		 menu_free(struct menu *);
-struct menu_data *menu_prepare(struct menu *, int, struct cmdq_item *, u_int,
-		    u_int, struct client *, struct cmd_find_state *,
+struct menu_data *menu_prepare(struct menu *, int, int, struct cmdq_item *,
+		    u_int, u_int, struct client *, struct cmd_find_state *,
 		    menu_choice_cb, void *);
-int		 menu_display(struct menu *, int, struct cmdq_item *, u_int,
-		    u_int, struct client *, struct cmd_find_state *,
+int		 menu_display(struct menu *, int, int, struct cmdq_item *,
+		    u_int, u_int, struct client *, struct cmd_find_state *,
 		    menu_choice_cb, void *);
 struct screen	*menu_mode_cb(struct client *, void *, u_int *, u_int *);
 void		 menu_check_cb(struct client *, void *, u_int, u_int, u_int,

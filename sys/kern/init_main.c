@@ -1,4 +1,4 @@
-/*	$OpenBSD: init_main.c,v 1.317 2022/08/14 01:58:27 jsg Exp $	*/
+/*	$OpenBSD: init_main.c,v 1.320 2023/01/01 07:00:51 jsg Exp $	*/
 /*	$NetBSD: init_main.c,v 1.84.4.1 1996/06/02 09:08:06 mrg Exp $	*/
 
 /*
@@ -71,6 +71,7 @@
 #include <sys/pipe.h>
 #include <sys/witness.h>
 #include <sys/smr.h>
+#include <sys/evcount.h>
 
 #include <sys/syscallargs.h>
 
@@ -104,7 +105,7 @@ extern void stoeplitz_init(void);
 const char	copyright[] =
 "Copyright (c) 1982, 1986, 1989, 1991, 1993\n"
 "\tThe Regents of the University of California.  All rights reserved.\n"
-"Copyright (c) 1995-2022 OpenBSD. All rights reserved.  https://www.OpenBSD.org\n";
+"Copyright (c) 1995-2023 OpenBSD. All rights reserved.  https://www.OpenBSD.org\n";
 
 /* Components of the first process -- never freed. */
 struct	session session0;
@@ -397,6 +398,7 @@ main(void *framep)
 	mbcpuinit();
 	kqueue_init_percpu();
 	uvm_init_percpu();
+	evcount_init_percpu();
 
 	/* init exec */
 	init_exec();
@@ -710,7 +712,7 @@ start_init(void *arg)
 		 * Now try to exec the program.  If can't for any reason
 		 * other than it doesn't exist, complain.
 		 */
-		if ((error = sys_execve(p, &args, retval)) == 0) {
+		if ((error = sys_execve(p, &args, retval)) == EJUSTRETURN) {
 			KERNEL_UNLOCK();
 			return;
 		}

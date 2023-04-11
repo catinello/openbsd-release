@@ -4,7 +4,7 @@
 #define _LINUX_DELAY_H
 
 #include <sys/param.h>
-#include <linux/kernel.h>
+#include <sys/systm.h>
 
 static inline void
 udelay(unsigned long usecs)
@@ -33,5 +33,15 @@ mdelay(unsigned long msecs)
 }
 
 #define drm_msleep(x)		mdelay(x)
+
+static inline unsigned int
+msleep_interruptible(unsigned int msecs)
+{
+	int r = tsleep_nsec(&nowake, PWAIT|PCATCH, "msleepi",
+	    MSEC_TO_NSEC(msecs));
+	if (r == EINTR)
+		return 1;
+	return 0;
+}
 
 #endif

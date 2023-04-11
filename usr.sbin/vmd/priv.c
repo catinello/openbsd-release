@@ -1,4 +1,4 @@
-/*	$OpenBSD: priv.c,v 1.19 2021/11/29 05:17:35 deraadt Exp $	*/
+/*	$OpenBSD: priv.c,v 1.22 2023/01/28 14:40:53 dv Exp $	*/
 
 /*
  * Copyright (c) 2016 Reyk Floeter <reyk@openbsd.org>
@@ -316,10 +316,12 @@ priv_findname(const char *name, const char **names)
 int
 priv_validgroup(const char *name)
 {
-	if (strlen(name) >= IF_NAMESIZE)
+	const size_t len = strnlen(name, IF_NAMESIZE);
+
+	if (len == IF_NAMESIZE)
 		return (-1);
 	/* Group can not end with a digit */
-	if (name[0] && isdigit(name[strlen(name) - 1]))
+	if (len > 0 && isdigit((unsigned char)name[len - 1]))
 		return (-1);
 	return (0);
 }
@@ -350,7 +352,7 @@ vm_priv_ifconfig(struct privsep *ps, struct vmd_vm *vm)
 	struct sockaddr_in	*sin4;
 	struct sockaddr_in6	*sin6;
 
-	for (i = 0; i < VMM_MAX_NICS_PER_VM; i++) {
+	for (i = 0; i < VM_MAX_NICS_PER_VM; i++) {
 		vif = &vm->vm_ifs[i];
 
 		if (vif->vif_name == NULL)

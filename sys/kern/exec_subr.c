@@ -1,4 +1,4 @@
-/*	$OpenBSD: exec_subr.c,v 1.57 2019/11/29 06:34:45 deraadt Exp $	*/
+/*	$OpenBSD: exec_subr.c,v 1.66 2023/03/19 20:32:13 kettenis Exp $	*/
 /*	$NetBSD: exec_subr.c,v 1.9 1994/12/04 03:10:42 mycroft Exp $	*/
 
 /*
@@ -167,7 +167,7 @@ vmcmd_map_pagedvn(struct proc *p, struct exec_vmcmd *cmd)
 	 * call this routine.
 	 */
 	struct uvm_object *uobj;
-	unsigned int syscalls = 0;
+	unsigned int flags = UVM_FLAG_COPYONW | UVM_FLAG_FIXED;
 	int error;
 
 	/*
@@ -195,12 +195,12 @@ vmcmd_map_pagedvn(struct proc *p, struct exec_vmcmd *cmd)
 	 * do the map
 	 */
 	if ((cmd->ev_flags & VMCMD_SYSCALL) && (cmd->ev_prot & PROT_EXEC))
-		syscalls |= UVM_FLAG_SYSCALL;
+		flags |= UVM_FLAG_SYSCALL;
 
 	error = uvm_map(&p->p_vmspace->vm_map, &cmd->ev_addr, cmd->ev_len,
 	    uobj, cmd->ev_offset, 0,
 	    UVM_MAPFLAG(cmd->ev_prot, PROT_MASK, MAP_INHERIT_COPY,
-	    MADV_NORMAL, UVM_FLAG_COPYONW | UVM_FLAG_FIXED | syscalls));
+	    MADV_NORMAL, flags));
 
 	/*
 	 * check for error
@@ -211,6 +211,17 @@ vmcmd_map_pagedvn(struct proc *p, struct exec_vmcmd *cmd)
 		 * error: detach from object
 		 */
 		uobj->pgops->pgo_detach(uobj);
+	} else {
+		if (cmd->ev_flags & VMCMD_IMMUTABLE)
+			uvm_map_immutable(&p->p_vmspace->vm_map, cmd->ev_addr,
+			    round_page(cmd->ev_addr + cmd->ev_len), 1);
+#ifdef PMAP_CHECK_COPYIN
+		if (PMAP_CHECK_COPYIN &&
+		    ((flags & UVM_FLAG_SYSCALL) ||
+		    ((cmd->ev_flags & VMCMD_IMMUTABLE) && (cmd->ev_prot & PROT_EXEC))))
+			uvm_map_check_copyin_add(&p->p_vmspace->vm_map,
+			    cmd->ev_addr, round_page(cmd->ev_addr + cmd->ev_len));
+#endif
 	}
 
 	return (error);
@@ -234,7 +245,7 @@ vmcmd_map_readvn(struct proc *p, struct exec_vmcmd *cmd)
 
 	prot = cmd->ev_prot;
 
-	cmd->ev_addr = trunc_page(cmd->ev_addr); /* required by uvm_map */
+	KASSERT((cmd->ev_addr & PAGE_MASK) == 0);
 	error = uvm_map(&p->p_vmspace->vm_map, &cmd->ev_addr,
 	    round_page(cmd->ev_len), NULL, UVM_UNKNOWN_OFFSET, 0,
 	    UVM_MAPFLAG(prot | PROT_WRITE, PROT_MASK, MAP_INHERIT_COPY,
@@ -256,12 +267,16 @@ vmcmd_map_readvn(struct proc *p, struct exec_vmcmd *cmd)
 		 * it mapped read-only, so now we are going to have to call
 		 * uvm_map_protect() to fix up the protection.  ICK.
 		 */
-		return (uvm_map_protect(&p->p_vmspace->vm_map,
-		    trunc_page(cmd->ev_addr),
-		    round_page(cmd->ev_addr + cmd->ev_len),
-		    prot, FALSE));
+		error = (uvm_map_protect(&p->p_vmspace->vm_map,
+		    cmd->ev_addr, round_page(cmd->ev_len),
+		    prot, 0, FALSE, TRUE));
 	}
-	return (0);
+	if (error == 0) {
+		if (cmd->ev_flags & VMCMD_IMMUTABLE)
+			uvm_map_immutable(&p->p_vmspace->vm_map, cmd->ev_addr,
+			    round_page(cmd->ev_addr + cmd->ev_len), 1);
+	}
+	return (error);
 }
 
 /*
@@ -272,15 +287,38 @@ vmcmd_map_readvn(struct proc *p, struct exec_vmcmd *cmd)
 int
 vmcmd_map_zero(struct proc *p, struct exec_vmcmd *cmd)
 {
+	int error;
+
 	if (cmd->ev_len == 0)
 		return (0);
-	
-	cmd->ev_addr = trunc_page(cmd->ev_addr); /* required by uvm_map */
-	return (uvm_map(&p->p_vmspace->vm_map, &cmd->ev_addr,
+
+	KASSERT((cmd->ev_addr & PAGE_MASK) == 0);
+	error = uvm_map(&p->p_vmspace->vm_map, &cmd->ev_addr,
 	    round_page(cmd->ev_len), NULL, UVM_UNKNOWN_OFFSET, 0,
 	    UVM_MAPFLAG(cmd->ev_prot, PROT_MASK, MAP_INHERIT_COPY,
 	    MADV_NORMAL, UVM_FLAG_FIXED|UVM_FLAG_COPYONW |
-	    (cmd->ev_flags & VMCMD_STACK ? UVM_FLAG_STACK : 0))));
+	    (cmd->ev_flags & VMCMD_STACK ? UVM_FLAG_STACK : 0)));
+	if (cmd->ev_flags & VMCMD_IMMUTABLE)
+		uvm_map_immutable(&p->p_vmspace->vm_map, cmd->ev_addr,
+		    round_page(cmd->ev_addr + cmd->ev_len), 1);
+	return error;
+}
+
+/*
+ * vmcmd_mutable():
+ *	handle vmcmd which changes an address space region.back to mutable
+ */
+
+int
+vmcmd_mutable(struct proc *p, struct exec_vmcmd *cmd)
+{
+	if (cmd->ev_len == 0)
+		return (0);
+
+	/* ev_addr, ev_len may be misaligned, so maximize the region */
+	uvm_map_immutable(&p->p_vmspace->vm_map, trunc_page(cmd->ev_addr),
+	    round_page(cmd->ev_addr + cmd->ev_len), 0);
+	return 0;
 }
 
 /*
@@ -345,7 +383,7 @@ vmcmd_randomize(struct proc *p, struct exec_vmcmd *cmd)
 int
 exec_setup_stack(struct proc *p, struct exec_package *epp)
 {
-	vaddr_t sgap;
+	vsize_t dist = 0;
 
 #ifdef MACHINE_STACK_GROWS_UP
 	epp->ep_maxsaddr = USRSTACK;
@@ -356,18 +394,26 @@ exec_setup_stack(struct proc *p, struct exec_package *epp)
 #endif
 	epp->ep_ssize = round_page(lim_cur(RLIMIT_STACK));
 
+#ifdef VM_MIN_STACK_ADDRESS
+	dist = USRSTACK - MAXSSIZ - MAXSSIZ_GUARD - VM_MIN_STACK_ADDRESS;
+	if (dist >> PAGE_SHIFT > 0xffffffff)
+		dist = (vsize_t)arc4random() << PAGE_SHIFT;
+	else
+		dist = (vsize_t)arc4random_uniform(dist >> PAGE_SHIFT) << PAGE_SHIFT;
+#else
 	if (stackgap_random != 0) {
-		sgap = arc4random() & (stackgap_random - 1);
-		sgap = trunc_page(sgap);
+		dist = arc4random() & (stackgap_random - 1);
+		dist = trunc_page(dist);
+	}
+#endif
 
 #ifdef MACHINE_STACK_GROWS_UP
-		epp->ep_maxsaddr += sgap;
-		epp->ep_minsaddr += sgap;
+	epp->ep_maxsaddr += dist;
+	epp->ep_minsaddr += dist;
 #else
-		epp->ep_maxsaddr -= sgap;
-		epp->ep_minsaddr -= sgap;
+	epp->ep_maxsaddr -= dist;
+	epp->ep_minsaddr -= dist;
 #endif
-	}
 
 	/*
 	 * set up commands for stack.  note that this takes *two*, one to
@@ -381,21 +427,21 @@ exec_setup_stack(struct proc *p, struct exec_package *epp)
 	 * <stack> ep_minsaddr
 	 */
 #ifdef MACHINE_STACK_GROWS_UP
-	NEW_VMCMD(&epp->ep_vmcmds, vmcmd_map_zero,
+	NEW_VMCMD2(&epp->ep_vmcmds, vmcmd_map_zero,
 	    ((epp->ep_minsaddr - epp->ep_ssize) - epp->ep_maxsaddr),
-	    epp->ep_maxsaddr + epp->ep_ssize, NULLVP, 0,
-	    PROT_NONE);
+	    epp->ep_maxsaddr + epp->ep_ssize,
+	    NULLVP, 0, PROT_NONE,  VMCMD_IMMUTABLE);
 	NEW_VMCMD2(&epp->ep_vmcmds, vmcmd_map_zero, epp->ep_ssize,
-	    epp->ep_maxsaddr, NULLVP, 0,
-	    PROT_READ | PROT_WRITE, VMCMD_STACK);
+	    epp->ep_maxsaddr,
+	    NULLVP, 0, PROT_READ | PROT_WRITE, VMCMD_STACK | VMCMD_IMMUTABLE);
 #else
-	NEW_VMCMD(&epp->ep_vmcmds, vmcmd_map_zero,
+	NEW_VMCMD2(&epp->ep_vmcmds, vmcmd_map_zero,
 	    ((epp->ep_minsaddr - epp->ep_ssize) - epp->ep_maxsaddr),
-	    epp->ep_maxsaddr, NULLVP, 0,
-	    PROT_NONE);
+	    epp->ep_maxsaddr,
+	    NULLVP, 0, PROT_NONE, VMCMD_IMMUTABLE);
 	NEW_VMCMD2(&epp->ep_vmcmds, vmcmd_map_zero, epp->ep_ssize,
-	    (epp->ep_minsaddr - epp->ep_ssize), NULLVP, 0,
-	    PROT_READ | PROT_WRITE, VMCMD_STACK);
+	    (epp->ep_minsaddr - epp->ep_ssize),
+	    NULLVP, 0, PROT_READ | PROT_WRITE, VMCMD_STACK | VMCMD_IMMUTABLE);
 #endif
 
 	return (0);

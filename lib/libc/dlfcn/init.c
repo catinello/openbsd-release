@@ -1,4 +1,4 @@
-/*	$OpenBSD: init.c,v 1.9 2020/07/16 17:47:09 tedu Exp $ */
+/*	$OpenBSD: init.c,v 1.18 2023/02/27 15:00:17 deraadt Exp $ */
 /*
  * Copyright (c) 2014,2015 Philip Guenther <guenther@openbsd.org>
  *
@@ -35,6 +35,11 @@
 
 #include "init.h"
 
+#if defined(APIWARN)
+__warn_references(syscall,
+    "syscall() may go away, please rewrite code to use direct calls");
+#endif
+
 #define MAX(a,b)	(((a)>(b))?(a):(b))
 
 #ifdef TIB_EXTRA_ALIGN
@@ -51,7 +56,7 @@ int	_pagesize = 0;
 struct timekeep	*_timekeep;
 
 /*
- * In dynamicly linked binaries environ and __progname are overriden by
+ * In dynamically linked binaries environ and __progname are overridden by
  * the definitions in ld.so.
  */
 char	**environ __attribute__((weak)) = NULL;
@@ -70,6 +75,12 @@ extern Elf_Ehdr __executable_start[] __attribute__((weak));
 
 /* provide definitions for these */
 const dl_cb *_dl_cb __relro = NULL;
+
+int	pinsyscall(int, void *, size_t);
+PROTO_NORMAL(pinsyscall);
+
+int	HIDDEN(execve)(const char *, char *const *, char *const *)
+	__attribute__((weak));
 
 void _libc_preinit(int, char **, char **, dl_cb_cb *) __dso_hidden;
 void
@@ -135,8 +146,34 @@ _libc_preinit(int argc, char **argv, char **envp, dl_cb_cb *cb)
 	_static_phdr_info.dlpi_phnum = phnum;
 
 	/* static libc in a static link? */
-	if (cb == NULL)
+	if (cb == NULL) {
 		setup_static_tib(phdr, phnum);
+
+#if !defined(__hppa__)
+		if (&HIDDEN(execve)) {
+			extern const int _execve_size;
+
+			pinsyscall(SYS_execve, &HIDDEN(execve), _execve_size);
+		}
+#endif
+	}
+
+	/*
+	 * If a static binary has text relocations (DT_TEXT), then un-writeable
+	 * segments were not made immutable by the kernel.  Textrel and RELRO
+	 * changes have now been completed and permissions corrected, so these
+	 * regions can become immutable.
+	 */
+	if (phdr) {
+		int i;
+
+		for (i = 0; i < phnum; i++) {
+			if (phdr[i].p_type == PT_LOAD &&
+			    (phdr[i].p_flags & PF_W) == 0)
+				mimmutable((void *)(_static_phdr_info.dlpi_addr +
+				    phdr[i].p_vaddr), phdr[i].p_memsz);
+		}
+	}
 #endif /* !PIC */
 }
 
@@ -188,16 +225,12 @@ _csu_finish(char **argv, char **envp, void (*cleanup)(void))
 
 #ifndef PIC
 /*
- * static libc in a static link?  Then disable kbind and set up
- * __progname and environ
+ * static libc in a static link?  Then set up __progname and environ
  */
 static inline void
 early_static_init(char **argv, char **envp)
 {
 	static char progname_storage[NAME_MAX+1];
-
-	/* disable kbind */
-	syscall(SYS_kbind, (void *)NULL, (size_t)0, (long long)0);
 
 	environ = envp;
 

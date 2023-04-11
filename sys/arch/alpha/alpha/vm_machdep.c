@@ -1,4 +1,4 @@
-/* $OpenBSD: vm_machdep.c,v 1.48 2022/02/21 19:22:21 kettenis Exp $ */
+/* $OpenBSD: vm_machdep.c,v 1.50 2023/03/17 19:20:19 miod Exp $ */
 /* $NetBSD: vm_machdep.c,v 1.55 2000/03/29 03:49:48 simonb Exp $ */
 
 /*
@@ -133,8 +133,10 @@ cpu_fork(struct proc *p1, struct proc *p2, void *stack, void *tcb,
 	 */
 	if (p1 != curproc && p1 != &proc0)
 		panic("cpu_fork: curproc");
+#ifdef DEBUG
 	if ((up->u_pcb.pcb_hw.apcb_flags & ALPHA_PCB_FLAGS_FEN) != 0)
 		printf("DANGER WILL ROBINSON: FEN SET IN cpu_fork!\n");
+#endif
 #endif
 
 	/*
@@ -159,7 +161,7 @@ cpu_fork(struct proc *p1, struct proc *p2, void *stack, void *tcb,
 	    (u_int64_t)exception_return;	/* s1: ra */
 	up->u_pcb.pcb_context[2] = (u_int64_t)arg;
 	up->u_pcb.pcb_context[7] =
-	    (u_int64_t)switch_trampoline;	/* ra: assembly magic */
+	    (u_int64_t)proc_trampoline;		/* ra: assembly magic */
 #ifdef MULTIPROCESSOR
 	/*
 	 * MULTIPROCESSOR kernels will reuse the IPL of the parent

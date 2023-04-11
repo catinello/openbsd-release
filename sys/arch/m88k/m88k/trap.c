@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.122 2022/08/12 08:31:06 jsg Exp $	*/
+/*	$OpenBSD: trap.c,v 1.127 2023/02/11 23:07:27 deraadt Exp $	*/
 /*
  * Copyright (c) 2004, Miodrag Vallat.
  * Copyright (c) 1998 Steve Murphree, Jr.
@@ -389,6 +389,8 @@ user_fault:
 			    pbus_type, pbus_exception_type[pbus_type],
 			    fault_addr, frame, frame->tf_cpu);
 #endif
+			access_type = PROT_EXEC;
+			fault_code = PROT_EXEC;
 		} else {
 			fault_addr = frame->tf_dma0;
 			pbus_type = CMMU_PFSR_FAULT(frame->tf_dpfsr);
@@ -397,14 +399,13 @@ user_fault:
 			    pbus_type, pbus_exception_type[pbus_type],
 			    fault_addr, frame, frame->tf_cpu);
 #endif
-		}
-
-		if (frame->tf_dmt0 & (DMT_WRITE | DMT_LOCKBAR)) {
-			access_type = PROT_READ | PROT_WRITE;
-			fault_code = PROT_WRITE;
-		} else {
-			access_type = PROT_READ;
-			fault_code = PROT_READ;
+			if (frame->tf_dmt0 & (DMT_WRITE | DMT_LOCKBAR)) {
+				access_type = PROT_READ | PROT_WRITE;
+				fault_code = PROT_WRITE;
+			} else {
+				access_type = PROT_READ;
+				fault_code = PROT_READ;
+			}
 		}
 
 		va = trunc_page((vaddr_t)fault_addr);
@@ -534,7 +535,7 @@ user_fault:
 			vaddr_t pc = PC_REGS(&frame->tf_regs);
 
 			/* read break instruction */
-			copyin((caddr_t)pc, &instr, sizeof(u_int));
+			copyinsn(p, (u_int32_t *)pc, (u_int32_t *)&instr);
 
 			/* check and see if we got here by accident */
 			if ((p->p_md.md_bp0va != pc &&
@@ -667,8 +668,8 @@ m88110_trap(u_int type, struct trapframe *frame)
 				    (frame->tf_exip + 4) | 1, frame->tf_enip);
 		} else {
 			/* copyin here should not fail */
-			if (copyin((const void *)frame->tf_exip, &instr,
-			    sizeof instr) == 0 &&
+			if (copyinsn(p, (u_int32_t *)frame->tf_exip,
+			    (u_int32_t *)&instr) == 0 &&
 			    instr == 0xf400cc01) {
 				uprintf("mc88110 errata #16, exip 0x%lx enip 0x%lx",
 				    (frame->tf_exip + 4) | 1, frame->tf_enip);
@@ -860,8 +861,8 @@ lose:
 			goto userexit;
 m88110_user_fault:
 		if (type == T_INSTFLT+T_USER) {
-			access_type = PROT_READ;
-			fault_code = PROT_READ;
+			access_type = PROT_EXEC;
+			fault_code = PROT_EXEC;
 #ifdef TRAPDEBUG
 			printf("User Instruction fault exip %x isr %x ilar %x\n",
 			    frame->tf_exip, frame->tf_isr, frame->tf_ilar);
@@ -1074,7 +1075,7 @@ m88110_user_fault:
 			vaddr_t pc = PC_REGS(&frame->tf_regs);
 
 			/* read break instruction */
-			copyin((caddr_t)pc, &instr, sizeof(u_int));
+			copyinsn(p, (u_int32_t *)pc, (u_int32_t *)&instr);
 
 			/* check and see if we got here by accident */
 			if ((p->p_md.md_bp0va != pc &&
@@ -1154,7 +1155,7 @@ m88100_syscall(register_t code, struct trapframe *tf)
 	int i, nap;
 	const struct sysent *callp;
 	struct proc *p = curproc;
-	int error;
+	int error, indirect = -1;
 	register_t args[8] __aligned(8);
 	register_t rval[2] __aligned(8);
 	register_t *ap;
@@ -1166,22 +1167,16 @@ m88100_syscall(register_t code, struct trapframe *tf)
 	/*
 	 * For 88k, all the arguments are passed in the registers (r2-r9),
 	 * and further arguments (if any) on stack.
-	 * For syscall (and __syscall), r2 (and r3) has the actual code.
-	 * __syscall  takes a quad syscall number, so that other
-	 * arguments are at their natural alignments.
+	 * For syscall, r2 has the actual code.
 	 */
 	ap = &tf->tf_r[2];
 	nap = 8; /* r2-r9 */
 
 	switch (code) {
 	case SYS_syscall:
+		indirect = code;
 		code = *ap++;
 		nap--;
-		break;
-	case SYS___syscall:
-		code = ap[_QUAD_LOWWORD];
-		ap += 2;
-		nap -= 2;
 		break;
 	}
 
@@ -1205,7 +1200,7 @@ m88100_syscall(register_t code, struct trapframe *tf)
 	rval[0] = 0;
 	rval[1] = tf->tf_r[3];
 
-	error = mi_syscall(p, code, callp, args, rval);
+	error = mi_syscall(p, code, indirect, callp, args, rval);
 
 	/*
 	 * system call will look like:
@@ -1285,9 +1280,7 @@ m88110_syscall(register_t code, struct trapframe *tf)
 	/*
 	 * For 88k, all the arguments are passed in the registers (r2-r9),
 	 * and further arguments (if any) on stack.
-	 * For syscall (and __syscall), r2 (and r3) has the actual code.
-	 * __syscall  takes a quad syscall number, so that other
-	 * arguments are at their natural alignments.
+	 * For syscall, r2 has the actual code.
 	 */
 	ap = &tf->tf_r[2];
 	nap = 8;	/* r2-r9 */
@@ -1296,11 +1289,6 @@ m88110_syscall(register_t code, struct trapframe *tf)
 	case SYS_syscall:
 		code = *ap++;
 		nap--;
-		break;
-	case SYS___syscall:
-		code = ap[_QUAD_LOWWORD];
-		ap += 2;
-		nap -= 2;
 		break;
 	}
 
@@ -1397,7 +1385,6 @@ child_return(arg)
 
 	tf = (struct trapframe *)USER_REGS(p);
 	tf->tf_r[2] = 0;
-	tf->tf_r[3] = 0;
 	tf->tf_epsr &= ~PSR_C;
 	/* skip br instruction as in syscall() */
 #ifdef M88100
@@ -1660,7 +1647,7 @@ double_reg_fixup(struct trapframe *frame, int fault)
 	 */
 
 	pc = PC_REGS(&frame->tf_regs);
-	if (copyin((void *)pc, &instr, sizeof(u_int32_t)) != 0)
+	if (copyinsn(NULL, (u_int32_t *)pc, (u_int32_t *)&instr) != 0)
 		return SIGSEGV;
 
 	switch (instr & 0xfc00ff00) {

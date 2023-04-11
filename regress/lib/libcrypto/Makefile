@@ -1,6 +1,7 @@
-#	$OpenBSD: Makefile,v 1.48 2022/09/02 13:45:18 tb Exp $
+#	$OpenBSD: Makefile,v 1.50 2022/12/01 23:03:40 tb Exp $
 
 SUBDIR += aead
+SUBDIR += aes
 SUBDIR += aeswrap
 SUBDIR += asn1
 SUBDIR += base64
@@ -23,7 +24,6 @@ SUBDIR += ecdh
 SUBDIR += ecdsa
 SUBDIR += engine
 SUBDIR += evp
-SUBDIR += exp
 SUBDIR += free
 SUBDIR += gcm128
 SUBDIR += gost

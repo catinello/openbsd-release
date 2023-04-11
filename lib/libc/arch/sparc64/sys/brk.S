@@ -1,4 +1,4 @@
-/*	$OpenBSD: brk.S,v 1.9 2022/01/01 23:47:14 guenther Exp $	*/
+/*	$OpenBSD: brk.S,v 1.11 2023/01/13 17:52:08 miod Exp $	*/
 /*	$NetBSD: brk.S,v 1.9 2000/07/25 20:15:40 mycroft Exp $	*/
 
 /*
@@ -39,19 +39,19 @@
 #include "SYS.h"
 
 	.globl	__curbrk
-	.globl	_C_LABEL(_end)
+	.globl	_end
 
 	.data
 	.align	8
 __minbrk:
-	.xword	_C_LABEL(_end)		/* lower brk limit; also for gmon code */
+	.xword	_end			/* lower brk limit; also for gmon code */
 	END(__minbrk)
 	OTYPE(__minbrk)
 	.text
 
 ENTRY_NB(brk)
 #ifdef __PIC__
-	PIC_PROLOGUE(%o5,%o4)
+	PIC_PROLOGUE(%o5, %o4)
 	set	__minbrk, %o4
 	ldx	[%o5 + %o4], %o4
 	ldx	[%o4], %o1		/* %o1 = minbrk */

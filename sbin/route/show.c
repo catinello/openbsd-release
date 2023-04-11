@@ -1,4 +1,4 @@
-/*	$OpenBSD: show.c,v 1.120 2022/06/19 13:59:22 claudio Exp $	*/
+/*	$OpenBSD: show.c,v 1.122 2023/03/15 08:42:14 claudio Exp $	*/
 /*	$NetBSD: show.c,v 1.1 1996/11/15 18:01:41 gwr Exp $	*/
 
 /*
@@ -136,10 +136,10 @@ get_sysctl(const int *mib, u_int mcnt, char **buf)
 void
 printsource(int af, u_int tableid)
 {
-	struct sockaddr *sa;
+	struct sockaddr *sa, *sa4 = NULL, *sa6 = NULL;
 	char *buf = NULL, *next, *lim = NULL;
 	size_t needed;
-	int mib[7], mcnt, size;
+	int mib[7], mcnt;
 
 	mib[0] = CTL_NET;
 	mib[1] = PF_ROUTE;
@@ -155,25 +155,33 @@ printsource(int af, u_int tableid)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	printf("Preferred source address set for rdomain %d\n", tableid);
-
 	if (buf) {
-		for (next = buf; next < lim; next += size) {
+		for (next = buf; next < lim; next += sa->sa_len) {
 			sa = (struct sockaddr *)next;
 			switch (sa->sa_family) {
 			case AF_INET:
-				size = sizeof(struct sockaddr_in);
-				printf("IPv4: ");
+				sa4 = sa;
 				break;
 			case AF_INET6:
-				size = sizeof(struct sockaddr_in6);
-				printf("IPv6: ");
+				sa6 = sa;
 				break;
 			}
-			p_sockaddr(sa, NULL, RTF_HOST, WID_DST(sa->sa_family));
-			printf("\n");
 		}
 	}
+
+	printf("Preferred source address set for rdomain %d\n", tableid);
+	printf("IPv4: ");
+	if (sa4 != NULL)
+		p_sockaddr(sa4, NULL, RTF_HOST, WID_DST(sa4->sa_family));
+	else 
+		printf("default");
+	printf("\n");
+	printf("IPv6: ");
+	if (sa6 != NULL)
+		p_sockaddr(sa6, NULL, RTF_HOST, WID_DST(sa6->sa_family));
+	else 
+		printf("default");
+	printf("\n");
 	free(buf);
 
 	exit(0);
@@ -220,9 +228,9 @@ p_rttables(int af, u_int tableid, char prio)
 /*
  * column widths; each followed by one space
  * width of destination/gateway column
- * strlen("fe80::aaaa:bbbb:cccc:dddd@gif0") == 30, strlen("/128") == 4
+ * strlen("2001:0db8:3333:4444:5555:6666:7777:8888") == 39
  */
-#define	WID_GW(af)	((af) == AF_INET6 ? 30 : 18)
+#define	WID_GW(af)	((af) == AF_INET6 ? 39 : 18)
 
 int
 WID_DST(int af)
@@ -232,7 +240,8 @@ WID_DST(int af)
 	case AF_MPLS:
 		return 9;
 	case AF_INET6:
-		return 34;
+		/* WID_GW() + strlen("/128")  == 4 */
+		return 43;
 	default:
 		return 18;
 	}

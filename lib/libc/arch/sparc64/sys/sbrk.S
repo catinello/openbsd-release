@@ -1,4 +1,4 @@
-/*	$OpenBSD: sbrk.S,v 1.7 2022/01/01 23:47:14 guenther Exp $	*/
+/*	$OpenBSD: sbrk.S,v 1.9 2023/01/13 17:52:08 miod Exp $	*/
 /*	$NetBSD: sbrk.S,v 1.7 2000/07/25 15:14:46 mycroft Exp $	*/
 
 /*
@@ -40,19 +40,19 @@
 
 	.globl	__curbrk
 	.hidden	__curbrk
-	.globl	_C_LABEL(_end)
+	.globl	_end
 
 	.data
 	.align	8
 __curbrk:
-	.xword	_C_LABEL(_end)
+	.xword	_end
 	END(__curbrk)
 	OTYPE(__curbrk)
 	.text
 
 ENTRY_NB(sbrk)
 #ifdef __PIC__
-	PIC_PROLOGUE(%o5,%o4)
+	PIC_PROLOGUE(%o5, %o4)
 	set	__curbrk, %o3
 	ldx	[%o5 + %o3], %o2
 	ldx	[%o2], %o3			/* %o3 = old break */

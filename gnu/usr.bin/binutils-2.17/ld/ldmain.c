@@ -296,7 +296,7 @@ main (int argc, char **argv)
   link_info.keep_memory = TRUE;
   link_info.notice_all = FALSE;
   link_info.nocopyreloc = FALSE;
-  link_info.new_dtags = FALSE;
+  link_info.new_dtags = TRUE;	/* to match lld */
   link_info.combreloc = TRUE;
   link_info.eh_frame_hdr = FALSE;
   link_info.relro = TRUE;
@@ -318,6 +318,11 @@ main (int argc, char **argv)
   link_info.emit_gnu_hash = TRUE;
 #else
   link_info.emit_gnu_hash = FALSE;
+#endif
+#if defined(__amd64__) || defined(__hppa__) || defined(__mips64__)
+  link_info.execute_only = TRUE;
+#else
+  link_info.execute_only = FALSE;
 #endif
   /* SVR4 linkers seem to set DT_INIT and DT_FINI based on magic _init
      and _fini symbols.  We are compatible.  */

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ktrace.h,v 1.42 2022/09/02 13:18:07 mbuhl Exp $	*/
+/*	$OpenBSD: ktrace.h,v 1.46 2023/02/23 01:33:20 deraadt Exp $	*/
 /*	$NetBSD: ktrace.h,v 1.12 1996/02/04 02:12:29 christos Exp $	*/
 
 /*
@@ -34,6 +34,8 @@
 
 #include <sys/uio.h>
 #include <sys/syslimits.h>
+#include <sys/signal.h>
+#include <sys/time.h>
 
 /*
  * operations to ktrace system call  (KTROP(op))
@@ -74,6 +76,8 @@ struct ktr_header {
 #define KTR_SYSCALL	1
 struct ktr_syscall {
 	int	ktr_code;		/* syscall number */
+#define KTRC_CODE_MASK			0x0000ffff
+#define KTRC_CODE_SYSCALL		0x20000000
 	int	ktr_argsize;		/* size of arguments */
 	/*
 	 * followed by ktr_argsize/sizeof(register_t) "register_t"s
@@ -253,5 +257,7 @@ void    ktrstruct(struct proc *, const char *, const void *, size_t);
 	ktrstruct(p, "fds", fds, (count) * sizeof(int))
 #define ktrflock(p, fl) \
 	ktrstruct(p, "flock", (fl), sizeof(struct flock))
+#define ktrsiginfo(p, si) \
+	ktrstruct(p, "siginfo", (si), sizeof(siginfo_t))
 
 #endif	/* !_KERNEL */

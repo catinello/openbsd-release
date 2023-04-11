@@ -1,4 +1,4 @@
-/*	$OpenBSD: rquotad.c,v 1.23 2019/06/28 13:32:53 deraadt Exp $	*/
+/*	$OpenBSD: rquotad.c,v 1.25 2023/03/08 04:43:05 guenther Exp $	*/
 
 /*
  * by Manuel Bouyer (bouyer@ensta.fr). Public domain.
@@ -36,7 +36,7 @@ int getfsquota(long id, char *path, struct dqblk *dqblk);
 int hasquota(struct fstab *fs, char **qfnamep);
 
 /*
- * structure containing informations about ufs filesystems
+ * structure containing information about ufs filesystems
  * initialised by initfs()
  */
 struct fs_stat {
@@ -49,7 +49,6 @@ struct fs_stat *fs_begin = NULL;
 
 int from_inetd = 1;
 
-/* ARGSUSED */
 static void
 cleanup(int signo)
 {

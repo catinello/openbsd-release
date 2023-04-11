@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.c,v 1.114 2022/08/17 15:16:12 claudio Exp $ */
+/*	$OpenBSD: parser.c,v 1.122 2023/03/13 16:59:22 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -77,6 +77,7 @@ static const struct token t_show[];
 static const struct token t_show_summary[];
 static const struct token t_show_fib[];
 static const struct token t_show_rib[];
+static const struct token t_show_avs[];
 static const struct token t_show_ovs[];
 static const struct token t_show_mrt[];
 static const struct token t_show_mrt_file[];
@@ -141,6 +142,7 @@ static const struct token t_show[] = {
 	{ KEYWORD,	"sets",		SHOW_SET,	NULL},
 	{ KEYWORD,	"rtr",		SHOW_RTR,	NULL},
 	{ KEYWORD,	"mrt",		SHOW_MRT,	t_show_mrt},
+	{ KEYWORD,	"metrics",	SHOW_METRICS,	NULL},
 	{ ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -176,10 +178,13 @@ static const struct token t_show_rib[] = {
 	{ FLAG,		"selected",	F_CTL_BEST,	t_show_rib},
 	{ FLAG,		"detail",	F_CTL_DETAIL,	t_show_rib},
 	{ FLAG,		"error",	F_CTL_INVALID,	t_show_rib},
-	{ FLAG,		"ssv"	,	F_CTL_SSV,	t_show_rib},
+	{ FLAG,		"invalid",	F_CTL_INELIGIBLE, t_show_rib},
+	{ FLAG,		"leaked",	F_CTL_LEAKED,	t_show_rib},
 	{ FLAG,		"in",		F_CTL_ADJ_IN,	t_show_rib},
 	{ FLAG,		"out",		F_CTL_ADJ_OUT,	t_show_rib},
+	{ FLAG,		"ssv"	,	F_CTL_SSV,	t_show_rib},
 	{ KEYWORD,	"neighbor",	NONE,		t_show_rib_neigh},
+	{ KEYWORD,	"avs",		NONE,		t_show_avs},
 	{ KEYWORD,	"ovs",		NONE,		t_show_ovs},
 	{ KEYWORD,	"path-id",	NONE,		t_show_rib_path},
 	{ KEYWORD,	"table",	NONE,		t_show_rib_rib},
@@ -187,6 +192,13 @@ static const struct token t_show_rib[] = {
 	{ KEYWORD,	"memory",	SHOW_RIB_MEM,	NULL},
 	{ FAMILY,	"",		NONE,		t_show_rib},
 	{ PREFIX,	"",		NONE,		t_show_prefix},
+	{ ENDTOKEN,	"",		NONE,		NULL}
+};
+
+static const struct token t_show_avs[] = {
+	{ FLAG,		"valid"	,	F_CTL_AVS_VALID,	t_show_rib},
+	{ FLAG,		"invalid",	F_CTL_AVS_INVALID,	t_show_rib},
+	{ FLAG,		"unknown",	F_CTL_AVS_UNKNOWN,	t_show_rib},
 	{ ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -718,7 +730,7 @@ match_token(int *argc, char **argv[], const struct token table[])
 		case RD:
 			if (word != NULL && wordlen > 0) {
 				char *p = strdup(word);
-				struct community ext;
+				struct community ext = { 0 };
 				uint64_t rd;
 
 				if (p == NULL)
@@ -1222,11 +1234,11 @@ parseextvalue(int type, char *s, uint32_t *v, uint32_t *flag)
 	} else if (strcmp(s, "neighbor-as") == 0) {
 		*flag = COMMUNITY_NEIGHBOR_AS;
 		*v = 0;
-		return EXT_COMMUNITY_TRANS_FOUR_AS;
+		return EXT_COMMUNITY_TRANS_TWO_AS;
 	} else if (strcmp(s, "local-as") == 0) {
 		*flag = COMMUNITY_LOCAL_AS;
 		*v = 0;
-		return EXT_COMMUNITY_TRANS_FOUR_AS;
+		return EXT_COMMUNITY_TRANS_TWO_AS;
 	} else if ((p = strchr(s, '.')) == NULL) {
 		/* AS_PLAIN number (4 or 2 byte) */
 		strtonum(s, 0, USHRT_MAX, &errstr);

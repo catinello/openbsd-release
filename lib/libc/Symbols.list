@@ -6,7 +6,7 @@
  * static, or renamed it to have a leading underbar.
  */
 
-/* brk/sbrk need this so it can be overriden by the executable's value */
+/* brk/sbrk need this so it can be overridden by the executable's value */
 _end
 
 /*
@@ -25,7 +25,6 @@ __get_tcb
 __semctl
 __set_tcb
 __stack_smash_handler
-__syscall
 __tfork_thread
 __threxit
 __thrsigdivert
@@ -38,7 +37,6 @@ _thread_sys___getcwd
 _thread_sys___realpath
 _thread_sys___semctl
 _thread_sys___set_tcb
-_thread_sys___syscall
 _thread_sys___threxit
 _thread_sys___thrsigdivert
 _thread_sys___thrsleep
@@ -115,6 +113,7 @@ _thread_sys_getsid
 _thread_sys_getsockname
 _thread_sys_getsockopt
 _thread_sys_getthrid
+_thread_sys_getthrname
 _thread_sys_gettimeofday
 _thread_sys_getuid
 _thread_sys_ioctl
@@ -131,6 +130,7 @@ _thread_sys_lseek
 _thread_sys_lstat
 _thread_sys_madvise
 _thread_sys_minherit
+_thread_sys_mimmutable
 _thread_sys_mkdir
 _thread_sys_mkdirat
 _thread_sys_mkfifo
@@ -205,6 +205,7 @@ _thread_sys_setrlimit
 _thread_sys_setrtable
 _thread_sys_setsid
 _thread_sys_setsockopt
+_thread_sys_setthrname
 _thread_sys_settimeofday
 _thread_sys_setuid
 _thread_sys_shmat
@@ -239,6 +240,7 @@ _thread_sys_utimes
 _thread_sys_utrace
 _thread_sys_vfork
 _thread_sys_wait4
+_thread_sys_waitid
 _thread_sys_write
 _thread_sys_writev
 accept4
@@ -312,6 +314,7 @@ getsid
 getsockname
 getsockopt
 getthrid
+getthrname
 gettimeofday
 getuid
 ioctl
@@ -327,6 +330,7 @@ listen
 lseek
 lstat
 madvise
+mimmutable
 minherit
 mkdir
 mkdirat
@@ -405,6 +409,7 @@ setrlimit
 setrtable
 setsid
 setsockopt
+setthrname
 settimeofday
 setuid
 shmat
@@ -446,6 +451,7 @@ utimes
 utrace
 vfork
 wait4
+waitid
 write
 writev
 

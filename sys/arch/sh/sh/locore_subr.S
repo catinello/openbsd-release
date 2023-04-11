@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore_subr.S,v 1.13 2022/01/02 06:16:08 jsg Exp $	*/
+/*	$OpenBSD: locore_subr.S,v 1.15 2023/01/31 15:18:55 deraadt Exp $	*/
 /*	$NetBSD: locore_subr.S,v 1.28 2006/01/23 22:52:09 uwe Exp $	*/
 
 /*
@@ -240,7 +240,7 @@ ENTRY(cpu_switchto)
 	 nop
 	.align	2
 .L_SF:			.long	(P_MD_PCB)
-.L_cpu_switch_prepare:	.long	_C_LABEL(cpu_switch_prepare)
+.L_cpu_switch_prepare:	.long	cpu_switch_prepare
 FUNC_SYMBOL(switch_resume)
 
 #ifdef SH3
@@ -263,7 +263,7 @@ NENTRY(sh3_switch_resume)
 	 mov.l	r0,	@r1
 	.align	2
 .L_UPTE:		.long	P_MD_UPTE
-.L_curupte:		.long	_C_LABEL(curupte)
+.L_curupte:		.long	curupte
 	SET_ENTRY_SIZE(sh3_switch_resume)
 #endif /* SH3 */
 
@@ -493,8 +493,8 @@ NENTRY(sigcode)
 	mov	r15, r4			/* get pointer to sigcontext */
 	mov.l	.L_SYS_sigreturn, r0
 	trapa	#0x80			/* and call sigreturn() */
-	.globl  _C_LABEL(sigcoderet)
-_C_LABEL(sigcoderet):
+	.globl	sigcoderet
+sigcoderet:
 	mov.l	.L_SYS_exit, r0
 	trapa	#0x80			/* exit if sigreturn fails */
 	/* NOTREACHED */
@@ -504,8 +504,8 @@ _C_LABEL(sigcoderet):
 .L_SYS_exit:		.long	SYS_exit
 
 /* LINTSTUB: Var: char esigcode[1] */
-.globl	_C_LABEL(esigcode)
-_C_LABEL(esigcode):
+.globl	esigcode
+esigcode:
 	SET_ENTRY_SIZE(sigcode)
 
 	.globl	sigfill
@@ -604,17 +604,17 @@ ENTRY(copyout)
 .L_copyout_VM_MAXUSER_ADDRESS:
 	.long	VM_MAXUSER_ADDRESS
 .L_copyout_curpcb:
-	.long	_C_LABEL(curpcb)
+	.long	curpcb
 .L_copyout_memcpy:
-	.long	_C_LABEL(memcpy)
+	.long	memcpy
 	SET_ENTRY_SIZE(copyout)
 
 
 /*
- * LINTSTUB: Func: int copyin(const void *usrc, void *kdst, size_t len)
+ * LINTSTUB: Func: int _copyin(const void *usrc, void *kdst, size_t len)
  *	Copy len bytes from the user address space.
  */
-ENTRY(copyin)
+ENTRY(_copyin)
 	mov.l	r14,	@-r15
 	sts.l	pr,	@-r15
 	mov	r15,	r14
@@ -660,10 +660,10 @@ ENTRY(copyin)
 .L_copyin_VM_MAXUSER_ADDRESS:
 	.long	VM_MAXUSER_ADDRESS
 .L_copyin_curpcb:
-	.long	_C_LABEL(curpcb)
+	.long	curpcb
 .L_copyin_memcpy:
-	.long	_C_LABEL(memcpy)
-	SET_ENTRY_SIZE(copyin)
+	.long	memcpy
+	SET_ENTRY_SIZE(_copyin)
 
 
 /*
@@ -738,18 +738,18 @@ ENTRY(copyoutstr)
 .L_copyoutstr_VM_MAXUSER_ADDRESS:
 	.long	VM_MAXUSER_ADDRESS
 .L_copyoutstr_curpcb:
-	.long	_C_LABEL(curpcb)
+	.long	curpcb
 	SET_ENTRY_SIZE(copyoutstr)
 
 
 /*
- * LINTSTUB: Func: int copyinstr(const void *src, void *dst, size_t maxlen, size_t *lencopied)
+ * LINTSTUB: Func: int _copyinstr(const void *src, void *dst, size_t maxlen, size_t *lencopied)
  *	Copy a NUL-terminated string, at most maxlen characters long,
  *	from the user address space.  Return the number of characters
  *	copied (including the NUL) in *lencopied.  If the string is
  *	too long, return ENAMETOOLONG; else return 0 or EFAULT.
  */
-ENTRY(copyinstr)
+ENTRY(_copyinstr)
 	mov.l	r8,	@-r15
 	mov	#EFAULT, r3		/* assume there was a problem */
 	mov	r4,	r8
@@ -814,8 +814,8 @@ ENTRY(copyinstr)
 .L_copyinstr_VM_MAXUSER_ADDRESS:
 	.long	VM_MAXUSER_ADDRESS
 .L_copyinstr_curpcb:
-	.long	_C_LABEL(curpcb)
-	SET_ENTRY_SIZE(copyinstr)
+	.long	curpcb
+	SET_ENTRY_SIZE(_copyinstr)
 
 /*
  * LINTSTUB: Func: int kcopy(const void *src, void *dst, size_t len)
@@ -856,9 +856,9 @@ ENTRY(kcopy)
 .L_kcopy_onfault:
 	.long	2b
 .L_kcopy_curpcb:
-	.long	_C_LABEL(curpcb)
+	.long	curpcb
 .L_kcopy_memcpy:
-	.long	_C_LABEL(memcpy)
+	.long	memcpy
 	SET_ENTRY_SIZE(kcopy)
 
 

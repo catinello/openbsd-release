@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_time.c,v 1.157 2022/08/14 01:58:27 jsg Exp $	*/
+/*	$OpenBSD: kern_time.c,v 1.163 2023/02/15 10:07:50 claudio Exp $	*/
 /*	$NetBSD: kern_time.c,v 1.20 1996/02/18 11:57:06 fvdl Exp $	*/
 
 /*
@@ -139,8 +139,8 @@ clock_gettime(struct proc *p, clockid_t clock_id, struct timespec *tp)
 		/* check for clock from pthread_getcpuclockid() */
 		if (__CLOCK_TYPE(clock_id) == CLOCK_THREAD_CPUTIME_ID) {
 			KERNEL_LOCK();
-			q = tfind(__CLOCK_PTID(clock_id) - THREAD_PID_OFFSET);
-			if (q == NULL || q->p_p != p->p_p)
+			q = tfind_user(__CLOCK_PTID(clock_id), p->p_p);
+			if (q == NULL)
 				error = ESRCH;
 			else
 				*tp = q->p_tu.tu_runtime;
@@ -218,10 +218,9 @@ sys_clock_getres(struct proc *p, void *v, register_t *retval)
 	struct timespec ts;
 	struct proc *q;
 	u_int64_t scale;
-	int error = 0, realstathz;
+	int error = 0;
 
 	memset(&ts, 0, sizeof(ts));
-	realstathz = (stathz == 0) ? hz : stathz;
 	clock_id = SCARG(uap, clock_id);
 
 	switch (clock_id) {
@@ -238,17 +237,17 @@ sys_clock_getres(struct proc *p, void *v, register_t *retval)
 		break;
 	case CLOCK_PROCESS_CPUTIME_ID:
 	case CLOCK_THREAD_CPUTIME_ID:
-		ts.tv_nsec = 1000000000 / realstathz;
+		ts.tv_nsec = 1000000000 / stathz;
 		break;
 	default:
 		/* check for clock from pthread_getcpuclockid() */
 		if (__CLOCK_TYPE(clock_id) == CLOCK_THREAD_CPUTIME_ID) {
 			KERNEL_LOCK();
-			q = tfind(__CLOCK_PTID(clock_id) - THREAD_PID_OFFSET);
-			if (q == NULL || q->p_p != p->p_p)
+			q = tfind_user(__CLOCK_PTID(clock_id), p->p_p);
+			if (q == NULL)
 				error = ESRCH;
 			else
-				ts.tv_nsec = 1000000000 / realstathz;
+				ts.tv_nsec = 1000000000 / stathz;
 			KERNEL_UNLOCK();
 		} else
 			error = EINVAL;
@@ -270,7 +269,6 @@ sys_clock_getres(struct proc *p, void *v, register_t *retval)
 int
 sys_nanosleep(struct proc *p, void *v, register_t *retval)
 {
-	static int chan;
 	struct sys_nanosleep_args/* {
 		syscallarg(const struct timespec *) rqtp;
 		syscallarg(struct timespec *) rmtp;
@@ -295,7 +293,7 @@ sys_nanosleep(struct proc *p, void *v, register_t *retval)
 	do {
 		getnanouptime(&start);
 		nsecs = MAX(1, MIN(TIMESPEC_TO_NSEC(&request), MAXTSLP));
-		error = tsleep_nsec(&chan, PWAIT | PCATCH, "nanoslp", nsecs);
+		error = tsleep_nsec(&nowake, PWAIT | PCATCH, "nanoslp", nsecs);
 		getnanouptime(&stop);
 		timespecsub(&stop, &start, &elapsed);
 		timespecsub(&request, &elapsed, &request);
@@ -443,7 +441,7 @@ sys_adjtime(struct proc *p, void *v, register_t *retval)
 	struct timeval atv;
 	const struct timeval *delta = SCARG(uap, delta);
 	struct timeval *olddelta = SCARG(uap, olddelta);
-	int64_t adjustment, remaining;	
+	int64_t adjustment, remaining;
 	int error;
 
 	error = pledge_adjtime(p, delta);
@@ -548,7 +546,7 @@ setitimer(int which, const struct itimerval *itv, struct itimerval *olditv)
 		if (which == ITIMER_REAL) {
 			if (timespecisset(&its.it_value)) {
 				timespecadd(&its.it_value, &now, &its.it_value);
-				timeout_at_ts(&pr->ps_realit_to, &its.it_value);
+				timeout_abs_ts(&pr->ps_realit_to,&its.it_value);
 			} else
 				timeout_del(&pr->ps_realit_to);
 		}
@@ -691,7 +689,7 @@ realitexpire(void *arg)
 	while (timespeccmp(&tp->it_value, &cts, <=))
 		timespecadd(&tp->it_value, &tp->it_interval, &tp->it_value);
 	if ((pr->ps_flags & PS_EXITING) == 0)
-		timeout_at_ts(&pr->ps_realit_to, &tp->it_value);
+		timeout_abs_ts(&pr->ps_realit_to, &tp->it_value);
 
 out:
 	mtx_leave(&pr->ps_mtx);
@@ -951,7 +949,9 @@ resettodr(void)
 void
 todr_attach(struct todr_chip_handle *todr)
 {
-	todr_handle = todr;
+	if (todr_handle == NULL ||
+	    todr->todr_quality > todr_handle->todr_quality)
+		todr_handle = todr;
 }
 
 #define RESETTODR_PERIOD	1800

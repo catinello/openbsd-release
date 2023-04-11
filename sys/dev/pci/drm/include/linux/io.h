@@ -10,7 +10,7 @@
 #include <linux/types.h>
 #include <linux/atomic.h>
 #include <linux/compiler.h>
-#include <linux/vmalloc.h>
+#include <linux/vmalloc.h> /* via asm/io.h */
 
 #define memcpy_toio(d, s, n)	memcpy(d, s, n)
 #define memcpy_fromio(d, s, n)	memcpy(d, s, n)
@@ -173,5 +173,11 @@ int	drm_mtrr_add(unsigned long, size_t, int);
 int	drm_mtrr_del(int, unsigned long, size_t, int);
 
 #define DRM_MTRR_WC	MDF_WRITECOMBINE
+
+static inline void *
+IOMEM_ERR_PTR(long error)
+{
+	return (void *) error;
+}
 
 #endif

@@ -1,4 +1,4 @@
-/*	$OpenBSD: bios.c,v 1.45 2022/02/21 11:03:39 mpi Exp $	*/
+/*	$OpenBSD: bios.c,v 1.47 2023/03/15 08:20:52 jsg Exp $	*/
 /*
  * Copyright (c) 2006 Gordon Willem Klok <gklok@cogeco.ca>
  *
@@ -30,6 +30,7 @@
 #include <amd64/include/isa_machdep.h>
 
 #include "acpi.h"
+#include "efi.h"
 #include "mpbios.h"
 #include "pci.h"
 
@@ -62,6 +63,7 @@ const char *smbios_uninfo[] = {
 };
 
 char smbios_bios_date[64];
+char smbios_bios_version[64];
 char smbios_board_vendor[64];
 char smbios_board_prod[64];
 char smbios_board_serial[64];
@@ -137,9 +139,15 @@ bios_attach(struct device *parent, struct device *self, void *aux)
 				printf(" vendor %s",
 				    fixstring(scratch));
 			if ((smbios_get_string(&bios, sb->version,
-			    scratch, sizeof(scratch))) != NULL)
-				printf(" version \"%s\"",
-				    fixstring(scratch));
+			    scratch, sizeof(scratch))) != NULL) {
+				sminfop = fixstring(scratch);
+				if (sminfop != NULL) {
+					strlcpy(smbios_bios_version,
+					    sminfop,
+					    sizeof(smbios_bios_version));
+					printf(" version \"%s\"", sminfop);
+				}
+			}
 			if ((smbios_get_string(&bios, sb->release,
 			    scratch, sizeof(scratch))) != NULL) {
 				sminfop = fixstring(scratch);
@@ -189,6 +197,18 @@ out:
 				break;
 			}
 	}
+
+#if NEFI > 0
+	if (bios_efiinfo != NULL) {
+		struct bios_attach_args ba;
+
+		memset(&ba, 0, sizeof(ba));
+		ba.ba_name = "efi";
+		ba.ba_memt = X86_BUS_SPACE_MEM;
+
+		config_found(self, &ba, bios_print);
+	}
+#endif
 
 #if NACPI > 0
 	{

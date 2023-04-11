@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.h,v 1.158 2022/08/29 14:57:27 claudio Exp $ */
+/*	$OpenBSD: session.h,v 1.161 2023/03/09 17:21:21 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -243,6 +243,7 @@ struct peer {
 	enum session_state	 state;
 	enum session_state	 prev_state;
 	enum reconf_action	 reconf_action;
+	enum role		 remote_role;
 	uint16_t		 short_as;
 	uint16_t		 holdtime;
 	uint16_t		 local_port;
@@ -328,11 +329,13 @@ void			 rtr_config_prep(void);
 void			 rtr_config_merge(void);
 void			 rtr_config_keep(struct rtr_session *);
 void			 rtr_roa_merge(struct roa_tree *);
+void			 rtr_aspa_merge(struct aspa_tree *);
 void			 rtr_shutdown(void);
 void			 rtr_show(struct rtr_session *, pid_t);
 
 /* rtr.c */
-void	roa_insert(struct roa_tree *, struct roa *);
+void	rtr_roa_insert(struct roa_tree *, struct roa *);
+void	rtr_aspa_insert(struct aspa_tree *, struct aspa_set *);
 void	rtr_main(int, int);
 void	rtr_imsg_compose(int, uint32_t, pid_t, void *, size_t);
 void	rtr_recalc(void);
@@ -348,7 +351,7 @@ struct peer	*getpeerbyip(struct bgpd_config *, struct sockaddr *);
 struct peer	*getpeerbyid(struct bgpd_config *, uint32_t);
 int		 peer_matched(struct peer *, struct ctl_neighbor *);
 int		 imsg_ctl_parent(int, uint32_t, pid_t, void *, uint16_t);
-int		 imsg_ctl_rde(int, pid_t, void *, uint16_t);
+int		 imsg_ctl_rde(int, uint32_t, pid_t, void *, uint16_t);
 void		 session_stop(struct peer *, uint8_t);
 
 /* timer.c */

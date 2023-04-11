@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_var.h,v 1.117 2022/09/08 10:22:06 kn Exp $	*/
+/*	$OpenBSD: if_var.h,v 1.122 2022/11/23 14:50:59 kn Exp $	*/
 /*	$NetBSD: if.h,v 1.23 1996/05/07 02:40:27 thorpej Exp $	*/
 
 /*
@@ -73,6 +73,18 @@
  * interfaces.  These routines live in the files if.c and route.c
  */
 
+/*
+ *  Locks used to protect struct members in this file:
+ *	I	immutable after creation
+ *	d	protection left to the driver
+ *	c	only used in ioctl or routing socket contexts (kernel lock)
+ *	K	kernel lock
+ *	N	net lock
+ *
+ *  For SRP related structures that allow lock-free reads, the write lock
+ *  is indicated below.
+ */
+
 struct rtentry;
 struct ifnet;
 struct task;
@@ -82,7 +94,7 @@ struct cpumem;
  * Structure describing a `cloning' interface.
  */
 struct if_clone {
-	LIST_ENTRY(if_clone)	 ifc_list;	/* on list of cloners */
+	LIST_ENTRY(if_clone)	 ifc_list;	/* [I] on list of cloners */
 	const char		*ifc_name;	/* name of device, e.g. `gif' */
 	size_t			 ifc_namelen;	/* length of name */
 
@@ -99,17 +111,6 @@ struct if_clone {
   .ifc_destroy	= destroy,						\
 }
 
-/*
- *  Locks used to protect struct members in this file:
- *	I	immutable after creation
- *	d	protection left do the driver
- *	c	only used in ioctl or routing socket contexts (kernel lock)
- *	K	kernel lock
- *	N	net lock
- *
- *  For SRP related structures that allow lock-free reads, the write lock
- *  is indicated below.
- */
 /*
  * Structure defining a queue for a network interface.
  *
@@ -185,7 +186,7 @@ struct ifnet {				/* and the entries */
 
 	struct sockaddr_dl *if_sadl;	/* [N] pointer to our sockaddr_dl */
 
-	void	*if_afdata[AF_MAX];
+	struct	nd_ifinfo *if_nd;	/* [I] IPv6 Neighour Discovery info */
 };
 #define	if_mtu		if_data.ifi_mtu
 #define	if_type		if_data.ifi_type
@@ -262,22 +263,22 @@ struct ifmaddr {
  */
 
 struct ifg_group {
-	char			 ifg_group[IFNAMSIZ];
-	u_int			 ifg_refcnt;
-	caddr_t			 ifg_pf_kif;
-	int			 ifg_carp_demoted;
-	TAILQ_HEAD(, ifg_member) ifg_members;
-	TAILQ_ENTRY(ifg_group)	 ifg_next;
+	char			 ifg_group[IFNAMSIZ]; /* [I] group name */
+	u_int			 ifg_refcnt;  /* [N] group reference count */
+	caddr_t			 ifg_pf_kif;  /* [I] pf interface group */
+	int			 ifg_carp_demoted; /* [K] carp demotion counter */
+	TAILQ_HEAD(, ifg_member) ifg_members; /* [N] list of members per group */
+	TAILQ_ENTRY(ifg_group)	 ifg_next;    /* [N] all groups are chained */
 };
 
 struct ifg_member {
-	TAILQ_ENTRY(ifg_member)	 ifgm_next;
-	struct ifnet		*ifgm_ifp;
+	TAILQ_ENTRY(ifg_member)	 ifgm_next; /* [N] all members are chained */
+	struct ifnet		*ifgm_ifp;  /* [I] member interface */
 };
 
 struct ifg_list {
-	struct ifg_group	*ifgl_group;
-	TAILQ_ENTRY(ifg_list)	 ifgl_next;
+	struct ifg_group	*ifgl_group; /* [I] interface group */
+	TAILQ_ENTRY(ifg_list)	 ifgl_next;  /* [N] all groups are chained */
 };
 
 #define	IFNET_SLOWTIMO	1		/* granularity is 1 second */

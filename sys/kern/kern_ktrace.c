@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_ktrace.c,v 1.108 2022/08/14 01:58:27 jsg Exp $	*/
+/*	$OpenBSD: kern_ktrace.c,v 1.111 2023/02/16 08:50:57 claudio Exp $	*/
 /*	$NetBSD: kern_ktrace.c,v 1.23 1996/02/09 18:59:36 christos Exp $	*/
 
 /*
@@ -104,7 +104,7 @@ ktrsettrace(struct process *pr, int facs, struct vnode *newvp,
 
 	/* nothing to change about where the trace goes? */
 	if (pr->ps_tracevp == newvp && pr->ps_tracecred == newcred)
-		return;	
+		return;
 
 	vref(newvp);
 	crhold(newcred);
@@ -128,7 +128,6 @@ ktrinitheaderraw(struct ktr_header *kth, uint type, pid_t pid, pid_t tid)
 {
 	memset(kth, 0, sizeof(struct ktr_header));
 	kth->ktr_type = type;
-	nanotime(&kth->ktr_time);
 	kth->ktr_pid = pid;
 	kth->ktr_tid = tid;
 }
@@ -336,8 +335,11 @@ ktruser(struct proc *p, const char *id, const void *addr, size_t len)
 		else
 			memp = stkbuf;
 		error = copyin(addr, memp, len);
-		if (error == 0)
+		if (error == 0) {
+			KERNEL_LOCK();
 			ktrwrite2(p, &kth, &ktp, sizeof(ktp), memp, len);
+			KERNEL_UNLOCK();
+		}
 		if (memp != stkbuf)
 			free(memp, M_TEMP, len);
 	}
@@ -351,7 +353,7 @@ ktrexec(struct proc *p, int type, const char *data, ssize_t len)
 	struct ktr_header kth;
 	int count;
 	int buflen;
-	
+
 	assert(type == KTR_EXECARGS || type == KTR_EXECENV);
 	atomic_setbits_int(&p->p_flag, P_INKTR);
 
@@ -542,7 +544,7 @@ ktrops(struct proc *curp, struct process *pr, int ops, int facs,
 		return (0);
 	if (ops == KTROP_SET)
 		ktrsettrace(pr, facs, vp, cred);
-	else {	
+	else {
 		/* KTROP_CLEAR */
 		pr->ps_traceflag &= ~facs;
 		if ((pr->ps_traceflag & KTRFAC_MASK) == 0) {
@@ -634,6 +636,8 @@ ktrwriteraw(struct proc *curp, struct vnode *vp, struct ucred *cred,
 	struct iovec aiov[3];
 	struct process *pr;
 	int error;
+
+	nanotime(&kth->ktr_time);
 
 	KERNEL_ASSERT_LOCKED();
 

@@ -1,4 +1,4 @@
-/* $OpenBSD: screen-write.c,v 1.209 2022/08/02 11:09:26 nicm Exp $ */
+/* $OpenBSD: screen-write.c,v 1.213 2023/02/10 14:01:43 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -34,7 +34,7 @@ static void	screen_write_collect_flush(struct screen_write_ctx *, int,
 static int	screen_write_overwrite(struct screen_write_ctx *,
 		    struct grid_cell *, u_int);
 static const struct grid_cell *screen_write_combine(struct screen_write_ctx *,
-		    const struct utf8_data *, u_int *);
+		    const struct utf8_data *, u_int *, u_int *);
 
 struct screen_write_citem {
 	u_int				x;
@@ -1506,7 +1506,8 @@ screen_write_fullredraw(struct screen_write_ctx *ctx)
 	screen_write_collect_flush(ctx, 0, __func__);
 
 	screen_write_initctx(ctx, &ttyctx, 1);
-	ttyctx.redraw_cb(&ttyctx);
+	if (ttyctx.redraw_cb != NULL)
+		ttyctx.redraw_cb(&ttyctx);
 }
 
 /* Trim collected items. */
@@ -1846,13 +1847,13 @@ screen_write_cell(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	 */
 	if (ctx->flags & SCREEN_WRITE_ZWJ) {
 		screen_write_collect_flush(ctx, 0, __func__);
-		screen_write_combine(ctx, &zwj, &xx);
+		screen_write_combine(ctx, &zwj, &xx, &cx);
 	}
 	if (width == 0 || (ctx->flags & SCREEN_WRITE_ZWJ)) {
 		ctx->flags &= ~SCREEN_WRITE_ZWJ;
 		screen_write_collect_flush(ctx, 0, __func__);
-		if ((gc = screen_write_combine(ctx, ud, &xx)) != NULL) {
-			cx = s->cx; cy = s->cy;
+		if ((gc = screen_write_combine(ctx, ud, &xx, &cx)) != NULL) {
+			cy = s->cy;
 			screen_write_set_cursor(ctx, xx, s->cy);
 			screen_write_initctx(ctx, &ttyctx, 0);
 			ttyctx.cell = gc;
@@ -1979,16 +1980,19 @@ screen_write_cell(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 /* Combine a UTF-8 zero-width character onto the previous. */
 static const struct grid_cell *
 screen_write_combine(struct screen_write_ctx *ctx, const struct utf8_data *ud,
-    u_int *xx)
+    u_int *xx, u_int *cx)
 {
 	struct screen		*s = ctx->s;
 	struct grid		*gd = s->grid;
 	static struct grid_cell	 gc;
-	u_int			 n;
+	u_int			 n, width;
 
 	/* Can't combine if at 0. */
-	if (s->cx == 0)
+	if (s->cx == 0) {
+		*xx = 0;
 		return (NULL);
+	}
+	*xx = s->cx;
 
 	/* Empty data is out. */
 	if (ud->size == 0)
@@ -2002,22 +2006,35 @@ screen_write_combine(struct screen_write_ctx *ctx, const struct utf8_data *ud,
 	}
 	if (n > s->cx)
 		return (NULL);
-	*xx = s->cx - n;
 
 	/* Check there is enough space. */
 	if (gc.data.size + ud->size > sizeof gc.data.data)
 		return (NULL);
+	(*xx) -= n;
 
-	log_debug("%s: %.*s onto %.*s at %u,%u", __func__, (int)ud->size,
-	    ud->data, (int)gc.data.size, gc.data.data, *xx, s->cy);
+	log_debug("%s: %.*s onto %.*s at %u,%u (width %u)", __func__,
+	    (int)ud->size, ud->data, (int)gc.data.size, gc.data.data, *xx,
+	    s->cy, gc.data.width);
 
 	/* Append the data. */
 	memcpy(gc.data.data + gc.data.size, ud->data, ud->size);
 	gc.data.size += ud->size;
+	width = gc.data.width;
+
+	/* If this is U+FE0F VARIATION SELECTOR-16, force the width to 2. */
+	if (gc.data.width == 1 &&
+	    ud->size == 3 &&
+	    memcmp(ud->data, "\357\270\217", 3) == 0) {
+		grid_view_set_padding(gd, (*xx) + 1, s->cy);
+		gc.data.width = 2;
+		width += 2;
+	}
 
 	/* Set the new cell. */
 	grid_view_set_cell(gd, *xx, s->cy, &gc);
 
+	*cx = (*xx) + width;
+	log_debug("%s: character at %u; cursor at %u", __func__, *xx, *cx);
 	return (&gc);
 }
 
@@ -2128,7 +2145,8 @@ screen_write_alternateon(struct screen_write_ctx *ctx, struct grid_cell *gc,
 	screen_alternate_on(ctx->s, gc, cursor);
 
 	screen_write_initctx(ctx, &ttyctx, 1);
-	ttyctx.redraw_cb(&ttyctx);
+	if (ttyctx.redraw_cb != NULL)
+		ttyctx.redraw_cb(&ttyctx);
 }
 
 /* Turn alternate screen off. */
@@ -2146,5 +2164,6 @@ screen_write_alternateoff(struct screen_write_ctx *ctx, struct grid_cell *gc,
 	screen_alternate_off(ctx->s, gc, cursor);
 
 	screen_write_initctx(ctx, &ttyctx, 1);
-	ttyctx.redraw_cb(&ttyctx);
+	if (ttyctx.redraw_cb != NULL)
+		ttyctx.redraw_cb(&ttyctx);
 }

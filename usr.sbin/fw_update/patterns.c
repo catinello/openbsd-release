@@ -1,4 +1,4 @@
-/*	$OpenBSD: patterns.c,v 1.4 2022/08/06 03:12:19 jsg Exp $	*/
+/*	$OpenBSD: patterns.c,v 1.8 2023/02/16 03:09:33 jsg Exp $	*/
 
 /*
  * Copyright (c) 1995, 1996 Christopher G. Demetriou.  All rights reserved.
@@ -90,11 +90,15 @@ main(void)
 	printf("%s\n", "acx");
 	printf("%s\n", "amdgpu");
 	print_devices("amdgpu", amdgpu_devices, nitems(amdgpu_devices));
+	printf("%s\n", "amdgpu ^vga*vendor \"ATI\", unknown product"); 
+	printf("%s\n", "amdgpu ^vendor \"ATI\", unknown product*class display");
+	printf("%s\n", "apple-boot ^cpu0*Apple");
+	printf("%s\n", "arm64-qcom-dtb ^qcgpio0");
 	printf("%s\n", "athn");
 	printf("%s\n", "bwfm");
 	printf("%s\n", "bwi");
 	printf("%s\n", "intel");
-	printf("%s\n", "intel ^cpu0:*Intel(R)");
+	printf("%s\n", "intel ^cpu0:*Intel");
 	printf("%s\n", "inteldrm");
 	print_devices("inteldrm", i915_devices, nitems(i915_devices));
 	printf("%s\n", "ipw");

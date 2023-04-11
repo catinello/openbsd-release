@@ -1,4 +1,4 @@
-/*	$OpenBSD: library.c,v 1.87 2022/08/20 14:11:31 sthen Exp $ */
+/*	$OpenBSD: library.c,v 1.90 2023/01/29 20:30:56 gnezdo Exp $ */
 
 /*
  * Copyright (c) 2002 Dale Rahn
@@ -96,8 +96,9 @@ unload:
 }
 
 elf_object_t *
-_dl_tryload_shlib(const char *libname, int type, int flags)
+_dl_tryload_shlib(const char *libname, int type, int flags, int nodelete)
 {
+	struct range_vector imut, mut;
 	int	libfile, i;
 	struct load_list *next_load, *load_list = NULL;
 	Elf_Addr maxva = 0, minva = ELF_NO_ADDR;
@@ -149,6 +150,9 @@ _dl_tryload_shlib(const char *libname, int type, int flags)
 		_dl_errno = DL_NOT_ELF;
 		return(0);
 	}
+
+	_dl_memset(&mut, 0, sizeof mut);
+	_dl_memset(&imut, 0, sizeof imut);
 
 	/*
 	 *  Alright, we might have a winner!
@@ -210,6 +214,9 @@ _dl_tryload_shlib(const char *libname, int type, int flags)
 
 	loff = libaddr - minva;
 	phdp = (Elf_Phdr *)(hbuf + ehdr->e_phoff);
+
+	/* Entire mapping can become immutable, minus exceptions chosen later */
+	_dl_push_range_size(&imut, loff, maxva - minva);
 
 	for (i = 0; i < ehdr->e_phnum; i++, phdp++) {
 		switch (phdp->p_type) {
@@ -293,6 +300,12 @@ _dl_tryload_shlib(const char *libname, int type, int flags)
 		case PT_GNU_RELRO:
 			relro_addr = phdp->p_vaddr + loff;
 			relro_size = phdp->p_memsz;
+			_dl_push_range_size(&mut, relro_addr, relro_size);
+			break;
+
+		case PT_OPENBSD_MUTABLE:
+			_dl_push_range_size(&mut, phdp->p_vaddr + loff,
+			    phdp->p_memsz);
 			break;
 
 		default:
@@ -315,6 +328,7 @@ _dl_tryload_shlib(const char *libname, int type, int flags)
 		object->dev = sb.st_dev;
 		object->inode = sb.st_ino;
 		object->obj_flags |= flags;
+		object->nodelete = nodelete;
 		object->relro_addr = relro_addr;
 		object->relro_size = relro_size;
 		_dl_set_sod(object->load_name, &object->sod);
@@ -328,6 +342,8 @@ _dl_tryload_shlib(const char *libname, int type, int flags)
 				_dl_printf("msyscall %lx %lx error\n",
 				    exec_start, exec_size);
 		}
+		_dl_bcopy(&mut, &object->mut, sizeof mut);
+		_dl_bcopy(&imut, &object->imut, sizeof imut);
 	} else {
 		_dl_munmap((void *)libaddr, maxva - minva);
 		_dl_load_list_free(load_list);

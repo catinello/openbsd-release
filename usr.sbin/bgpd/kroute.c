@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.300 2022/09/21 21:12:03 claudio Exp $ */
+/*	$OpenBSD: kroute.c,v 1.304 2023/03/07 10:30:38 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -580,6 +580,9 @@ krVPN4_change(struct ktable *kt, struct kroute_full *kf)
 	    (kf->prefix.labelstack[2] << 8);
 	mplslabel = htonl(mplslabel);
 
+	kf->flags |= F_MPLS;
+	kf->mplslabel = mplslabel;
+
 	/* for blackhole and reject routes nexthop needs to be 127.0.0.1 */
 	if (kf->flags & (F_BLACKHOLE|F_REJECT))
 		kf->nexthop.v4.s_addr = htonl(INADDR_LOOPBACK);
@@ -590,6 +593,7 @@ krVPN4_change(struct ktable *kt, struct kroute_full *kf)
 			return (-1);
 	} else {
 		kr->mplslabel = mplslabel;
+		kr->flags |= F_MPLS;
 		kr->ifindex = kf->ifindex;
 		kr->nexthop.s_addr = kf->nexthop.v4.s_addr;
 		rtlabel_unref(kr->labelid);
@@ -632,6 +636,9 @@ krVPN6_change(struct ktable *kt, struct kroute_full *kf)
 	    (kf->prefix.labelstack[2] << 8);
 	mplslabel = htonl(mplslabel);
 
+	kf->flags |= F_MPLS;
+	kf->mplslabel = mplslabel;
+
 	/* for blackhole and reject routes nexthop needs to be ::1 */
 	if (kf->flags & (F_BLACKHOLE|F_REJECT))
 		memcpy(&kf->nexthop.v6, &lo6, sizeof(kf->nexthop.v6));
@@ -642,6 +649,7 @@ krVPN6_change(struct ktable *kt, struct kroute_full *kf)
 			return (-1);
 	} else {
 		kr6->mplslabel = mplslabel;
+		kr6->flags |= F_MPLS;
 		kr6->ifindex = kf->ifindex;
 		memcpy(&kr6->nexthop, &kf->nexthop.v6, sizeof(struct in6_addr));
 		kr6->nexthop_scope_id = kf->nexthop.scope_id;
@@ -1032,7 +1040,7 @@ kr_show_route(struct imsg *imsg)
 static void
 kr_send_dependon(struct kif *kif)
 {
-	struct session_dependon sdon = { {0} };
+	struct session_dependon sdon = { 0 };
 
 	strlcpy(sdon.ifname, kif->ifname, sizeof(sdon.ifname));
 	sdon.depend_state = kif->depend_state;
@@ -1084,7 +1092,7 @@ kr_net_redist_add(struct ktable *kt, struct network_config *net,
 	}
 
 	if (send_network(IMSG_NETWORK_ADD, net, attr) == -1)
-		log_warnx("%s: faild to send network update", __func__);
+		log_warnx("%s: failed to send network update", __func__);
 	return 1;
 }
 
@@ -1110,7 +1118,7 @@ kr_net_redist_del(struct ktable *kt, struct network_config *net, int dynamic)
 	free(r);
 
 	if (send_network(IMSG_NETWORK_REMOVE, net, NULL) == -1)
-		log_warnx("%s: faild to send network removal", __func__);
+		log_warnx("%s: failed to send network removal", __func__);
 }
 
 int
@@ -1878,9 +1886,11 @@ kroute_remove(struct ktable *kt, struct kroute_full *kf, int any)
 
 	switch (kf->prefix.aid) {
 	case AID_INET:
+	case AID_VPN_IPv4:
 		multipath = kroute4_remove(kt, kf, any);
 		break;
 	case AID_INET6:
+	case AID_VPN_IPv6:
 		multipath = kroute6_remove(kt, kf, any);
 		break;
 	default:
@@ -2089,7 +2099,7 @@ kif_validate(struct kif *kif)
 }
 
 /*
- * return 1 when the interface is up and the link state is up or unknwown
+ * return 1 when the interface is up and the link state is up or unknown
  * except when this is a carp interface, then return 1 only when link state
  * is up
  */
@@ -2425,7 +2435,7 @@ mask2prefixlen6(struct sockaddr_in6 *sa_in6)
 	u_int	 l = 0;
 
 	/*
-	 * sin6_len is the size of the sockaddr so substract the offset of
+	 * sin6_len is the size of the sockaddr so subtract the offset of
 	 * the possibly truncated sin6_addr struct.
 	 */
 	ap = (uint8_t *)&sa_in6->sin6_addr;

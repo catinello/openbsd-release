@@ -1,4 +1,4 @@
-/*	$OpenBSD: pmap.h,v 1.16 2022/09/12 19:33:34 miod Exp $	*/
+/*	$OpenBSD: pmap.h,v 1.19 2023/03/08 04:43:07 guenther Exp $	*/
 /*	$NetBSD: pmap.h,v 1.28 2006/04/10 23:12:11 uwe Exp $	*/
 
 /*-
@@ -45,6 +45,8 @@
 #ifdef _KERNEL
 #include <sys/queue.h>
 
+#define PMAP_CHECK_COPYIN	1
+
 #define	PMAP_STEAL_MEMORY
 #define	PMAP_GROWKERNEL
 
@@ -67,7 +69,6 @@ void pmap_bootstrap(void);
 #define	pmap_wired_count(pmap)		((pmap)->pm_stats.wired_count)
 #define	pmap_resident_count(pmap)	((pmap)->pm_stats.resident_count)
 
-/* ARGSUSED */
 static __inline void
 pmap_remove_all(struct pmap *pmap)
 {
@@ -75,12 +76,11 @@ pmap_remove_all(struct pmap *pmap)
 }
 
 /*
- * pmap_prefer() helps to avoid virtual cache aliases on SH4 CPUs
+ * Avoid virtual cache aliases on SH4 CPUs
  * which have the virtually-indexed cache.
  */
 #ifdef SH4
-#define	PMAP_PREFER(pa, va)		pmap_prefer((pa), (va))
-vaddr_t	pmap_prefer(vaddr_t, vaddr_t);
+#define	PMAP_PREFER
 vaddr_t	pmap_prefer_align(void);
 vaddr_t	pmap_prefer_offset(vaddr_t);
 

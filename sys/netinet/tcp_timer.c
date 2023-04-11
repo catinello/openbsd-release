@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_timer.c,v 1.70 2022/09/03 19:22:19 bluhm Exp $	*/
+/*	$OpenBSD: tcp_timer.c,v 1.72 2023/03/14 00:24:05 yasuoka Exp $	*/
 /*	$NetBSD: tcp_timer.c,v 1.14 1996/02/13 23:44:09 christos Exp $	*/
 
 /*
@@ -152,7 +152,6 @@ tcp_slowtimo(void)
 	mtx_enter(&tcp_timer_mtx);
 	tcp_maxidle = TCPTV_KEEPCNT * tcp_keepintvl;
 	tcp_iss += TCP_ISSINCR2/PR_SLOWHZ;		/* increment iss */
-	tcp_now++;					/* for timestamps */
 	mtx_leave(&tcp_timer_mtx);
 }
 
@@ -422,7 +421,7 @@ tcp_timer_persist(void *arg)
 	rto = TCP_REXMTVAL(tp);
 	if (rto < tp->t_rttmin)
 		rto = tp->t_rttmin;
-	now = READ_ONCE(tcp_now);
+	now = tcp_now();
 	if (tp->t_rxtshift == TCP_MAXRXTSHIFT &&
 	    ((now - tp->t_rcvtime) >= tcp_maxpersistidle ||
 	    (now - tp->t_rcvtime) >= rto * tcp_totbackoff)) {
@@ -467,7 +466,7 @@ tcp_timer_keep(void *arg)
 		uint32_t now;
 
 		maxidle = READ_ONCE(tcp_maxidle);
-		now = READ_ONCE(tcp_now);
+		now = tcp_now();
 		if ((maxidle > 0) &&
 		    ((now - tp->t_rcvtime) >= tcp_keepidle + maxidle))
 			goto dropit;
@@ -523,7 +522,7 @@ tcp_timer_2msl(void *arg)
 	tcp_timer_freesack(tp);
 
 	maxidle = READ_ONCE(tcp_maxidle);
-	now = READ_ONCE(tcp_now);
+	now = tcp_now();
 	if (tp->t_state != TCPS_TIME_WAIT &&
 	    ((maxidle == 0) || ((now - tp->t_rcvtime) <= maxidle)))
 		TCP_TIMER_ARM(tp, TCPT_2MSL, tcp_keepintvl);

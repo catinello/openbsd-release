@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmmvar.h,v 1.81 2022/09/01 22:01:40 dv Exp $	*/
+/*	$OpenBSD: vmmvar.h,v 1.89 2023/01/30 02:32:01 dv Exp $	*/
 /*
  * Copyright (c) 2014 Mike Larkin <mlarkin@openbsd.org>
  *
@@ -36,10 +36,6 @@
 
 #define VMM_PCI_MMIO_BAR_BASE	0xF0000000ULL
 #define VMM_PCI_MMIO_BAR_END	0xFFDFFFFFULL		/* 2 MiB below 4 GiB */
-#define VMM_PCI_MMIO_BAR_SIZE	0x00010000
-#define VMM_PCI_IO_BAR_BASE	0x1000
-#define VMM_PCI_IO_BAR_END	0xFFFF
-#define VMM_PCI_IO_BAR_SIZE	0x1000
 
 /* VMX: Basic Exit Reasons */
 #define VMX_EXIT_NMI				0
@@ -377,22 +373,23 @@ struct vcpu_segment_info {
 	uint64_t	vsi_base;
 };
 
+/* The GPRS are ordered to assist instruction decode. */
 #define VCPU_REGS_RAX		0
-#define VCPU_REGS_RBX		1
-#define VCPU_REGS_RCX		2
-#define VCPU_REGS_RDX		3
-#define VCPU_REGS_RSI		4
-#define VCPU_REGS_RDI		5
-#define VCPU_REGS_R8		6
-#define VCPU_REGS_R9		7
-#define VCPU_REGS_R10		8
-#define VCPU_REGS_R11		9
-#define VCPU_REGS_R12		10
-#define VCPU_REGS_R13		11
-#define VCPU_REGS_R14		12
-#define VCPU_REGS_R15		13
-#define VCPU_REGS_RSP		14
-#define VCPU_REGS_RBP		15
+#define VCPU_REGS_RCX		1
+#define VCPU_REGS_RDX		2
+#define VCPU_REGS_RBX		3
+#define VCPU_REGS_RSP		4
+#define VCPU_REGS_RBP		5
+#define VCPU_REGS_RSI		6
+#define VCPU_REGS_RDI		7
+#define VCPU_REGS_R8		8
+#define VCPU_REGS_R9		9
+#define VCPU_REGS_R10		10
+#define VCPU_REGS_R11		11
+#define VCPU_REGS_R12		12
+#define VCPU_REGS_R13		13
+#define VCPU_REGS_R14		14
+#define VCPU_REGS_R15		15
 #define VCPU_REGS_RIP		16
 #define VCPU_REGS_RFLAGS	17
 #define VCPU_REGS_NGPRS		(VCPU_REGS_RFLAGS + 1)
@@ -450,6 +447,10 @@ struct vm_mem_range {
 	paddr_t	vmr_gpa;
 	vaddr_t	vmr_va;
 	size_t	vmr_size;
+	int	vmr_type;
+#define VM_MEM_RAM		0	/* Presented as usable system memory. */
+#define VM_MEM_RESERVED		1	/* Reserved for BIOS, etc. */
+#define VM_MEM_MMIO		2	/* Special region for device mmio. */
 };
 
 /*
@@ -657,7 +658,6 @@ struct vm_mprotect_ept_params {
  *  MPX (SEFF0EBX_MPX)
  *  PCOMMIT (SEFF0EBX_PCOMMIT)
  *  PT (SEFF0EBX_PT)
- *  AVX512VBMI (SEFF0ECX_AVX512VBMI)
  */
 #define VMM_SEFF0EBX_MASK ~(SEFF0EBX_TSC_ADJUST | SEFF0EBX_SGX | \
     SEFF0EBX_HLE | SEFF0EBX_INVPCID | \
@@ -667,7 +667,9 @@ struct vm_mprotect_ept_params {
     SEFF0EBX_AVX512IFMA | SEFF0EBX_AVX512PF | \
     SEFF0EBX_AVX512ER | SEFF0EBX_AVX512CD | \
     SEFF0EBX_AVX512BW | SEFF0EBX_AVX512VL)
-#define VMM_SEFF0ECX_MASK ~(SEFF0ECX_AVX512VBMI)
+
+/* ECX mask contains the bits to include */
+#define VMM_SEFF0ECX_MASK (SEFF0ECX_UMIP)
 
 /* EDX mask contains the bits to include */
 #define VMM_SEFF0EDX_MASK (SEFF0EDX_MD_CLEAR)
@@ -932,8 +934,8 @@ struct vcpu {
 	uint8_t vc_virt_mode;			/* [I] */
 
 	struct rwlock vc_lock;
-	struct refcnt vc_refcnt;		/* [a] */
 
+	struct cpu_info *vc_curcpu;		/* [a] */
 	struct cpu_info *vc_last_pcpu;		/* [v] */
 	struct vm_exit vc_exit;			/* [v] */
 
@@ -954,6 +956,9 @@ struct vcpu {
 
 	/* Shadowed MSRs */
 	uint64_t vc_shadow_pat;			/* [v] */
+
+	/* Userland Protection Keys */
+	uint32_t vc_pkru;			/* [v] */
 
 	/* VMX only (all requiring [v]) */
 	uint64_t vc_vmx_basic;

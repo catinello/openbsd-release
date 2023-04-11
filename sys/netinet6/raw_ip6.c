@@ -1,4 +1,4 @@
-/*	$OpenBSD: raw_ip6.c,v 1.169 2022/09/13 09:05:02 mvs Exp $	*/
+/*	$OpenBSD: raw_ip6.c,v 1.172 2023/01/22 12:05:44 mvs Exp $	*/
 /*	$KAME: raw_ip6.c,v 1.69 2001/03/04 15:55:44 itojun Exp $	*/
 
 /*
@@ -115,7 +115,6 @@ const struct pr_usrreqs rip6_usrreqs = {
 	.pru_disconnect	= rip6_disconnect,
 	.pru_shutdown	= rip6_shutdown,
 	.pru_send	= rip6_send,
-	.pru_abort	= rip6_abort,
 	.pru_control	= in6_control,
 	.pru_sockaddr	= in6_sockaddr,
 	.pru_peeraddr	= in6_peeraddr,
@@ -184,7 +183,7 @@ rip6_input(struct mbuf **mp, int *offp, int proto, int af)
 	rw_enter_write(&rawin6pcbtable.inpt_notify);
 	mtx_enter(&rawin6pcbtable.inpt_mtx);
 	TAILQ_FOREACH(in6p, &rawin6pcbtable.inpt_queue, inp_queue) {
-		if (in6p->inp_socket->so_state & SS_CANTRCVMORE)
+		if (in6p->inp_socket->so_rcv.sb_state & SS_CANTRCVMORE)
 			continue;
 		if (rtable_l2(in6p->inp_rtableid) !=
 		    rtable_l2(m->m_pkthdr.ph_rtableid))
@@ -585,7 +584,7 @@ extern	u_long rip6_sendspace;
 extern	u_long rip6_recvspace;
 
 int
-rip6_attach(struct socket *so, int proto)
+rip6_attach(struct socket *so, int proto, int wait)
 {
 	struct inpcb *in6p;
 	int error;
@@ -600,15 +599,15 @@ rip6_attach(struct socket *so, int proto)
 	if ((error = soreserve(so, rip6_sendspace, rip6_recvspace)))
 		return error;
 	NET_ASSERT_LOCKED();
-	if ((error = in_pcballoc(so, &rawin6pcbtable)))
+	if ((error = in_pcballoc(so, &rawin6pcbtable, wait)))
 		return error;
 
 	in6p = sotoinpcb(so);
 	in6p->inp_ipv6.ip6_nxt = proto;
 	in6p->inp_cksum6 = -1;
 
-	in6p->inp_icmp6filt = malloc(sizeof(struct icmp6_filter),
-	    M_PCB, M_NOWAIT);
+	in6p->inp_icmp6filt = malloc(sizeof(struct icmp6_filter), M_PCB,
+	    wait == M_WAIT ? M_WAITOK : M_NOWAIT);
 	if (in6p->inp_icmp6filt == NULL) {
 		in_pcbdetach(in6p);
 		return ENOMEM;
@@ -777,26 +776,6 @@ out:
 	m_freem(m);
 
 	return (error);
-}
-
-int
-rip6_abort(struct socket *so)
-{
-	struct inpcb *in6p = sotoinpcb(so);
-
-	soassertlocked(so);
-
-	soisdisconnected(so);
-#ifdef MROUTING
-	if (so == ip6_mrouter[in6p->inp_rtableid])
-		ip6_mrouter_done(so);
-#endif
-	free(in6p->inp_icmp6filt, M_PCB, sizeof(struct icmp6_filter));
-	in6p->inp_icmp6filt = NULL;
-
-	in_pcbdetach(in6p);
-
-	return (0);
 }
 
 int

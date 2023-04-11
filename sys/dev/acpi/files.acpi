@@ -1,4 +1,4 @@
-#	$OpenBSD: files.acpi,v 1.65 2022/08/31 16:10:59 kettenis Exp $
+#	$OpenBSD: files.acpi,v 1.68 2023/02/04 23:11:59 mglocker Exp $
 #
 # Config file and device description for machine-independent ACPI code.
 # Included by ports that need it.
@@ -264,12 +264,14 @@ file	dev/acpi/acpihid.c		acpihid
 attach	imxiic at acpi with imxiic_acpi
 file	dev/acpi/imxiic_acpi.c		imxiic_acpi
 
-# Qualcom GPIO controller
-device	qcgpio
-attach  qcgpio at acpi
+# Qualcomm GPIO controller
+attach	qcgpio at acpi with qcgpio_acpi
 file	dev/acpi/qcgpio.c		qcgpio
 
 # Qualcomm I2C controller
-device	qciic: i2cbus
-attach	qciic at acpi
+attach	qciic at acpi with qciic_acpi
 file	dev/acpi/qciic.c		qciic
+
+# UFS HC
+attach	ufshci at acpi with ufshci_acpi
+file	dev/acpi/ufshci_acpi.c		ufshci_acpi

@@ -1,4 +1,4 @@
-/*	$OpenBSD: devopen.c,v 1.2 2013/10/29 21:49:07 miod Exp $	*/
+/*	$OpenBSD: devopen.c,v 1.4 2023/01/10 17:10:57 miod Exp $	*/
 /*	$NetBSD: devopen.c,v 1.3 2013/01/16 15:46:20 tsutsui Exp $	*/
 
 /*
@@ -71,6 +71,7 @@
  *	@(#)conf.c	8.1 (Berkeley) 6/10/93
  */
 
+#include <sys/reboot.h>
 #include <lib/libkern/libkern.h>
 #include <luna88k/stand/boot/samachdep.h>
 #include <machine/disklabel.h>
@@ -91,14 +92,14 @@ devopen(struct open_file *f, const char *fname, char **file)
 		return ENXIO;
 
 #ifdef DEBUG
-	printf("%s: %s(%d,%d)%s\n", __func__,
+	printf("%s: %s(%d,%d):%s\n", __func__,
 	    devsw[dev].dv_name, unit, part, *file);
 #endif
 	dp = &devsw[dev];
 	error = (*dp->dv_open)(f, unit, part);
 	if (error != 0) {
 #ifdef DEBUG
-		printf("%s: open %s(%d,%d)%s failed (%s)\n", __func__,
+		printf("%s: open %s(%d,%d):%s failed (%s)\n", __func__,
 		    devsw[dev].dv_name, unit, part, *file, strerror(error));
 #endif
 		return error;
@@ -117,6 +118,9 @@ devopen(struct open_file *f, const char *fname, char **file)
 #endif
 
 	f->f_dev = dp;
+
+	/* Save boot device information to pass to the kernel */
+	bootdev = MAKEBOOTDEV(dev, 0, unit / 10, 6 - unit % 10, part);
 
 	return 0;
 }
@@ -183,13 +187,15 @@ make_device(const char *str, int *devp, int *unitp, int *partp, char **fname)
 	*unitp = unit;
 	*partp = part;
 	cp++;
+	if (*cp == ':')
+		cp++;
 	if (*cp == '\0')
 		*fname = "bsd";
 	else
 		*fname = (char *)cp;	/* XXX */
 #ifdef DEBUG
-	printf("%s: major = %d, unit = %d, part = %d, fname = %s\n",
-	    __func__, major, unit, part, *fname);
+	printf("%s(%s): major = %d, unit = %d, part = %d, fname = %s\n",
+	    __func__, str, major, unit, part, *fname);
 #endif
 
 	return 0;

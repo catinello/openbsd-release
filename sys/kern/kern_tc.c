@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_tc.c,v 1.78 2022/09/18 20:47:09 cheloha Exp $ */
+/*	$OpenBSD: kern_tc.c,v 1.82 2023/02/04 19:19:36 cheloha Exp $ */
 
 /*
  * Copyright (c) 2000 Poul-Henning Kamp <phk@FreeBSD.org>
@@ -56,7 +56,6 @@ dummy_get_timecount(struct timecounter *tc)
 
 static struct timecounter dummy_timecounter = {
 	.tc_get_timecount = dummy_get_timecount,
-	.tc_poll_pps = NULL,
 	.tc_counter_mask = ~0u,
 	.tc_frequency = 1000000,
 	.tc_name = "dummy",
@@ -165,7 +164,7 @@ void
 microboottime(struct timeval *tvp)
 {
 	struct bintime bt;
-	
+
 	binboottime(&bt);
 	BINTIME_TO_TIMEVAL(&bt, tvp);
 }
@@ -174,7 +173,7 @@ void
 nanoboottime(struct timespec *tsp)
 {
 	struct bintime bt;
-	
+
 	binboottime(&bt);
 	BINTIME_TO_TIMESPEC(&bt, tsp);
 }
@@ -292,6 +291,30 @@ nanoruntime(struct timespec *ts)
 
 	binruntime(&bt);
 	BINTIME_TO_TIMESPEC(&bt, ts);
+}
+
+void
+getbinruntime(struct bintime *bt)
+{
+	struct timehands *th;
+	u_int gen;
+
+	do {
+		th = timehands;
+		gen = th->th_generation;
+		membar_consumer();
+		bintimesub(&th->th_offset, &th->th_naptime, bt);
+		membar_consumer();
+	} while (gen == 0 || gen != th->th_generation);
+}
+
+uint64_t
+getnsecruntime(void)
+{
+	struct bintime bt;
+
+	getbinruntime(&bt);
+	return BINTIME_TO_NSEC(&bt);
 }
 
 void
@@ -552,7 +575,6 @@ void
 tc_setclock(const struct timespec *ts)
 {
 	struct bintime new_naptime, old_naptime, uptime, utc;
-	struct timespec tmp;
 	static int first = 1;
 #ifndef SMALL_KERNEL
 	struct bintime elapsed;
@@ -582,12 +604,6 @@ tc_setclock(const struct timespec *ts)
 	new_naptime = timehands->th_naptime;
 
 	mtx_leave(&windup_mtx);
-
-	if (bintimecmp(&old_naptime, &new_naptime, ==)) {
-		BINTIME_TO_TIMESPEC(&uptime, &tmp);
-		printf("%s: cannot rewind uptime to %lld.%09ld\n",
-		    __func__, (long long)tmp.tv_sec, tmp.tv_nsec);
-	}
 
 #ifndef SMALL_KERNEL
 	/* convert the bintime to ticks */
@@ -690,19 +706,6 @@ tc_windup(struct bintime *new_boottime, struct bintime *new_offset,
 		naptime = th->th_naptime.sec;
 		th->th_offset = *new_offset;
 	}
-
-#ifdef notyet
-	/*
-	 * Hardware latching timecounters may not generate interrupts on
-	 * PPS events, so instead we poll them.  There is a finite risk that
-	 * the hardware might capture a count which is later than the one we
-	 * got above, and therefore possibly in the next NTP second which might
-	 * have a different rate than the current NTP second.  It doesn't
-	 * matter in practice.
-	 */
-	if (tho->th_counter->tc_poll_pps)
-		tho->th_counter->tc_poll_pps(tho->th_counter);
-#endif
 
 	/*
 	 * If changing the boot time or clock adjustment, do so before

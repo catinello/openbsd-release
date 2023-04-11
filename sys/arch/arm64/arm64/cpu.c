@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.70 2022/09/15 01:57:52 jsg Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.86 2023/02/20 00:01:16 patrick Exp $	*/
 
 /*
  * Copyright (c) 2016 Dale Rahn <drahn@dalerahn.com>
@@ -103,6 +103,10 @@
 #define CPU_PART_FIRESTORM_MAX	0x029
 #define CPU_PART_BLIZZARD	0x032
 #define CPU_PART_AVALANCHE	0x033
+#define CPU_PART_BLIZZARD_PRO	0x034
+#define CPU_PART_AVALANCHE_PRO	0x035
+#define CPU_PART_BLIZZARD_MAX	0x038
+#define CPU_PART_AVALANCHE_MAX	0x039
 
 #define CPU_IMPL(midr)  (((midr) >> 24) & 0xff)
 #define CPU_PART(midr)  (((midr) >> 4) & 0xfff)
@@ -178,6 +182,10 @@ struct cpu_cores cpu_cores_apple[] = {
 	{ CPU_PART_FIRESTORM_MAX, "Firestorm Max" },
 	{ CPU_PART_BLIZZARD, "Blizzard" },
 	{ CPU_PART_AVALANCHE, "Avalanche" },
+	{ CPU_PART_BLIZZARD_PRO, "Blizzard Pro" },
+	{ CPU_PART_AVALANCHE_PRO, "Avalanche Pro" },
+	{ CPU_PART_BLIZZARD_MAX, "Blizzard Max" },
+	{ CPU_PART_AVALANCHE_MAX, "Avalanche Max" },
 	{ 0, NULL },
 };
 
@@ -200,10 +208,23 @@ int cpu_node;
 
 uint64_t cpu_id_aa64isar0;
 uint64_t cpu_id_aa64isar1;
+uint64_t cpu_id_aa64isar2;
+uint64_t cpu_id_aa64pfr0;
+uint64_t cpu_id_aa64pfr1;
 
 #ifdef CRYPTO
 int arm64_has_aes;
 #endif
+
+extern char trampoline_vectors_none[];
+extern char trampoline_vectors_loop_8[];
+extern char trampoline_vectors_loop_24[];
+extern char trampoline_vectors_loop_32[];
+#if NPSCI > 0
+extern char trampoline_vectors_psci_hvc[];
+extern char trampoline_vectors_psci_smc[];
+#endif
+extern char trampoline_vectors_clrbhb[];
 
 struct cpu_info *cpu_info_list = &cpu_info_primary;
 
@@ -219,6 +240,7 @@ struct cfdriver cpu_cd = {
 };
 
 void	cpu_opp_init(struct cpu_info *, uint32_t);
+void	cpu_psci_init(struct cpu_info *);
 
 void	cpu_flush_bp_noop(void);
 void	cpu_flush_bp_psci(void);
@@ -361,12 +383,84 @@ cpu_identify(struct cpu_info *ci)
 
 	/*
 	 * The architecture has been updated to explicitly tell us if
-	 * we're not vulnerable.
+	 * we're not vulnerable to regular Spectre.
 	 */
 
 	id = READ_SPECIALREG(id_aa64pfr0_el1);
 	if (ID_AA64PFR0_CSV2(id) >= ID_AA64PFR0_CSV2_IMPL)
 		ci->ci_flush_bp = cpu_flush_bp_noop;
+
+	/*
+	 * But we might still be vulnerable to Spectre-BHB.  If we know the
+	 * CPU, we can add a branchy loop that cleans the BHB.
+	 */
+
+	if (impl == CPU_IMPL_ARM) {
+		switch (part) {
+		case CPU_PART_CORTEX_A72:
+			ci->ci_trampoline_vectors =
+			    (vaddr_t)trampoline_vectors_loop_8;
+			break;
+		case CPU_PART_CORTEX_A76:
+		case CPU_PART_CORTEX_A76AE:
+		case CPU_PART_CORTEX_A77:
+		case CPU_PART_NEOVERSE_N1:
+			ci->ci_trampoline_vectors =
+			    (vaddr_t)trampoline_vectors_loop_24;
+			break;
+		case CPU_PART_CORTEX_A78:
+		case CPU_PART_CORTEX_A78AE:
+		case CPU_PART_CORTEX_A78C:
+		case CPU_PART_CORTEX_X1:
+		case CPU_PART_CORTEX_X2:
+		case CPU_PART_CORTEX_A710:
+		case CPU_PART_NEOVERSE_N2:
+		case CPU_PART_NEOVERSE_V1:
+			ci->ci_trampoline_vectors =
+			    (vaddr_t)trampoline_vectors_loop_32;
+			break;
+		}
+	}
+
+	/*
+	 * If we're not using a loop, try and call into PSCI.  This also
+	 * covers the original Spectre in addition to Spectre-BHB.
+	 */
+#if NPSCI > 0
+	if (ci->ci_trampoline_vectors == (vaddr_t)trampoline_vectors_none &&
+	    psci_flush_bp_has_bhb()) {
+		ci->ci_flush_bp = cpu_flush_bp_noop;
+		if (psci_method() == PSCI_METHOD_HVC)
+			ci->ci_trampoline_vectors =
+			    (vaddr_t)trampoline_vectors_psci_hvc;
+		if (psci_method() == PSCI_METHOD_SMC)
+			ci->ci_trampoline_vectors =
+			    (vaddr_t)trampoline_vectors_psci_smc;
+	}
+#endif
+
+	/* Prefer CLRBHB to mitigate Spectre-BHB. */
+
+	id = READ_SPECIALREG(id_aa64isar2_el1);
+	if (ID_AA64ISAR2_CLRBHB(id) >= ID_AA64ISAR2_CLRBHB_IMPL)
+		ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_clrbhb;
+
+	/* ECBHB tells us Spectre-BHB is mitigated. */
+
+	id = READ_SPECIALREG(id_aa64mmfr1_el1);
+	if (ID_AA64MMFR1_ECBHB(id) >= ID_AA64MMFR1_ECBHB_IMPL)
+		ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_none;
+
+	/*
+	 * The architecture has been updated to explicitly tell us if
+	 * we're not vulnerable.
+	 */
+
+	id = READ_SPECIALREG(id_aa64pfr0_el1);
+	if (ID_AA64PFR0_CSV2(id) >= ID_AA64PFR0_CSV2_HCXT) {
+		ci->ci_flush_bp = cpu_flush_bp_noop;
+		ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_none;
+	}
 
 	/*
 	 * Print CPU features encoded in the ID registers.
@@ -378,6 +472,18 @@ cpu_identify(struct cpu_info *ci)
 	}
 	if (READ_SPECIALREG(id_aa64isar1_el1) != cpu_id_aa64isar1) {
 		printf("\n%s: mismatched ID_AA64ISAR1_EL1",
+		    ci->ci_dev->dv_xname);
+	}
+	if (READ_SPECIALREG(id_aa64isar2_el1) != cpu_id_aa64isar2) {
+		printf("\n%s: mismatched ID_AA64ISAR2_EL1",
+		    ci->ci_dev->dv_xname);
+	}
+	if (READ_SPECIALREG(id_aa64pfr0_el1) != cpu_id_aa64pfr0) {
+		printf("\n%s: mismatched ID_AA64PFR0_EL1",
+		    ci->ci_dev->dv_xname);
+	}
+	if (READ_SPECIALREG(id_aa64pfr1_el1) != cpu_id_aa64pfr1) {
+		printf("\n%s: mismatched ID_AA64PFR1_EL1",
 		    ci->ci_dev->dv_xname);
 	}
 
@@ -537,6 +643,16 @@ cpu_identify(struct cpu_info *ci)
 	}
 
 	/*
+	 * ID_AA64ISAR2
+	 */
+	id = READ_SPECIALREG(id_aa64isar2_el1);
+
+	if (ID_AA64ISAR2_CLRBHB(id) >= ID_AA64ISAR2_CLRBHB_IMPL) {
+		printf("%sCLRBHB", sep);
+		sep = ",";
+	}
+
+	/*
 	 * ID_AA64MMFR0
 	 *
 	 * We only print ASIDBits for now.
@@ -567,6 +683,8 @@ cpu_identify(struct cpu_info *ci)
 	}
 	if (ID_AA64MMFR1_PAN(id) >= ID_AA64MMFR1_PAN_ATS1E1)
 		printf("+ATS1E1");
+	if (ID_AA64MMFR1_PAN(id) >= ID_AA64MMFR1_PAN_EPAN)
+		printf("+EPAN");
 
 	if (ID_AA64MMFR1_LO(id) >= ID_AA64MMFR1_LO_IMPL) {
 		printf("%sLO", sep);
@@ -585,6 +703,11 @@ cpu_identify(struct cpu_info *ci)
 	if (ID_AA64MMFR1_HAFDBS(id) >= ID_AA64MMFR1_HAFDBS_AF_DBS)
 		printf("DBS");
 
+	if (ID_AA64MMFR1_ECBHB(id) >= ID_AA64MMFR1_ECBHB_IMPL) {
+		printf("%sECBHB", sep);
+		sep = ",";
+	}
+
 	/*
 	 * ID_AA64PFR0
 	 */
@@ -600,7 +723,9 @@ cpu_identify(struct cpu_info *ci)
 		sep = ",";
 	}
 	if (ID_AA64PFR0_CSV2(id) >= ID_AA64PFR0_CSV2_SCXT)
-		printf("+SCTX");
+		printf("+SCXT");
+	if (ID_AA64PFR0_CSV2(id) >= ID_AA64PFR0_CSV2_HCXT)
+		printf("+HCXT");
 
 	if (ID_AA64PFR0_DIT(id) >= ID_AA64PFR0_DIT_IMPL) {
 		printf("%sDIT", sep);
@@ -620,6 +745,8 @@ cpu_identify(struct cpu_info *ci)
 	printf("\nID_AA64ISAR0_EL1: 0x%016llx", id);
 	id = READ_SPECIALREG(id_aa64isar1_el1);
 	printf("\nID_AA64ISAR1_EL1: 0x%016llx", id);
+	id = READ_SPECIALREG(id_aa64isar2_el1);
+	printf("\nID_AA64ISAR2_EL1: 0x%016llx", id);
 	id = READ_SPECIALREG(id_aa64mmfr0_el1);
 	printf("\nID_AA64MMFR0_EL1: 0x%016llx", id);
 	id = READ_SPECIALREG(id_aa64mmfr1_el1);
@@ -693,6 +820,7 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 
 	kstack = km_alloc(USPACE, &kv_any, &kp_zero, &kd_waitok);
 	ci->ci_el1_stkend = (vaddr_t)kstack + USPACE - 16;
+	ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_none;
 
 #ifdef MULTIPROCESSOR
 	if (ci->ci_flags & CPUF_AP) {
@@ -732,6 +860,9 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 #endif
 		cpu_id_aa64isar0 = READ_SPECIALREG(id_aa64isar0_el1);
 		cpu_id_aa64isar1 = READ_SPECIALREG(id_aa64isar1_el1);
+		cpu_id_aa64isar2 = READ_SPECIALREG(id_aa64isar2_el1);
+		cpu_id_aa64pfr0 = READ_SPECIALREG(id_aa64pfr0_el1);
+		cpu_id_aa64pfr1 = READ_SPECIALREG(id_aa64pfr1_el1);
 
 		cpu_identify(ci);
 
@@ -749,6 +880,8 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 	if (opp)
 		cpu_opp_init(ci, opp);
 
+	cpu_psci_init(ci);
+
 	printf("\n");
 }
 
@@ -756,6 +889,7 @@ void
 cpu_init(void)
 {
 	uint64_t id_aa64mmfr1, sctlr;
+	uint64_t id_aa64pfr0;
 	uint64_t tcr;
 
 	WRITE_SPECIALREG(ttbr0_el1, pmap_kernel()->pm_pt0pa);
@@ -774,6 +908,11 @@ cpu_init(void)
 		sctlr &= ~SCTLR_SPAN;
 		WRITE_SPECIALREG(sctlr_el1, sctlr);
 	}
+
+	/* Enable DIT. */
+	id_aa64pfr0 = READ_SPECIALREG(id_aa64pfr0_el1);
+	if (ID_AA64PFR0_DIT(id_aa64pfr0) >= ID_AA64PFR0_DIT_IMPL)
+		__asm volatile (".arch armv8.4-a; msr dit, #1");
 
 	/* Initialize debug registers. */
 	WRITE_SPECIALREG(mdscr_el1, DBG_MDSCR_TDCC);
@@ -804,6 +943,7 @@ cpu_clockspeed(int *freq)
 
 void cpu_boot_secondary(struct cpu_info *ci);
 void cpu_hatch_secondary(void);
+void cpu_hatch_secondary_spin(void);
 
 void
 cpu_boot_secondary_processors(void)
@@ -825,6 +965,11 @@ cpu_boot_secondary_processors(void)
 void
 cpu_start_spin_table(struct cpu_info *ci, uint64_t start, uint64_t data)
 {
+	extern paddr_t cpu_hatch_ci;
+
+	pmap_extract(pmap_kernel(), (vaddr_t)ci, &cpu_hatch_ci);
+	cpu_dcache_wb_range((vaddr_t)&cpu_hatch_ci, sizeof(paddr_t));
+
 	/* this reuses the zero page for the core */
 	vaddr_t start_pg = zero_page + (PAGE_SIZE * ci->ci_cpuid);
 	paddr_t pa = trunc_page(data);
@@ -842,40 +987,34 @@ cpu_start_spin_table(struct cpu_info *ci, uint64_t start, uint64_t data)
 int
 cpu_start_secondary(struct cpu_info *ci, int method, uint64_t data)
 {
-	extern uint64_t pmap_avail_kvo;
-	extern paddr_t cpu_hatch_ci;
-	paddr_t startaddr;
+	vaddr_t start_va;
+	paddr_t ci_pa, start_pa;
 	uint64_t ttbr1;
-	int rc = 0;
-
-	pmap_extract(pmap_kernel(), (vaddr_t)ci, &cpu_hatch_ci);
+	int32_t status;
 
 	__asm("mrs %x0, ttbr1_el1": "=r"(ttbr1));
 	ci->ci_ttbr1 = ttbr1;
-
-	cpu_dcache_wb_range((vaddr_t)&cpu_hatch_ci, sizeof(paddr_t));
 	cpu_dcache_wb_range((vaddr_t)ci, sizeof(*ci));
 
-	startaddr = (vaddr_t)cpu_hatch_secondary + pmap_avail_kvo;
-
 	switch (method) {
-	case 1:
-		/* psci  */
 #if NPSCI > 0
-		rc = (psci_cpu_on(ci->ci_mpidr, startaddr, 0) == PSCI_SUCCESS);
+	case 1:
+		/* psci */
+		start_va = (vaddr_t)cpu_hatch_secondary;
+		pmap_extract(pmap_kernel(), start_va, &start_pa);
+		pmap_extract(pmap_kernel(), (vaddr_t)ci, &ci_pa);
+		status = psci_cpu_on(ci->ci_mpidr, start_pa, ci_pa);
+		return (status == PSCI_SUCCESS);
 #endif
-		break;
 	case 2:
 		/* spin-table */
-		cpu_start_spin_table(ci, startaddr, data);
-		rc = 1;
-		break;
-	default:
-		/* no method to spin up CPU */
-		ci->ci_flags = 0;	/* mark cpu as not AP */
+		start_va = (vaddr_t)cpu_hatch_secondary_spin;
+		pmap_extract(pmap_kernel(), start_va, &start_pa);
+		cpu_start_spin_table(ci, start_pa, data);
+		return 1;
 	}
 
-	return rc;
+	return 0;
 }
 
 void
@@ -884,6 +1023,12 @@ cpu_boot_secondary(struct cpu_info *ci)
 	atomic_setbits_int(&ci->ci_flags, CPUF_GO);
 	__asm volatile("dsb sy; sev" ::: "memory");
 
+	/*
+	 * Send an interrupt as well to make sure the CPU wakes up
+	 * regardless of whether it is in a WFE or a WFI loop.
+	 */
+	arm_send_ipi(ci, ARM_IPI_NOP);
+
 	while ((ci->ci_flags & CPUF_RUNNING) == 0)
 		__asm volatile("wfe");
 }
@@ -891,6 +1036,10 @@ cpu_boot_secondary(struct cpu_info *ci)
 void
 cpu_init_secondary(struct cpu_info *ci)
 {
+	struct proc *p;
+	struct pcb *pcb;
+	struct trapframe *tf;
+	struct switchframe *sf;
 	int s;
 
 	ci->ci_flags |= CPUF_PRESENT;
@@ -909,6 +1058,43 @@ cpu_init_secondary(struct cpu_info *ci)
 		__asm volatile("wfe");
 
 	cpu_init();
+
+	/*
+	 * Start from a clean slate regardless of whether this is the
+	 * initial power up or a wakeup of a suspended CPU.
+	 */
+
+	ci->ci_curproc = NULL;
+	ci->ci_curpcb = NULL;
+	ci->ci_curpm = NULL;
+	ci->ci_cpl = IPL_NONE;
+	ci->ci_ipending = 0;
+	ci->ci_idepth = 0;
+
+#ifdef DIAGNOSTIC
+	ci->ci_mutex_level = 0;
+#endif
+
+	/*
+	 * Re-create the switchframe for this CPUs idle process.
+	 */
+
+	p = ci->ci_schedstate.spc_idleproc;
+	pcb = &p->p_addr->u_pcb;
+
+	tf = (struct trapframe *)((u_long)p->p_addr
+	    + USPACE
+	    - sizeof(struct trapframe)
+	    - 0x10);
+
+	tf = (struct trapframe *)STACKALIGN(tf);
+	pcb->pcb_tf = tf;
+
+	sf = (struct switchframe *)tf - 1;
+	sf->sf_x19 = (uint64_t)sched_idle;
+	sf->sf_x20 = (uint64_t)ci;
+	sf->sf_lr = (uint64_t)proc_trampoline;
+	pcb->pcb_sp = (uint64_t)sf;
 
 	s = splhigh();
 	arm_intr_cpu_enable();
@@ -929,18 +1115,64 @@ void
 cpu_halt(void)
 {
 	struct cpu_info *ci = curcpu();
+	vaddr_t start_va;
+	paddr_t ci_pa, start_pa;
+	int count = 0;
+	u_long psw;
+	int32_t status;
 
 	KERNEL_ASSERT_UNLOCKED();
 	SCHED_ASSERT_UNLOCKED();
 
-	intr_disable();
-	ci->ci_flags &= ~CPUF_RUNNING;
+	start_va = (vaddr_t)cpu_hatch_secondary;
+	pmap_extract(pmap_kernel(), start_va, &start_pa);
+	pmap_extract(pmap_kernel(), (vaddr_t)ci, &ci_pa);
+
+	psw = intr_disable();
+
+	atomic_clearbits_int(&ci->ci_flags,
+	    CPUF_RUNNING | CPUF_PRESENT | CPUF_GO);
+
 #if NPSCI > 0
-	psci_cpu_off();
+	if (psci_can_suspend())
+		psci_cpu_off();
 #endif
-	for (;;)
-		__asm volatile("wfi");
-	/* NOTREACHED */
+
+	/*
+	 * If we failed to turn ourselves off using PSCI, declare that
+	 * we're still present and spin in a low power state until
+	 * we're told to wake up again by the primary CPU.
+	 */
+
+	atomic_setbits_int(&ci->ci_flags, CPUF_PRESENT);
+
+	/* Mask clock interrupts. */
+	WRITE_SPECIALREG(cntv_ctl_el0,
+	    READ_SPECIALREG(cntv_ctl_el0) | CNTV_CTL_IMASK);
+
+	while ((ci->ci_flags & CPUF_GO) == 0) {
+#if NPSCI > 0
+		if (ci->ci_psci_suspend_param) {
+			status = psci_cpu_suspend(ci->ci_psci_suspend_param,
+			    start_pa, ci_pa);
+			if (status != PSCI_SUCCESS)
+				ci->ci_psci_suspend_param = 0;
+		} else
+#endif
+			__asm volatile("wfi");
+		count++;
+	}
+
+	atomic_setbits_int(&ci->ci_flags, CPUF_RUNNING);
+	__asm volatile("dsb sy; sev" ::: "memory");
+
+	intr_restore(psw);
+
+	/* Unmask clock interrupts. */
+	WRITE_SPECIALREG(cntv_ctl_el0,
+	    READ_SPECIALREG(cntv_ctl_el0) & ~CNTV_CTL_IMASK);
+
+	printf("%s: %d wakeup events\n", ci->ci_dev->dv_xname, count);
 }
 
 void
@@ -979,41 +1211,86 @@ cpu_init_primary(void)
 
 	cpu_startclock();
 
-	cpu_suspended = 1;
 	longjmp(&cpu_suspend_jmpbuf);
 }
 
 int
 cpu_suspend_primary(void)
 {
-	extern uint64_t pmap_avail_kvo;
 	struct cpu_info *ci = curcpu();
-	paddr_t startaddr, data;
+	vaddr_t start_va;
+	paddr_t ci_pa, start_pa;
 	uint64_t ttbr1;
-
-	cpu_suspended = 0;
-	setjmp(&cpu_suspend_jmpbuf);
-	if (cpu_suspended) {
-		/* XXX wait for debug output from SCP on Allwinner A64 */
-		delay(200000);
-		return 0;
-	}
-
-	pmap_extract(pmap_kernel(), (vaddr_t)ci, &data);
+	int32_t status;
+	int count = 0;
 
 	__asm("mrs %x0, ttbr1_el1": "=r"(ttbr1));
 	ci->ci_ttbr1 = ttbr1;
-
-	cpu_dcache_wb_range((vaddr_t)&data, sizeof(paddr_t));
 	cpu_dcache_wb_range((vaddr_t)ci, sizeof(*ci));
 
-	startaddr = (vaddr_t)cpu_hatch_primary + pmap_avail_kvo;
+	start_va = (vaddr_t)cpu_hatch_primary;
+	pmap_extract(pmap_kernel(), start_va, &start_pa);
+	pmap_extract(pmap_kernel(), (vaddr_t)ci, &ci_pa);
 
 #if NPSCI > 0
-	psci_system_suspend(startaddr, data);
+	if (psci_can_suspend()) {
+		if (setjmp(&cpu_suspend_jmpbuf)) {
+			/* XXX wait for debug output on Allwinner A64 */
+			delay(200000);
+			return 0;
+		}
+
+		psci_system_suspend(start_pa, ci_pa);
+
+		return EOPNOTSUPP;
+	}
 #endif
 
-	return EOPNOTSUPP;
+	if (setjmp(&cpu_suspend_jmpbuf))
+		goto resume;
+
+	/*
+	 * If PSCI doesn't support SYSTEM_SUSPEND, spin in a low power
+	 * state waiting for an interrupt that wakes us up again.
+	 */
+
+	/* Mask clock interrupts. */
+	WRITE_SPECIALREG(cntv_ctl_el0,
+	    READ_SPECIALREG(cntv_ctl_el0) | CNTV_CTL_IMASK);
+
+	/*
+	 * All non-wakeup interrupts should be masked at this point;
+	 * re-enable interrupts such that wakeup interrupts actually
+	 * wake us up.  Set a flag such that drivers can tell we're
+	 * suspended and change their behaviour accordingly.  They can
+	 * wake us up by clearing the flag.
+	 */
+	cpu_suspended = 1;
+	intr_enable_wakeup();
+
+	while (cpu_suspended) {
+#if NPSCI > 0
+		if (ci->ci_psci_suspend_param) {
+			status = psci_cpu_suspend(ci->ci_psci_suspend_param,
+			    start_pa, ci_pa);
+			if (status != PSCI_SUCCESS)
+				ci->ci_psci_suspend_param = 0;
+		} else
+#endif
+			__asm volatile("wfi");
+		count++;
+	}
+
+resume:
+	intr_disable_wakeup();
+
+	/* Unmask clock interrupts. */
+	WRITE_SPECIALREG(cntv_ctl_el0,
+	    READ_SPECIALREG(cntv_ctl_el0) & ~CNTV_CTL_IMASK);
+
+	printf("%s: %d wakeup events\n", ci->ci_dev->dv_xname, count);
+
+	return 0;
 }
 
 #ifdef MULTIPROCESSOR
@@ -1021,41 +1298,10 @@ cpu_suspend_primary(void)
 void
 cpu_resume_secondary(struct cpu_info *ci)
 {
-	struct proc *p;
-	struct pcb *pcb;
-	struct trapframe *tf;
-	struct switchframe *sf;
 	int timeout = 10000;
 
-	ci->ci_curproc = NULL;
-	ci->ci_curpcb = NULL;
-	ci->ci_curpm = NULL;
-	ci->ci_cpl = IPL_NONE;
-	ci->ci_ipending = 0;
-	ci->ci_idepth = 0;
-	ci->ci_flags &= ~CPUF_PRESENT;
-
-#ifdef DIAGNOSTIC
-	ci->ci_mutex_level = 0;
-#endif
-	ci->ci_ttbr1 = 0;
-
-	p = ci->ci_schedstate.spc_idleproc;
-	pcb = &p->p_addr->u_pcb;
-
-	tf = (struct trapframe *)((u_long)p->p_addr
-	    + USPACE
-	    - sizeof(struct trapframe)
-	    - 0x10);
-
-	tf = (struct trapframe *)STACKALIGN(tf);
-	pcb->pcb_tf = tf;
-
-	sf = (struct switchframe *)tf - 1;
-	sf->sf_x19 = (uint64_t)sched_idle;
-	sf->sf_x20 = (uint64_t)ci;
-	sf->sf_lr = (uint64_t)proc_trampoline;
-	pcb->pcb_sp = (uint64_t)sf;
+	if (ci->ci_flags & CPUF_PRESENT)
+		return;
 
 	cpu_start_secondary(ci, 1, 0);
 	while ((ci->ci_flags & CPUF_PRESENT) == 0 && --timeout)
@@ -1386,4 +1632,112 @@ cpu_opp_set_cooling_level(void *cookie, uint32_t *cells, uint32_t level)
 		ci->ci_opp_max = opp_max;
 		task_add(systq, &cpu_opp_task);
 	}
+}
+
+
+void
+cpu_psci_init(struct cpu_info *ci)
+{
+	uint32_t *domains;
+	uint32_t *domain;
+	uint32_t *states;
+	uint32_t ncells;
+	uint32_t cluster;
+	int idx, len, node;
+
+	/*
+	 * Hunt for the deppest idle state for this CPU.  This is
+	 * fairly complicated as it requires traversing quite a few
+	 * nodes in the device tree.  The first step is to look up the
+	 * "psci" power domain for this CPU.
+	 */
+
+	idx = OF_getindex(ci->ci_node, "psci", "power-domain-names");
+	if (idx < 0)
+		return;
+
+	len = OF_getproplen(ci->ci_node, "power-domains");
+	if (len <= 0)
+		return;
+
+	domains = malloc(len, M_TEMP, M_WAITOK);
+	OF_getpropintarray(ci->ci_node, "power-domains", domains, len);
+
+	domain = domains;
+	while (domain && domain < domains + (len / sizeof(uint32_t))) {
+		if (idx == 0)
+			break;
+
+		node = OF_getnodebyphandle(domain[0]);
+		if (node == 0)
+			break;
+
+		ncells = OF_getpropint(node, "#power-domain-cells", 0);
+		domain = domain + ncells + 1;
+		idx--;
+	}
+
+	node = idx == 0 ? OF_getnodebyphandle(domain[0]) : 0;
+	free(domains, M_TEMP, len);
+	if (node == 0)
+		return;
+
+	/*
+	 * We found the "psci" power domain.  If this power domain has
+	 * a parent power domain, stash its phandle away for later.
+	 */
+ 
+	cluster = OF_getpropint(node, "power-domains", 0);
+
+	/*
+	 * Get the deepest idle state for the CPU; this should be the
+	 * last one that is listed.
+	 */
+
+	len = OF_getproplen(node, "domain-idle-states");
+	if (len < sizeof(uint32_t))
+		return;
+
+	states = malloc(len, M_TEMP, M_WAITOK);
+	OF_getpropintarray(node, "domain-idle-states", states, len);
+
+	node = OF_getnodebyphandle(states[len / sizeof(uint32_t) - 1]);
+	free(states, M_TEMP, len);
+	if (node == 0)
+		return;
+
+	ci->ci_psci_suspend_param =
+		OF_getpropint(node, "arm,psci-suspend-param", 0);
+
+	/*
+	 * Qualcomm Snapdragon always seem to operate in OS Initiated
+	 * mode.  This means that the last CPU to suspend can pick the
+	 * idle state that powers off the entire cluster.  In our case
+	 * that will always be the primary CPU.
+	 */
+
+#ifdef MULTIPROCESSOR
+	if (ci->ci_flags & CPUF_AP)
+		return;
+#endif
+
+	node = OF_getnodebyphandle(cluster);
+	if (node == 0)
+		return;
+
+	/*
+	 * Get the deepest idle state for the cluster; this should be
+	 * the last one that is listed.
+	 */
+
+	states = malloc(len, M_TEMP, M_WAITOK);
+	OF_getpropintarray(node, "domain-idle-states", states, len);
+
+	node = OF_getnodebyphandle(states[len / sizeof(uint32_t) - 1]);
+	free(states, M_TEMP, len);
+	if (node == 0)
+		return;
+
+	ci->ci_psci_suspend_param =
+		OF_getpropint(node, "arm,psci-suspend-param", 0);
 }

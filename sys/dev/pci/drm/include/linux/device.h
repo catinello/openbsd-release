@@ -8,7 +8,6 @@
 #include <sys/device.h>
 #include <sys/param.h>
 #include <sys/proc.h>
-#include <linux/slab.h>
 #include <linux/ioport.h>
 #include <linux/lockdep.h>
 #include <linux/pm.h>
@@ -42,6 +41,9 @@ struct device_attribute {
 #define devm_kzalloc(x, y, z)	kzalloc(y, z)
 
 #define dev_warn(dev, fmt, arg...)				\
+	printf("drm:pid%d:%s *WARNING* " fmt, curproc->p_p->ps_pid,	\
+	    __func__ , ## arg)
+#define dev_WARN(dev, fmt, arg...)				\
 	printf("drm:pid%d:%s *WARNING* " fmt, curproc->p_p->ps_pid,	\
 	    __func__ , ## arg)
 #define dev_notice(dev, fmt, arg...)				\
@@ -85,6 +87,9 @@ struct device_attribute {
 #define dev_dbg(dev, fmt, arg...)				\
 	printf("drm:pid%d:%s *DEBUG* " fmt, curproc->p_p->ps_pid,	\
 	    __func__ , ## arg)
+#define dev_dbg_once(dev, fmt, arg...)				\
+	printf("drm:pid%d:%s *DEBUG* " fmt, curproc->p_p->ps_pid,	\
+	    __func__ , ## arg)
 #define dev_dbg_ratelimited(dev, fmt, arg...)			\
 	printf("drm:pid%d:%s *DEBUG* " fmt, curproc->p_p->ps_pid,	\
 	    __func__ , ## arg)
@@ -94,6 +99,8 @@ struct device_attribute {
 #define dev_info_once(dev, fmt, arg...) 			\
 	    do { } while(0)
 #define dev_dbg(dev, fmt, arg...) 				\
+	    do { } while(0)
+#define dev_dbg_once(dev, fmt, arg...) 				\
 	    do { } while(0)
 #define dev_dbg_ratelimited(dev, fmt, arg...) 			\
 	    do { } while(0)

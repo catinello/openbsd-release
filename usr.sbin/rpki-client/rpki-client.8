@@ -1,4 +1,4 @@
-.\"	$OpenBSD: rpki-client.8,v 1.73 2022/09/05 20:08:26 job Exp $
+.\"	$OpenBSD: rpki-client.8,v 1.93 2023/03/06 19:20:34 job Exp $
 .\"
 .\" Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
 .\"
@@ -14,18 +14,19 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: September 5 2022 $
+.Dd $Mdocdate: March 6 2023 $
 .Dt RPKI-CLIENT 8
 .Os
 .Sh NAME
 .Nm rpki-client
-.Nd RPKI validator to support BGP Origin Validation
+.Nd RPKI validator to support BGP routing security
 .Sh SYNOPSIS
 .Nm
-.Op Fl BcjnoRrVv
+.Op Fl ABcjmnoRrVv
 .Op Fl b Ar sourceaddr
 .Op Fl d Ar cachedir
 .Op Fl e Ar rsync_prog
+.Op Fl H Ar fqdn
 .Op Fl S Ar skiplist
 .Op Fl s Ar timeout
 .Op Fl T Ar table
@@ -42,7 +43,7 @@
 The
 .Nm
 utility queries the RPKI repository system with
-a built-in HTTP client and
+a built-in HTTPS client and
 .Xr openrsync 1
 to fetch all X.509 certificates, manifests, and revocation lists under a given
 .Em Trust Anchor .
@@ -53,13 +54,16 @@ by constructing and verifying a certification path for the certificate
 associated with the Object (including checking relevant CRLs).
 .Nm
 produces lists of the
-.Em Validated ROA Payloads Pq VRPs
+.Em Validated ROA Payloads Pq VRPs ,
+.Em BGPsec Router Keys Pq BRKs ,
 and
-.Em BGPsec Router Keys Pq BRKs
+.Em Validated ASPA Payloads Pq VAPs
 in various formats.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl A
+Exclude the aspa-set in the OpenBGPD specific output file.
 .It Fl B
 Create output in the files
 .Pa bird1v4 ,
@@ -119,6 +123,16 @@ and can be combined with
 .Fl j
 to emit a stream of
 .Em Concatenated JSON .
+.It Fl H Ar fqdn
+Create a shortlist and add
+.Ar fqdn
+to the shortlist.
+.Nm
+only connects to shortlisted hosts.
+The shortlist filter is enforced during processing of the
+.Em Subject Information Access Pq SIA
+extension in CA certificates, thus applies to both RSYNC and RRDP connections.
+This option can be used multiple times.
 .It Fl j
 Create output in the file
 .Pa json
@@ -126,6 +140,10 @@ in the output directory as JSON object.
 See
 .Fl c
 for a description of the fields.
+.It Fl m
+Create output in the file
+.Pa metrics
+in the output directory in OpenMetrics format.
 .It Fl n
 Offline mode.
 Validate the contents of
@@ -196,6 +214,7 @@ By default
 .Nm
 will load all TAL files in
 .Pa /etc/rpki .
+TAL are small files containing a public key and URL endpoint address.
 .It Fl V
 Show the version and exit.
 .It Fl v
@@ -216,11 +235,9 @@ Defaults to
 .Pp
 By default
 .Nm
-produces a list of unique
-.Li roa-set
-statements in
+outputs validated payloads in
 .Fl o
-(OpenBGPD compatible) output.
+(OpenBGPD compatible) format.
 .Pp
 .Nm
 should be run hourly by
@@ -250,70 +267,134 @@ cached repository data.
 .It Pa /var/db/rpki-client/openbgpd
 default roa-set output file.
 .El
+.Pp
+All the top-level TAL are included, except the ARIN TAL which is not
+made available with terms compatible with open source.
+That public key is treated as a proprietary object in a lengthy legal
+agreement regarding ARIN service restrictions.
 .Sh EXIT STATUS
 .Ex -std
 .Sh SEE ALSO
 .Xr openrsync 1 ,
 .Xr bgpd.conf 5
 .Sh STANDARDS
-The following standards are used or referenced in
-.Nm :
-.Bl -tag -width -Ds
-.It RFC 3370
-Cryptographic Message Syntax (CMS) Algorithms.
-.It RFC 3779
-X.509 Extensions for IP Addresses and AS Identifiers.
-.It RFC 4291
-IP Version 6 Addressing Architecture.
-.It RFC 4631
-Classless Inter-domain Routing (CIDR): The Internet Address Assignment
-and Aggregation Plan.
-.It RFC 5280
-Internet X.509 Public Key Infrastructure Certificate and Certificate
-Revocation List (CRL) Profile.
-.It RFC 5652
-Cryptographic Message Syntax (CMS).
-.It RFC 5781
-The rsync URI Scheme.
-.It RFC 5952
-A Recommendation for IPv6 Address Text Representation.
-.It RFC 6480
-An Infrastructure to Support Secure Internet Routing.
-.It RFC 6482
-A Profile for Route Origin Authorizations (ROAs).
-.It RFC 6485
-The Profile for Algorithms and Key Sizes for Use in the Resource Public Key
-Infrastructure (RPKI).
-.It RFC 6486
-Manifests for the Resource Public Key Infrastructure (RPKI).
-.It RFC 6487
-A Profile for X.509 PKIX Resource Certificates.
-.It RFC 6488
-Signed Object Template for the Resource Public Key Infrastructure (RPKI).
-.It RFC 6493
-The Resource Public Key Infrastructure (RPKI) Ghostbusters Record.
-.It RFC 7318
-Policy Qualifiers in Resource Public Key Infrastructure (RPKI) Certificates.
-.It RFC 8182
-The RPKI Repository Delta Protocol (RRDP).
-.It RFC 8209
-A Profile for BGPsec Router Certificates, Certificate Revocation Lists, and
-Certification Requests.
-.It RFC 8630
-Resource Public Key Infrastructure (RPKI) Trust Anchor Locator.
-.It draft-ietf-sidrops-rpki-rsc-10
-A profile for Resource Public Key Infrastructure (RPKI) Signed Checklists (RSC).
-.It draft-ietf-sidrops-aspa-profile-10
-A Profile for Autonomous System Provider Authorization (ASPA).
-.El
+.Rs
+.%T X.509 Extensions for IP Addresses and AS Identifiers
+.%R RFC 3779
+.Re
+.Pp
+.Rs
+.%T Internet X.509 Public Key Infrastructure Certificate and Certificate Revocation List (CRL) Profile
+.%R RFC 5280
+.Re
+.Pp
+.Rs
+.%T Cryptographic Message Syntax (CMS)
+.%R RFC 5652
+.Re
+.Pp
+.Rs
+.%T The rsync URI Scheme
+.%R RFC 5781
+.Re
+.Pp
+.Rs
+.%T \&An Infrastructure to Support Secure Internet Routing
+.%R RFC 6480
+.Re
+.Pp
+.Rs
+.%T A Profile for Resource Certificate Repository Structure
+.%R RFC 6481
+.Re
+.Pp
+.Rs
+.%T The Profile for Algorithms and Key Sizes for Use in the Resource Public Key Infrastructure (RPKI)
+.%R RFC 6485
+.Re
+.Pp
+.Rs
+.%T A Profile for X.509 PKIX Resource Certificates
+.%R RFC 6487
+.Re
+.Pp
+.Rs
+.%T Signed Object Template for the Resource Public Key Infrastructure (RPKI)
+.%R RFC 6488
+.Re
+.Pp
+.Rs
+.%T The Resource Public Key Infrastructure (RPKI) Ghostbusters Record
+.%R RFC 6493
+.Re
+.Pp
+.Rs
+.%T Policy Qualifiers in Resource Public Key Infrastructure (RPKI) Certificates
+.%R RFC 7318
+.Re
+.Pp
+.Rs
+.%T The Profile for Algorithms and Key Sizes for Use in the Resource Public Key Infrastructure
+.%R RFC 7935
+.Re
+.Pp
+.Rs
+.%T The RPKI Repository Delta Protocol (RRDP)
+.%R RFC 8182
+.Re
+.Pp
+.Rs
+.%T A Profile for BGPsec Router Certificates, Certificate Revocation Lists, and Certification Requests
+.%R RFC 8209
+.Re
+.Pp
+.Rs
+.%T Resource Public Key Infrastructure (RPKI) Trust Anchor Locator
+.%R RFC 8630
+.Re
+.Pp
+.Rs
+.%T Finding and Using Geofeed Data
+.%R RFC 9092
+.Re
+.Pp
+.Rs
+.%T Manifests for the Resource Public Key Infrastructure (RPKI)
+.%R RFC 9286
+.Re
+.Pp
+.Rs
+.%T RPKI Signed Object for Trust Anchor Key
+.%U https://datatracker.ietf.org/doc/html/draft-ietf-sidrops-signed-tal
+.%D Oct, 2022
+.Re
+.Pp
+.Rs
+.%T A Profile for RPKI Signed Checklists (RSCs)
+.%R RFC 9323
+.Re
+.Pp
+.Rs
+.%T A Profile for Route Origin Authorizations (ROAs)
+.%U https://datatracker.ietf.org/doc/html/draft-ietf-sidrops-rfc6482bis
+.%D Nov, 2022
+.Re
+.Pp
+.Rs
+.%T A Profile for Autonomous System Provider Authorization (ASPA)
+.%U https://datatracker.ietf.org/doc/html/draft-ietf-sidrops-aspa-profile
+.%D Jan, 2023
+.Re
 .Sh HISTORY
 .Nm
 first appeared in
 .Ox 6.7 .
 .Sh AUTHORS
-The
-.Nm
-utility was written by
-.An Kristaps Dzonsons Aq Mt kristaps@bsd.lv .
+.An -nosplit
+.An Kristaps Dzonsons Aq Mt kristaps@bsd.lv ,
+.An Claudio Jeker Aq Mt claudio@openbsd.org ,
+.An Theo Buehler Aq Mt tb@openbsd.org ,
+and
+.An Job Snijders Aq Mt job@openbsd.org .
 .\" .Sh CAVEATS
 .\" .Sh BUGS

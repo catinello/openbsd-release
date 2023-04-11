@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.h,v 1.454 2022/09/23 15:50:41 claudio Exp $ */
+/*	$OpenBSD: bgpd.h,v 1.465 2023/03/13 16:52:41 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -83,17 +83,22 @@
 #define	F_MPLS			0x0080
 #define	F_LONGER		0x0200
 #define	F_SHORTER		0x0400
-#define	F_CTL_DETAIL		0x1000	/* only set on requests */
-#define	F_CTL_ADJ_IN		0x2000	/* only set on requests */
-#define	F_CTL_ADJ_OUT		0x4000	/* only set on requests */
+#define	F_CTL_DETAIL		0x1000		/* only set on requests */
+#define	F_CTL_ADJ_IN		0x2000		/* only set on requests */
+#define	F_CTL_ADJ_OUT		0x4000		/* only set on requests */
 #define	F_CTL_BEST		0x8000
-#define	F_CTL_SSV		0x20000	/* only used by bgpctl */
-#define	F_CTL_INVALID		0x40000 /* only set on requests */
+#define	F_CTL_INELIGIBLE	0x10000		/* only set on requests */
+#define	F_CTL_LEAKED		0x20000		/* only set on requests */
+#define	F_CTL_INVALID		0x40000		/* only set on requests */
 #define	F_CTL_OVS_VALID		0x80000
 #define	F_CTL_OVS_INVALID	0x100000
 #define	F_CTL_OVS_NOTFOUND	0x200000
-#define	F_CTL_NEIGHBORS		0x400000 /* only used by bgpctl */
-#define	F_CTL_HAS_PATHID	0x800000 /* only set on requests */
+#define	F_CTL_NEIGHBORS		0x400000	 /* only used by bgpctl */
+#define	F_CTL_HAS_PATHID	0x800000	 /* only set on requests */
+#define	F_CTL_AVS_VALID		0x1000000
+#define	F_CTL_AVS_INVALID	0x2000000
+#define	F_CTL_AVS_UNKNOWN	0x4000000
+#define	F_CTL_SSV		0x80000000	/* only used by bgpctl */
 
 #define CTASSERT(x)	extern char  _ctassert[(x) ? 1 : -1 ] \
 			    __attribute__((__unused__))
@@ -106,6 +111,12 @@
 #define	ROA_INVALID		0x1
 #define	ROA_VALID		0x2
 #define	ROA_MASK		0x3
+
+#define	ASPA_UNKNOWN		0x00	/* default */
+#define	ASPA_INVALID		0x01
+#define	ASPA_VALID		0x02
+#define	ASPA_MASK		0x03
+#define	ASPA_NEVER_KNOWN	0x08	/* unknown and check never needed */
 
 /*
  * Limit the number of messages queued in the session engine.
@@ -263,6 +274,7 @@ struct roa {
 };
 
 RB_HEAD(roa_tree, roa);
+RB_HEAD(aspa_tree, aspa_set);
 
 struct set_table;
 struct as_set;
@@ -284,6 +296,7 @@ struct bgpd_config {
 	struct prefixset_head			 prefixsets;
 	struct prefixset_head			 originsets;
 	struct roa_tree				 roa;
+	struct aspa_tree			 aspa;
 	struct rde_prefixset_head		 rde_prefixsets;
 	struct rde_prefixset_head		 rde_originsets;
 	struct as_set_head			 as_sets;
@@ -329,6 +342,15 @@ enum enforce_as {
 	ENFORCE_AS_UNDEF,
 	ENFORCE_AS_OFF,
 	ENFORCE_AS_ON
+};
+
+enum role {
+	ROLE_NONE,
+	ROLE_CUSTOMER,
+	ROLE_PROVIDER,
+	ROLE_RS,
+	ROLE_RS_CLIENT,
+	ROLE_PEER,
 };
 
 enum auth_method {
@@ -379,12 +401,11 @@ struct capabilities {
 		int8_t	restart;	/* graceful restart, RFC 4724 */
 	}	grestart;
 	int8_t	mp[AID_MAX];		/* multiprotocol extensions, RFC 4760 */
+	int8_t	add_path[AID_MAX];	/* ADD_PATH, RFC 7911 */
 	int8_t	refresh;		/* route refresh, RFC 2918 */
 	int8_t	as4byte;		/* 4-byte ASnum, RFC 4893 */
 	int8_t	enhanced_rr;		/* enhanced route refresh, RFC 7313 */
-	int8_t	add_path[AID_MAX];	/* ADD_PATH, RFC 7911 */
-	uint8_t	role;			/* Open Policy, RFC 9234 */
-	int8_t	role_ena;		/* 1 for enable, 2 for enforce */
+	int8_t	policy;			/* Open Policy, RFC 9234, 2 = enforce */
 };
 
 /* flags for RFC 4724 - graceful restart */
@@ -430,6 +451,7 @@ struct peer_config {
 	enum export_type	 export_type;
 	enum enforce_as		 enforce_as;
 	enum enforce_as		 enforce_local_as;
+	enum role		 role;
 	uint16_t		 max_prefix_restart;
 	uint16_t		 max_out_prefix_restart;
 	uint16_t		 holdtime;
@@ -458,6 +480,19 @@ struct peer_config {
 #define PEERFLAG_LOG_UPDATES	0x02
 #define PEERFLAG_EVALUATE_ALL	0x04
 #define PEERFLAG_NO_AS_SET	0x08
+
+struct rde_peer_stats {
+	uint64_t			 prefix_rcvd_update;
+	uint64_t			 prefix_rcvd_withdraw;
+	uint64_t			 prefix_rcvd_eor;
+	uint64_t			 prefix_sent_update;
+	uint64_t			 prefix_sent_withdraw;
+	uint64_t			 prefix_sent_eor;
+	uint32_t			 prefix_cnt;
+	uint32_t			 prefix_out_cnt;
+	uint32_t			 pending_update;
+	uint32_t			 pending_withdraw;
+};
 
 enum network_type {
 	NETWORK_DEFAULT,	/* from network statements */
@@ -505,7 +540,7 @@ struct rtr_config {
 	struct bgpd_addr		remote_addr;
 	struct bgpd_addr		local_addr;
 	uint32_t			id;
-	in_addr_t			remote_port;
+	uint16_t			remote_port;
 };
 
 struct ctl_show_rtr {
@@ -517,7 +552,8 @@ struct ctl_show_rtr {
 	uint32_t		retry;
 	uint32_t		expire;
 	int			session_id;
-	in_addr_t		remote_port;
+	uint16_t		remote_port;
+	uint8_t			version;
 	enum rtr_error		last_sent_error;
 	enum rtr_error		last_recv_error;
 	char			last_sent_msg[REASON_LEN];
@@ -582,6 +618,11 @@ enum imsg_type {
 	IMSG_RECONF_ORIGIN_SET,
 	IMSG_RECONF_ROA_SET,
 	IMSG_RECONF_ROA_ITEM,
+	IMSG_RECONF_ASPA,
+	IMSG_RECONF_ASPA_TAS,
+	IMSG_RECONF_ASPA_TAS_AID,
+	IMSG_RECONF_ASPA_DONE,
+	IMSG_RECONF_ASPA_PREP,
 	IMSG_RECONF_RTR_CONFIG,
 	IMSG_RECONF_DRAIN,
 	IMSG_RECONF_DONE,
@@ -779,6 +820,7 @@ struct ctl_show_set {
 		PREFIX_SET,
 		ORIGIN_SET,
 		ROA_SET,
+		ASPA_SET,
 	}			type;
 };
 
@@ -797,7 +839,7 @@ struct ctl_neighbor {
 #define	F_PREF_STALE	0x010
 #define	F_PREF_INVALID	0x020
 #define	F_PREF_PATH_ID	0x040
-#define	F_PREF_OTC_LOOP	0x080
+#define	F_PREF_OTC_LEAK	0x080
 #define	F_PREF_ECMP	0x100
 #define	F_PREF_AS_WIDE	0x200
 
@@ -816,7 +858,8 @@ struct ctl_show_rib {
 	uint32_t		flags;
 	uint8_t			prefixlen;
 	uint8_t			origin;
-	uint8_t			validation_state;
+	uint8_t			roa_validation_state;
+	uint8_t			aspa_validation_state;
 	int8_t			dmetric;
 	/* plus an aspath */
 };
@@ -871,7 +914,7 @@ struct filter_originset {
 	struct rde_prefixset	*ps;
 };
 
-struct filter_ovs {
+struct filter_vs {
 	uint8_t			 validity;
 	uint8_t			 is_set;
 };
@@ -1057,7 +1100,8 @@ struct filter_match {
 	struct community		community[MAX_COMM_MATCH];
 	struct filter_prefixset		prefixset;
 	struct filter_originset		originset;
-	struct filter_ovs		ovs;
+	struct filter_vs		ovs;
+	struct filter_vs		avs;
 	int				maxcomm;
 	int				maxextcomm;
 	int				maxlargecomm;
@@ -1069,11 +1113,10 @@ struct filter_rule {
 	struct filter_peers		peer;
 	struct filter_match		match;
 	struct filter_set_head		set;
-#define RDE_FILTER_SKIP_DIR		0
+#define RDE_FILTER_SKIP_PEERID		0
 #define RDE_FILTER_SKIP_GROUPID		1
 #define RDE_FILTER_SKIP_REMOTE_AS	2
-#define RDE_FILTER_SKIP_PEERID		3
-#define RDE_FILTER_SKIP_COUNT		4
+#define RDE_FILTER_SKIP_COUNT		3
 	struct filter_rule		*skip[RDE_FILTER_SKIP_COUNT];
 	enum filter_actions		action;
 	enum directions			dir;
@@ -1147,6 +1190,20 @@ struct as_set {
 	struct set_table		*set;
 	time_t				 lastchange;
 	int				 dirty;
+};
+
+struct aspa_set {
+	time_t				 expires;
+	uint32_t			 as;
+	uint32_t			 num;
+	uint32_t			 *tas;
+	uint8_t				 *tas_aid;
+	RB_ENTRY(aspa_set)		 entry;
+};
+
+struct aspa_prep {
+	size_t				datasize;
+	uint32_t			entries;
 };
 
 struct l3vpn {
@@ -1258,7 +1315,7 @@ void		 set_pollfd(struct pollfd *, struct imsgbuf *);
 int		 handle_pollfd(struct pollfd *, struct imsgbuf *);
 
 /* control.c */
-int	control_imsg_relay(struct imsg *);
+int	control_imsg_relay(struct imsg *, struct peer *);
 
 /* config.c */
 struct bgpd_config	*new_config(void);
@@ -1270,14 +1327,16 @@ void		free_prefixsets(struct prefixset_head *);
 void		free_rde_prefixsets(struct rde_prefixset_head *);
 void		free_prefixtree(struct prefixset_tree *);
 void		free_roatree(struct roa_tree *);
+void		free_aspa(struct aspa_set *);
+void		free_aspatree(struct aspa_tree *);
 void		free_rtrs(struct rtr_config_head *);
 void		filterlist_free(struct filter_head *);
 int		host(const char *, struct bgpd_addr *, uint8_t *);
 uint32_t	get_bgpid(void);
 void		expand_networks(struct bgpd_config *, struct network_head *);
 RB_PROTOTYPE(prefixset_tree, prefixset_item, entry, prefixset_cmp);
-int		roa_cmp(struct roa *, struct roa *);
 RB_PROTOTYPE(roa_tree, roa, entry, roa_cmp);
+RB_PROTOTYPE(aspa_tree, aspa_set, entry, aspa_cmp);
 
 /* kroute.c */
 int		 kr_init(int *, uint8_t);
@@ -1400,7 +1459,7 @@ const char	*log_rd(uint64_t);
 const char	*log_ext_subtype(int, uint8_t);
 const char	*log_reason(const char *);
 const char	*log_rtr_error(enum rtr_error);
-const char	*log_policy(uint8_t);
+const char	*log_policy(enum role);
 int		 aspath_snprint(char *, size_t, void *, uint16_t);
 int		 aspath_asprint(char **, void *, uint16_t);
 size_t		 aspath_strlen(void *, uint16_t);
