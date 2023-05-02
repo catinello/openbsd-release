@@ -67,11 +67,11 @@ output_bgpd(FILE *out, struct vrp_tree *vrps, struct brk_tree *brks,
 				return -1;
 			switch (vap->providers[i].afi) {
 			case AFI_IPV4:
-				if (fprintf(out, "inet") < 0)
+				if (fprintf(out, " inet") < 0)
 					return -1;
 				break;
 			case AFI_IPV6:
-				if (fprintf(out, "inet6") < 0)
+				if (fprintf(out, " inet6") < 0)
 					return -1;
 				break;
 			}

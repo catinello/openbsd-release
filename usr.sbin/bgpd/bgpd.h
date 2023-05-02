@@ -1200,6 +1200,7 @@ struct aspa_set {
 	uint8_t				 *tas_aid;
 	RB_ENTRY(aspa_set)		 entry;
 };
+#define TAS_AID_SIZE(n)	(((n) + 15) / 16 * sizeof(uint32_t))
 
 struct aspa_prep {
 	size_t				datasize;
