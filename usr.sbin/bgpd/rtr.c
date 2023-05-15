@@ -577,7 +577,8 @@ rtr_recalc(void)
 	imsg_compose(ibuf_rde, IMSG_RECONF_ASPA_PREP, 0, 0, -1,
 	    &ap, sizeof(ap));
 
-	RB_FOREACH(aspa, aspa_tree, &at) {
+	/* walk tree in reverse because aspa_add_set requires that */
+	RB_FOREACH_REVERSE(aspa, aspa_tree, &at) {
 		uint32_t	as[2];
 		as[0] = aspa->as;
 		as[1] = aspa->num;

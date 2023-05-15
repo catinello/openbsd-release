@@ -391,7 +391,7 @@ qs_argv(char **argv, size_t argc, size_t len, struct lg_ctx *ctx, int barenbr)
 			argv[argc++] = "error";
 	} else if (ctx->qs_args[QS_INVALID].one) {
 		if (argc < len)
-			argv[argc++] = "invalid";
+			argv[argc++] = "disqualified";
 	} else if (ctx->qs_args[QS_LEAKED].one) {
 		if (argc < len)
 			argv[argc++] = "leaked";
