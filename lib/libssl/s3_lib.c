@@ -1580,6 +1580,7 @@ ssl3_free(SSL *s)
 
 	sk_X509_NAME_pop_free(s->s3->hs.tls12.ca_names, X509_NAME_free);
 	sk_X509_pop_free(s->verified_chain, X509_free);
+	s->verified_chain = NULL;
 
 	tls1_transcript_free(s);
 	tls1_transcript_hash_free(s);
