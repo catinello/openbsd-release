@@ -145,6 +145,8 @@ valid_cert(const char *fn, struct auth *a, const struct cert *cert)
 	}
 
 	for (i = 0; i < cert->ipsz; i++) {
+		if (cert->ips[i].type == CERT_IP_INHERIT)
+			continue;
 		if (valid_ip(a, cert->ips[i].afi, cert->ips[i].min,
 		    cert->ips[i].max))
 			continue;
