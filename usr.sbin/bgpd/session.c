@@ -2003,6 +2003,8 @@ session_process_msg(struct peer *p)
 		}
 	}
 
+	if (p->rbuf == NULL)
+		return;
 	if (rpos < av) {
 		left = av - rpos;
 		memmove(&p->rbuf->buf, p->rbuf->buf + rpos, left);
