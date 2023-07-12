@@ -352,6 +352,7 @@ struct client {
 	int			 clt_inflight;
 	struct range_data	 clt_ranges;
 	struct fcgi_data	 clt_fcgi;
+	const char		*clt_fcgi_error;
 	char			*clt_remote_user;
 	struct evbuffer		*clt_srvevb;
 

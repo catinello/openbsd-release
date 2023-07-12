@@ -1300,6 +1300,11 @@ server_close(struct client *clt, const char *msg)
 {
 	struct server		*srv = clt->clt_srv;
 
+	if (clt->clt_fcgi_error != NULL) {
+		clt->clt_fcgi_error = msg;
+		return;
+	}
+
 	SPLAY_REMOVE(client_tree, &srv->srv_clients, clt);
 
 	/* free the HTTP descriptors incl. headers */
