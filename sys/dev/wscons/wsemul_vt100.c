@@ -868,16 +868,12 @@ wsemul_vt100_output_dcs(struct wsemul_vt100_emuldata *edp,
 		    (instate->inchar - '0');
 		break;
 	case ';': /* argument terminator */
-		edp->nargs++;
+		if (edp->nargs < VT100_EMUL_NARGS)
+			edp->nargs++;
 		break;
 	default:
-		edp->nargs++;
-		if (edp->nargs > VT100_EMUL_NARGS) {
-#ifdef VT100_DEBUG
-			printf("vt100: too many arguments\n");
-#endif
-			edp->nargs = VT100_EMUL_NARGS;
-		}
+		if (edp->nargs < VT100_EMUL_NARGS)
+			edp->nargs++;
 		newstate = VT100_EMUL_STATE_STRING;
 		switch (instate->inchar) {
 		case '$':
@@ -1069,7 +1065,8 @@ wsemul_vt100_output_csi(struct wsemul_vt100_emuldata *edp,
 		    (instate->inchar - '0');
 		break;
 	case ';': /* argument terminator */
-		edp->nargs++;
+		if (edp->nargs < VT100_EMUL_NARGS)
+			edp->nargs++;
 		break;
 	case '?': /* DEC specific */
 	case '>': /* DA query */
@@ -1082,13 +1079,9 @@ wsemul_vt100_output_csi(struct wsemul_vt100_emuldata *edp,
 		edp->modif2 = (char)instate->inchar;
 		break;
 	default: /* end of escape sequence */
-		oargs = edp->nargs++;
-		if (edp->nargs > VT100_EMUL_NARGS) {
-#ifdef VT100_DEBUG
-			printf("vt100: too many arguments\n");
-#endif
-			edp->nargs = VT100_EMUL_NARGS;
-		}
+		oargs = edp->nargs;
+		if (edp->nargs < VT100_EMUL_NARGS)
+			edp->nargs++;
 		rc = wsemul_vt100_handle_csi(edp, instate);
 		if (rc != 0) {
 			edp->nargs = oargs;

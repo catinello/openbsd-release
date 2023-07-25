@@ -617,13 +617,14 @@ wsemul_sun_output_control(struct wsemul_sun_emuldata *edp,
 		break;
 
 	case ';':		/* argument terminator */
-		edp->nargs++;
+		if (edp->nargs < SUN_EMUL_NARGS)
+			edp->nargs++;
 		break;
 
 	default:		/* end of escape sequence */
-		oargs = edp->nargs++;
-		if (edp->nargs > SUN_EMUL_NARGS)
-			edp->nargs = SUN_EMUL_NARGS;
+		oargs = edp->nargs;
+		if (edp->nargs < SUN_EMUL_NARGS)
+			edp->nargs++;
 		rc = wsemul_sun_control(edp, instate);
 		if (rc != 0) {
 			/* undo nargs progress */
