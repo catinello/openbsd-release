@@ -88,6 +88,8 @@ int
 main(void)
 {
 	printf("%s\n", "acx");
+	printf("%s\n", "amd");
+	printf("%s\n", "amd ^cpu0:* AMD");
 	printf("%s\n", "amdgpu");
 	print_devices("amdgpu", amdgpu_devices, nitems(amdgpu_devices));
 	printf("%s\n", "amdgpu ^vga*vendor \"ATI\", unknown product"); 

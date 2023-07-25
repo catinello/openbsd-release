@@ -45,7 +45,7 @@
 #include "pxeboot.h"
 #include "pxe_net.h"
 
-const char version[] = "3.44";
+const char version[] = "3.44b";
 int	debug = 1;
 
 void (*sa_cleanup)(void) = pxe_shutdown;
