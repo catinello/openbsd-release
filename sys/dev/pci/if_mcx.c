@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_mcx.c,v 1.106 2022/11/22 06:48:32 jmatthew Exp $ */
+/*	$OpenBSD: if_mcx.c,v 1.110 2023/09/18 06:47:21 jmatthew Exp $ */
 
 /*
  * Copyright (c) 2017 David Gwynne <dlg@openbsd.org>
@@ -149,8 +149,8 @@ CTASSERT(MCX_MAX_QUEUES * MCX_WQ_DOORBELL_STRIDE <
 #define MCX_CMDQ_DOORBELL		0x0018
 
 #define MCX_STATE			0x01fc
-#define MCX_STATE_MASK				(1 << 31)
-#define MCX_STATE_INITIALIZING			(1 << 31)
+#define MCX_STATE_MASK				(1U << 31)
+#define MCX_STATE_INITIALIZING			(1U << 31)
 #define MCX_STATE_READY				(0 << 31)
 #define MCX_STATE_INTERFACE_MASK		(0x3 << 24)
 #define MCX_STATE_INTERFACE_FULL_DRIVER		(0x0 << 24)
@@ -192,6 +192,7 @@ CTASSERT(MCX_MAX_QUEUES * MCX_WQ_DOORBELL_STRIDE <
 #define MCX_ETHER_CAP_100G_CR4		20
 #define MCX_ETHER_CAP_100G_SR4		21
 #define MCX_ETHER_CAP_100G_KR4		22
+#define MCX_ETHER_CAP_100G_LR4		23
 #define MCX_ETHER_CAP_25G_CR		27
 #define MCX_ETHER_CAP_25G_KR		28
 #define MCX_ETHER_CAP_25G_SR		29
@@ -1405,7 +1406,7 @@ struct mcx_cmd_create_tir_mb_in {
 #define MCX_TIR_CTX_HASH_SEL_SPORT	(1 << 2)
 #define MCX_TIR_CTX_HASH_SEL_DPORT	(1 << 3)
 #define MCX_TIR_CTX_HASH_SEL_IPV4	(0 << 31)
-#define MCX_TIR_CTX_HASH_SEL_IPV6	(1 << 31)
+#define MCX_TIR_CTX_HASH_SEL_IPV6	(1U << 31)
 #define MCX_TIR_CTX_HASH_SEL_TCP	(0 << 30)
 #define MCX_TIR_CTX_HASH_SEL_UDP	(1 << 30)
 	uint32_t		cmd_rx_hash_sel_inner;
@@ -1675,7 +1676,7 @@ CTASSERT(sizeof(struct mcx_wq_ctx) == 0xC0);
 
 struct mcx_sq_ctx {
 	uint32_t		sq_flags;
-#define MCX_SQ_CTX_RLKEY			(1 << 31)
+#define MCX_SQ_CTX_RLKEY			(1U << 31)
 #define MCX_SQ_CTX_FRE_SHIFT			(1 << 29)
 #define MCX_SQ_CTX_FLUSH_IN_ERROR		(1 << 28)
 #define MCX_SQ_CTX_MIN_WQE_INLINE_SHIFT		24
@@ -1722,7 +1723,7 @@ struct mcx_sq_entry {
 	/* ethernet segment */
 	uint32_t		sqe_reserved1;
 	uint32_t		sqe_mss_csum;
-#define MCX_SQE_L4_CSUM				(1 << 31)
+#define MCX_SQE_L4_CSUM				(1U << 31)
 #define MCX_SQE_L3_CSUM				(1 << 30)
 	uint32_t		sqe_reserved2;
 	uint16_t		sqe_inline_header_size;
@@ -1789,7 +1790,7 @@ struct mcx_cmd_destroy_sq_out {
 
 struct mcx_rq_ctx {
 	uint32_t		rq_flags;
-#define MCX_RQ_CTX_RLKEY			(1 << 31)
+#define MCX_RQ_CTX_RLKEY			(1U << 31)
 #define MCX_RQ_CTX_VLAN_STRIP_DIS		(1 << 28)
 #define MCX_RQ_CTX_MEM_RQ_TYPE_SHIFT		24
 #define MCX_RQ_CTX_STATE_SHIFT			20
@@ -2656,7 +2657,8 @@ static const struct pci_matchid mcx_devices[] = {
 	{ PCI_VENDOR_MELLANOX,	PCI_PRODUCT_MELLANOX_MT28800 },
 	{ PCI_VENDOR_MELLANOX,	PCI_PRODUCT_MELLANOX_MT28800VF },
 	{ PCI_VENDOR_MELLANOX,	PCI_PRODUCT_MELLANOX_MT28908 },
-	{ PCI_VENDOR_MELLANOX,	PCI_PRODUCT_MELLANOX_MT2892  },
+	{ PCI_VENDOR_MELLANOX,	PCI_PRODUCT_MELLANOX_MT2892 },
+	{ PCI_VENDOR_MELLANOX,	PCI_PRODUCT_MELLANOX_MT2894 },
 };
 
 struct mcx_eth_proto_capability {
@@ -2681,6 +2683,7 @@ static const struct mcx_eth_proto_capability mcx_eth_cap_map[] = {
 	[MCX_ETHER_CAP_100G_CR4]	= { IFM_100G_CR4,	IF_Gbps(100) },
 	[MCX_ETHER_CAP_100G_SR4]	= { IFM_100G_SR4,	IF_Gbps(100) },
 	[MCX_ETHER_CAP_100G_KR4]	= { IFM_100G_KR4,	IF_Gbps(100) },
+	[MCX_ETHER_CAP_100G_LR4]	= { IFM_100G_LR4,	IF_Gbps(100) },
 	[MCX_ETHER_CAP_25G_CR]		= { IFM_25G_CR,		IF_Gbps(25) },
 	[MCX_ETHER_CAP_25G_KR]		= { IFM_25G_KR,		IF_Gbps(25) },
 	[MCX_ETHER_CAP_25G_SR]		= { IFM_25G_SR,		IF_Gbps(25) },
@@ -6793,16 +6796,6 @@ mcx_process_txeof(struct mcx_softc *sc, struct mcx_tx *tx,
 	return (slots);
 }
 
-static uint64_t
-mcx_uptime(void)
-{
-	struct timespec ts;
-
-	nanouptime(&ts);
-
-	return ((uint64_t)ts.tv_sec * 1000000000 + (uint64_t)ts.tv_nsec);
-}
-
 static void
 mcx_calibrate_first(struct mcx_softc *sc)
 {
@@ -6812,7 +6805,7 @@ mcx_calibrate_first(struct mcx_softc *sc)
 	sc->sc_calibration_gen = 0;
 
 	s = splhigh(); /* crit_enter? */
-	c->c_ubase = mcx_uptime();
+	c->c_ubase = nsecuptime();
 	c->c_tbase = mcx_timer(sc);
 	splx(s);
 	c->c_ratio = 0;
@@ -6847,7 +6840,7 @@ mcx_calibrate(void *arg)
 	nc->c_timestamp = pc->c_tbase;
 
 	s = splhigh(); /* crit_enter? */
-	nc->c_ubase = mcx_uptime();
+	nc->c_ubase = nsecuptime();
 	nc->c_tbase = mcx_timer(sc);
 	splx(s);
 

@@ -1,4 +1,4 @@
-/* $OpenBSD: tty-keys.c,v 1.165 2023/01/09 14:12:41 nicm Exp $ */
+/* $OpenBSD: tty-keys.c,v 1.172 2023/09/08 07:05:06 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -1008,7 +1008,8 @@ tty_keys_extended_key(struct tty *tty, const char *buf, size_t len,
 
 /*
  * Handle mouse key input. Returns 0 for success, -1 for failure, 1 for partial
- * (probably a mouse sequence but need more data).
+ * (probably a mouse sequence but need more data), -2 if an invalid mouse
+ * sequence.
  */
 static int
 tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size,
@@ -1069,7 +1070,7 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size,
 		if (b < MOUSE_PARAM_BTN_OFF ||
 		    x < MOUSE_PARAM_POS_OFF ||
 		    y < MOUSE_PARAM_POS_OFF)
-			return (-1);
+			return (-2);
 		b -= MOUSE_PARAM_BTN_OFF;
 		x -= MOUSE_PARAM_POS_OFF;
 		y -= MOUSE_PARAM_POS_OFF;
@@ -1111,7 +1112,7 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size,
 
 		/* Check and return the mouse input. */
 		if (x < 1 || y < 1)
-			return (-1);
+			return (-2);
 		x--;
 		y--;
 		b = sgr_b;
@@ -1159,7 +1160,7 @@ tty_keys_clipboard(struct tty *tty, const char *buf, size_t len, size_t *size)
 {
 	struct client		*c = tty->client;
 	struct window_pane	*wp;
-	size_t			 end, terminator, needed;
+	size_t			 end, terminator = 0, needed;
 	char			*copy, *out;
 	int			 outlen;
 	u_int			 i;
@@ -1313,11 +1314,22 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 			break;
 	}
 
-	/* Add terminal features. */
+	/*
+	 * Add terminal features. Hardware level 5 does not offer SIXEL but
+	 * some terminal emulators report it anyway and it does not harm
+	 * to check it here.
+	 *
+	 * DECSLRM and DECFRA should be supported by level 5 as well as level
+	 * 4, but VTE has rather ruined it by advertising level 5 despite not
+	 * supporting them.
+	 */
 	switch (p[0]) {
-	case 62: /* VT220 */
-	case 63: /* VT320 */
-	case 64: /* VT420 */
+	case 64: /* level 4 */
+		tty_add_features(features, "margins,rectfill", ",");
+		/* FALLTHROUGH */
+	case 62: /* level 2 */
+	case 63: /* level 3 */
+	case 65: /* level 5 */
 		for (i = 1; i < n; i++) {
 			log_debug("%s: DA feature: %d", c->name, p[i]);
 			if (p[i] == 4)
@@ -1387,9 +1399,15 @@ tty_keys_device_attributes2(struct tty *tty, const char *buf, size_t len,
 			break;
 	}
 
-	/* Add terminal features. */
+	/*
+	 * Add terminal features. We add DECSLRM and DECFRA for some
+	 * identification codes here, notably 64 will catch VT520, even though
+	 * we can't use level 5 from DA because of VTE.
+	 */
 	switch (p[0]) {
 	case 41: /* VT420 */
+	case 61: /* VT510 */
+	case 64: /* VT520 */
 		tty_add_features(features, "margins,rectfill", ",");
 		break;
 	case 'M': /* mintty */
@@ -1491,8 +1509,6 @@ tty_keys_colours(struct tty *tty, const char *buf, size_t len, size_t *size)
 	int		 n;
 
 	*size = 0;
-	if ((tty->flags & TTY_HAVEFG) && (tty->flags & TTY_HAVEBG))
-		return (-1);
 
 	/* First four bytes are always \033]1 and 0 or 1 and ;. */
 	if (buf[0] != '\033')
@@ -1538,11 +1554,9 @@ tty_keys_colours(struct tty *tty, const char *buf, size_t len, size_t *size)
 	if (n != -1 && buf[3] == '0') {
 		log_debug("%s: foreground is %s", c->name, colour_tostring(n));
 		tty->fg = n;
-		tty->flags |= TTY_HAVEFG;
 	} else if (n != -1) {
 		log_debug("%s: background is %s", c->name, colour_tostring(n));
 		tty->bg = n;
-		tty->flags |= TTY_HAVEBG;
 	}
 
 	return (0);

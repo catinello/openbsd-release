@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_vlan.c,v 1.211 2023/02/02 13:28:31 claudio Exp $	*/
+/*	$OpenBSD: if_vlan.c,v 1.215 2023/05/16 14:32:54 jan Exp $	*/
 
 /*
  * Copyright 1998 Massachusetts Institute of Technology
@@ -536,7 +536,8 @@ vlan_up(struct vlan_softc *sc)
 		 * Chips that can do hardware-assisted VLAN encapsulation, can
 		 * calculate the correct checksum for VLAN tagged packets.
 		 */
-		ifp->if_capabilities = ifp0->if_capabilities & IFCAP_CSUM_MASK;
+		ifp->if_capabilities = ifp0->if_capabilities &
+		    (IFCAP_CSUM_MASK | IFCAP_TSOv4 | IFCAP_TSOv6);
 	}
 
 	/* commit the sc */

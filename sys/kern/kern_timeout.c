@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_timeout.c,v 1.90 2022/12/31 16:06:24 cheloha Exp $	*/
+/*	$OpenBSD: kern_timeout.c,v 1.95 2023/07/29 06:52:08 anton Exp $	*/
 /*
  * Copyright (c) 2001 Thomas Nordin <nordin@openbsd.org>
  * Copyright (c) 2000-2001 Artur Grabowski <art@openbsd.org>
@@ -307,7 +307,8 @@ timeout_add(struct timeout *new, int to_ticks)
 		CIRCQ_INSERT_TAIL(&timeout_new, &new->to_list);
 	}
 #if NKCOV > 0
-	new->to_process = curproc->p_p;
+	if (!kcov_cold)
+		new->to_process = curproc->p_p;
 #endif
 	tostat.tos_added++;
 	mtx_leave(&timeout_mutex);
@@ -406,7 +407,8 @@ timeout_abs_ts(struct timeout *to, const struct timespec *abstime)
 		CIRCQ_INSERT_TAIL(&timeout_new, &to->to_list);
 	}
 #if NKCOV > 0
-	to->to_process = curproc->p_p;
+	if (!kcov_cold)
+		to->to_process = curproc->p_p;
 #endif
 	tostat.tos_added++;
 
@@ -542,13 +544,8 @@ timeout_hardclock_update(void)
 {
 	struct timespec elapsed, now;
 	struct kclock *kc;
-	struct timespec *lastscan;
-	int b, done, first, i, last, level, need_softclock, off;
-
-	nanouptime(&now);
-	lastscan = &timeout_kclock[KCLOCK_UPTIME].kc_lastscan;
-	timespecsub(&now, lastscan, &elapsed);
-	need_softclock = 1;
+	struct timespec *lastscan = &timeout_kclock[KCLOCK_UPTIME].kc_lastscan;
+	int b, done, first, i, last, level, need_softclock = 1, off;
 
 	mtx_enter(&timeout_mutex);
 
@@ -575,6 +572,8 @@ timeout_hardclock_update(void)
 	 * completed a lap of the level and need to process buckets in the
 	 * next level.
 	 */
+	nanouptime(&now);
+	timespecsub(&now, lastscan, &elapsed);
 	for (level = 0; level < nitems(timeout_level_width); level++) {
 		first = timeout_maskwheel(level, lastscan);
 		if (elapsed.tv_sec >= timeout_level_width[level]) {
@@ -738,7 +737,6 @@ softclock_thread(void *arg)
 {
 	CPU_INFO_ITERATOR cii;
 	struct cpu_info *ci;
-	struct sleep_state sls;
 	struct timeout *to;
 	int s;
 
@@ -754,8 +752,8 @@ softclock_thread(void *arg)
 
 	s = splsoftclock();
 	for (;;) {
-		sleep_setup(&sls, &timeout_proc, PSWP, "bored", 0);
-		sleep_finish(&sls, CIRCQ_EMPTY(&timeout_proc));
+		sleep_setup(&timeout_proc, PSWP, "bored");
+		sleep_finish(0, CIRCQ_EMPTY(&timeout_proc));
 
 		mtx_enter(&timeout_mutex);
 		while (!CIRCQ_EMPTY(&timeout_proc)) {

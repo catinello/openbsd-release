@@ -1,4 +1,4 @@
-/* $OpenBSD: armreg.h,v 1.26 2022/12/23 17:46:49 kettenis Exp $ */
+/* $OpenBSD: armreg.h,v 1.29 2023/06/10 19:30:48 kettenis Exp $ */
 /*-
  * Copyright (c) 2013, 2014 Andrew Turner
  * Copyright (c) 2015 The FreeBSD Foundation
@@ -165,9 +165,11 @@
 #define	ESR_ELx_EXCEPTION(esr)	(((esr) & ESR_ELx_EC_MASK) >> ESR_ELx_EC_SHIFT)
 #define	 EXCP_UNKNOWN		0x00	/* Unkwn exception */
 #define	 EXCP_FP_SIMD		0x07	/* FP/SIMD trap */
+#define	 EXCP_BRANCH_TGT	0x0d	/* Branch target exception */
 #define	 EXCP_ILL_STATE		0x0e	/* Illegal execution state */
 #define	 EXCP_SVC		0x15	/* SVC trap */
 #define	 EXCP_MSR		0x18	/* MSR/MRS trap */
+#define	 EXCP_FPAC		0x1c	/* Faulting PAC trap */
 #define	 EXCP_INSN_ABORT_L	0x20	/* Instruction abort, from lower EL */
 #define	 EXCP_INSN_ABORT	0x21	/* Instruction abort, from same EL */ 
 #define	 EXCP_PC_ALIGN		0x22	/* PC alignment fault */
@@ -641,6 +643,7 @@
 #define	SCTLR_SED	0x0000000000000100
 #define	SCTLR_UMA	0x0000000000000200
 #define	SCTLR_I		0x0000000000001000
+#define	SCTLR_EnDB	0x0000000000002000
 #define	SCTLR_DZE	0x0000000000004000
 #define	SCTLR_UCT	0x0000000000008000
 #define	SCTLR_nTWI	0x0000000000010000
@@ -650,6 +653,9 @@
 #define	SCTLR_EOE	0x0000000001000000
 #define	SCTLR_EE	0x0000000002000000
 #define	SCTLR_UCI	0x0000000004000000
+#define	SCTLR_EnDA	0x0000000008000000
+#define	SCTLR_EnIB	0x0000000040000000
+#define	SCTLR_EnIA	0x0000000080000000
 
 /* SPSR_EL1 */
 /*
@@ -672,6 +678,7 @@
 #define	PSR_I		0x00000080
 #define	PSR_A		0x00000100
 #define	PSR_D		0x00000200
+#define	PSR_BTYPE	0x00000c00
 #define	PSR_SSBS	0x00001000
 #define	PSR_IL		0x00100000
 #define	PSR_SS		0x00200000

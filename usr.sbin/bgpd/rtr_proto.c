@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtr_proto.c,v 1.15 2023/03/17 11:14:10 claudio Exp $ */
+/*	$OpenBSD: rtr_proto.c,v 1.17 2023/08/16 08:26:35 claudio Exp $ */
 
 /*
  * Copyright (c) 2020 Claudio Jeker <claudio@openbsd.org>
@@ -40,6 +40,7 @@ struct rtr_header {
 #define RTR_DEFAULT_REFRESH	3600
 #define RTR_DEFAULT_RETRY	600
 #define RTR_DEFAULT_EXPIRE	7200
+#define RTR_DEFAULT_ACTIVE	60
 
 enum rtr_pdu_type {
 	SERIAL_NOTIFY = 0,
@@ -99,6 +100,7 @@ enum rtr_event {
 	RTR_EVNT_TIMER_REFRESH,
 	RTR_EVNT_TIMER_RETRY,
 	RTR_EVNT_TIMER_EXPIRE,
+	RTR_EVNT_TIMER_ACTIVE,
 	RTR_EVNT_SEND_ERROR,
 	RTR_EVNT_SERIAL_NOTIFY,
 	RTR_EVNT_CACHE_RESPONSE,
@@ -116,6 +118,7 @@ static const char *rtr_eventnames[] = {
 	"refresh timer expired",
 	"retry timer expired",
 	"expire timer expired",
+	"activity timer expired",
 	"sent error",
 	"serial notify received",
 	"cache response received",
@@ -147,8 +150,8 @@ struct rtr_session {
 	TAILQ_ENTRY(rtr_session)	entry;
 	char				descr[PEER_DESCR_LEN];
 	struct roa_tree			roa_set;
-	struct aspa_tree		aspa_v4;
-	struct aspa_tree		aspa_v6;
+	struct aspa_tree		aspa;
+	struct aspa_tree		aspa_oldv6;
 	struct ibuf_read		r;
 	struct msgbuf			w;
 	struct timer_head		timers;
@@ -157,8 +160,10 @@ struct rtr_session {
 	uint32_t			refresh;
 	uint32_t			retry;
 	uint32_t			expire;
+	uint32_t			active;
 	int				session_id;
 	int				fd;
+	int				active_lock;
 	enum rtr_state			state;
 	enum reconf_action		reconf_action;
 	enum rtr_error			last_sent_error;
@@ -219,8 +224,8 @@ rtr_reset_cache(struct rtr_session *rs)
 	rs->session_id = -1;
 	timer_stop(&rs->timers, Timer_Rtr_Expire);
 	free_roatree(&rs->roa_set);
-	free_aspatree(&rs->aspa_v4);
-	free_aspatree(&rs->aspa_v6);
+	free_aspatree(&rs->aspa);
+	free_aspatree(&rs->aspa_oldv6);
 }
 
 static struct ibuf *
@@ -622,7 +627,6 @@ rtr_parse_aspa(struct rtr_session *rs, uint8_t *buf, size_t len)
 	struct aspa_set *aspa, *a;
 	size_t offset;
 	uint16_t cnt, i;
-	uint8_t aid;
 
 	memcpy(&rtr_aspa, buf + sizeof(struct rtr_header), sizeof(rtr_aspa));
 	offset = sizeof(struct rtr_header) + sizeof(rtr_aspa);
@@ -642,11 +646,9 @@ rtr_parse_aspa(struct rtr_session *rs, uint8_t *buf, size_t len)
 	}
 
 	if (rtr_aspa.afi_flags & FLAG_AFI_V6) {
-		aid = AID_INET6;
-		aspatree = &rs->aspa_v6;
+		aspatree = &rs->aspa_oldv6;
 	} else {
-		aid = AID_INET;
-		aspatree = &rs->aspa_v4;
+		aspatree = &rs->aspa;
 	}
 
 	/* create aspa_set entry from the rtr aspa pdu */
@@ -659,8 +661,7 @@ rtr_parse_aspa(struct rtr_session *rs, uint8_t *buf, size_t len)
 	aspa->as = ntohl(rtr_aspa.cas);
 	aspa->num = cnt;
 	if (cnt > 0) {
-		if ((aspa->tas = calloc(cnt, sizeof(uint32_t))) == NULL ||
-		    (aspa->tas_aid = calloc(cnt, 1)) == NULL) {
+		if ((aspa->tas = calloc(cnt, sizeof(uint32_t))) == NULL) {
 			free_aspa(aspa);
 			log_warn("rtr %s: received %s",
 			    log_rtr(rs), log_rtr_type(ASPA));
@@ -673,7 +674,6 @@ rtr_parse_aspa(struct rtr_session *rs, uint8_t *buf, size_t len)
 			memcpy(&tas, buf + offset + i * sizeof(tas),
 			    sizeof(tas));
 			aspa->tas[i] = ntohl(tas);
-			aspa->tas_aid[i] = aid;
 		}
 	}
 
@@ -1033,18 +1033,30 @@ rtr_fsm(struct rtr_session *rs, enum rtr_event event)
 		rtr_reset_cache(rs);
 		rtr_recalc();
 		break;
+	case RTR_EVNT_TIMER_ACTIVE:
+		log_warnx("rtr %s: activity timer fired", log_rtr(rs));
+		rtr_sem_release(rs->active_lock);
+		rtr_recalc();
+		rs->active_lock = 0;
+		break;
 	case RTR_EVNT_CACHE_RESPONSE:
 		rs->state = RTR_STATE_ACTIVE;
 		timer_stop(&rs->timers, Timer_Rtr_Refresh);
 		timer_stop(&rs->timers, Timer_Rtr_Retry);
-		/* XXX start timer to limit active time */
+		timer_set(&rs->timers, Timer_Rtr_Active, rs->active);
+		/* prevent rtr_recalc from running while active */
+		rs->active_lock = 1;
+		rtr_sem_acquire(rs->active_lock);
 		break;
 	case RTR_EVNT_END_OF_DATA:
 		/* start refresh and expire timers */
 		timer_set(&rs->timers, Timer_Rtr_Refresh, rs->refresh);
 		timer_set(&rs->timers, Timer_Rtr_Expire, rs->expire);
+		timer_stop(&rs->timers, Timer_Rtr_Active);
 		rs->state = RTR_STATE_IDLE;
+		rtr_sem_release(rs->active_lock);
 		rtr_recalc();
+		rs->active_lock = 0;
 		break;
 	case RTR_EVNT_CACHE_RESET:
 		rtr_reset_cache(rs);
@@ -1164,6 +1176,9 @@ rtr_check_events(struct pollfd *pfds, size_t npfds)
 			case Timer_Rtr_Expire:
 				rtr_fsm(rs, RTR_EVNT_TIMER_EXPIRE);
 				break;
+			case Timer_Rtr_Active:
+				rtr_fsm(rs, RTR_EVNT_TIMER_ACTIVE);
+				break;
 			default:
 				fatalx("King Bula lost in time");
 			}
@@ -1225,8 +1240,8 @@ rtr_new(uint32_t id, char *descr)
 		fatal("RTR session %s", descr);
 
 	RB_INIT(&rs->roa_set);
-	RB_INIT(&rs->aspa_v4);
-	RB_INIT(&rs->aspa_v6);
+	RB_INIT(&rs->aspa);
+	RB_INIT(&rs->aspa_oldv6);
 	TAILQ_INIT(&rs->timers);
 	msgbuf_init(&rs->w);
 
@@ -1237,6 +1252,7 @@ rtr_new(uint32_t id, char *descr)
 	rs->refresh = RTR_DEFAULT_REFRESH;
 	rs->retry = RTR_DEFAULT_RETRY;
 	rs->expire = RTR_DEFAULT_EXPIRE;
+	rs->active = RTR_DEFAULT_ACTIVE;
 	rs->state = RTR_STATE_CLOSED;
 	rs->reconf_action = RECONF_REINIT;
 	rs->last_recv_error = NO_ERROR;
@@ -1338,9 +1354,9 @@ rtr_aspa_merge(struct aspa_tree *at)
 	struct aspa_set *aspa;
 
 	TAILQ_FOREACH(rs, &rtrs, entry) {
-		RB_FOREACH(aspa, aspa_tree, &rs->aspa_v4)
+		RB_FOREACH(aspa, aspa_tree, &rs->aspa)
 			rtr_aspa_insert(at, aspa);
-		RB_FOREACH(aspa, aspa_tree, &rs->aspa_v6)
+		RB_FOREACH(aspa, aspa_tree, &rs->aspa_oldv6)
 			rtr_aspa_insert(at, aspa);
 	}
 }

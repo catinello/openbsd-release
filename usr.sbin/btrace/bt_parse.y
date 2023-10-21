@@ -1,7 +1,7 @@
-/*	$OpenBSD: bt_parse.y,v 1.49 2022/12/28 21:30:16 jmc Exp $	*/
+/*	$OpenBSD: bt_parse.y,v 1.53 2023/09/11 19:01:26 mpi Exp $	*/
 
 /*
- * Copyright (c) 2019-2021 Martin Pieuchot <mpi@openbsd.org>
+ * Copyright (c) 2019-2023 Martin Pieuchot <mpi@openbsd.org>
  * Copyright (c) 2019 Tobias Heider <tobhe@openbsd.org>
  * Copyright (c) 2015 Ted Unangst <tedu@openbsd.org>
  *
@@ -72,6 +72,8 @@ struct bt_stmt	*bg_store(const char *, struct bt_arg *);
 struct bt_arg	*bg_find(const char *);
 struct bt_var	*bg_get(const char *);
 
+struct bt_arg	*bi_find(struct bt_arg *, unsigned long);
+
 struct bt_var	*bl_lookup(const char *);
 struct bt_stmt	*bl_store(const char *, struct bt_arg *);
 struct bt_arg	*bl_find(const char *);
@@ -109,13 +111,14 @@ typedef struct {
 static void	 yyerror(const char *, ...);
 static int	 yylex(void);
 
-static int pflag;
+static int 	 pflag = 0;		/* probe parsing context flag */
+static int 	 beflag = 0;		/* BEGIN/END parsing context flag */
 %}
 
 %token	<v.i>		ERROR ENDFILT
 %token	<v.i>		OP_EQ OP_NE OP_LE OP_LT OP_GE OP_GT OP_LAND OP_LOR
 /* Builtins */
-%token	<v.i>		BUILTIN BEGIN END HZ IF
+%token	<v.i>		BUILTIN BEGIN END HZ IF STR
 /* Functions and Map operators */
 %token  <v.i>		F_DELETE F_PRINT
 %token	<v.i>		MFUNC FUNC0 FUNC1 FUNCN OP1 OP2 OP4 MOP0 MOP1
@@ -127,7 +130,7 @@ static int pflag;
 %type	<v.probe>	plist probe pname
 %type	<v.filter>	filter
 %type	<v.stmt>	action stmt stmtblck stmtlist block
-%type	<v.arg>		pat vargs mentry mpat pargs staticv
+%type	<v.arg>		vargs mentry mpat pargs staticv
 %type	<v.arg>		expr term fterm variable factor func
 %%
 
@@ -137,7 +140,7 @@ grammar	: /* empty */
 	| grammar error
 	;
 
-rule	: plist filter action		{ br_new($1, $2, $3); }
+rule	: plist filter action		{ br_new($1, $2, $3); beflag = 0; }
 	;
 
 beginend: BEGIN	| END ;
@@ -147,7 +150,7 @@ plist	: plist ',' probe		{ $$ = bp_append($1, $3); }
 	;
 
 probe	: { pflag = 1; } pname		{ $$ = $2; pflag = 0; }
-	| beginend			{ $$ = bp_new(NULL, NULL, NULL, $1); }
+	| { beflag = 1; } beginend	{ $$ = bp_new(NULL, NULL, NULL, $2); }
 	;
 
 pname	: STRING ':' STRING ':' STRING	{ $$ = bp_new($1, $3, $5, 0); }
@@ -169,11 +172,7 @@ mentry	: gvar '[' vargs ']'		{ $$ = bm_find($1, $3); }
 	;
 
 mpat	: MOP0 '(' ')'			{ $$ = ba_new(NULL, $1); }
-	| MOP1 '(' pat ')'		{ $$ = ba_new($3, $1); }
-	| pat
-	;
-
-pat	: CSTRING			{ $$ = ba_new($1, B_AT_STR); }
+	| MOP1 '(' expr ')'		{ $$ = ba_new($3, $1); }
 	| expr
 	;
 
@@ -213,9 +212,11 @@ fterm	: fterm '*' factor	{ $$ = ba_op(B_AT_OP_MULT, $1, $3); }
 
 variable: lvar			{ $$ = bl_find($1); }
 	| gvar			{ $$ = bg_find($1); }
+	| variable '.' NUMBER	{ $$ = bi_find($1, $3); }
 	;
 
 factor : '(' expr ')'		{ $$ = $2; }
+	| '(' vargs ',' expr ')'{ $$ = ba_new(ba_append($2, $4), B_AT_TUPLE); }
 	| NUMBER		{ $$ = ba_new($1, B_AT_LONG); }
 	| BUILTIN		{ $$ = ba_new(NULL, $1); }
 	| CSTRING		{ $$ = ba_new($1, B_AT_STR); }
@@ -226,15 +227,15 @@ factor : '(' expr ')'		{ $$ = $2; }
 	;
 
 func	: STR '(' staticv ')'		{ $$ = ba_new($3, B_AT_FN_STR); }
-	| STR '(' staticv ',' pat ')'	{ $$ = ba_op(B_AT_FN_STR, $3, $5); }
+	| STR '(' staticv ',' expr ')'	{ $$ = ba_op(B_AT_FN_STR, $3, $5); }
 	;
 
-vargs	: pat
-	| vargs ',' pat			{ $$ = ba_append($1, $3); }
+vargs	: expr
+	| vargs ',' expr		{ $$ = ba_append($1, $3); }
 	;
 
 pargs	: expr
-	| gvar ',' pat			{ $$ = ba_append(bg_find($1), $3); }
+	| gvar ',' expr			{ $$ = ba_append(bg_find($1), $3); }
 	;
 
 NL	: /* empty */
@@ -242,17 +243,17 @@ NL	: /* empty */
 	;
 
 stmt	: ';' NL			{ $$ = NULL; }
-	| gvar '=' pat			{ $$ = bg_store($1, $3); }
-	| lvar '=' pat			{ $$ = bl_store($1, $3); }
+	| gvar '=' expr			{ $$ = bg_store($1, $3); }
+	| lvar '=' expr			{ $$ = bl_store($1, $3); }
 	| gvar '[' vargs ']' '=' mpat	{ $$ = bm_insert($1, $3, $6); }
 	| FUNCN '(' vargs ')'		{ $$ = bs_new($1, $3, NULL); }
-	| FUNC1 '(' pat ')'		{ $$ = bs_new($1, $3, NULL); }
+	| FUNC1 '(' expr ')'		{ $$ = bs_new($1, $3, NULL); }
 	| MFUNC '(' variable ')'	{ $$ = bs_new($1, $3, NULL); }
 	| FUNC0 '(' ')'			{ $$ = bs_new($1, NULL, NULL); }
 	| F_DELETE '(' mentry ')'	{ $$ = bm_op($1, $3, NULL); }
 	| F_PRINT '(' pargs ')'		{ $$ = bs_new($1, $3, NULL); }
-	| gvar '=' OP1 '(' pat ')'	{ $$ = bh_inc($1, $5, NULL); }
-	| gvar '=' OP4 '(' pat ',' vargs ')'	{ $$ = bh_inc($1, $5, $7); }
+	| gvar '=' OP1 '(' expr ')'	{ $$ = bh_inc($1, $5, NULL); }
+	| gvar '=' OP4 '(' expr ',' vargs ')'	{ $$ = bh_inc($1, $5, $7); }
 	;
 
 stmtblck: IF '(' expr ')' block			{ $$ = bt_new($3, $5); }
@@ -269,6 +270,7 @@ block	: action
 	;
 
 action	: '{' stmtlist '}'		{ $$ = $2; }
+	| '{' '}'			{ $$ = NULL; }
 	;
 
 %%
@@ -421,7 +423,7 @@ ba_new0(void *val, enum bt_argtype type)
 
 /*
  * Link two arguments together, to build an argument list used in
- * function calls.
+ * operators, tuples and function calls.
  */
 struct bt_arg *
 ba_append(struct bt_arg *da0, struct bt_arg *da1)
@@ -594,6 +596,17 @@ bl_store(const char *vname, struct bt_arg *vval)
 	return bs_new(B_AC_STORE, vval, bv);
 }
 
+/* Create an argument that points to a tuple variable and a given index */
+struct bt_arg *
+bi_find(struct bt_arg *ba, unsigned long index)
+{
+	struct bt_var *bv = ba->ba_value;
+
+	ba = ba_new(bv, B_AT_TMEMBER);
+	ba->ba_key = (void *)index;
+	return ba;
+}
+
 struct bt_stmt *
 bm_op(enum bt_action mact, struct bt_arg *ba, struct bt_arg *mval)
 {
@@ -612,7 +625,7 @@ bm_insert(const char *mname, struct bt_arg *mkey, struct bt_arg *mval)
 	return bs_new(B_AC_INSERT, ba, (struct bt_var *)mval);
 }
 
-/* Create an argument that points to a variable and attach a key to it. */
+/* Create an argument that points to a map variable and attach a key to it. */
 struct bt_arg *
 bm_find(const char *vname, struct bt_arg *mkey)
 {
@@ -966,6 +979,12 @@ again:
 				yylval.v.string = kwp->word;
 				return STRING;
 			}
+		} else if (beflag) {
+			/* Interpret tokens in a BEGIN/END context. */
+			if (kwp->type >= B_AT_BI_ARG0 &&
+			    kwp->type <= B_AT_BI_ARG9)
+				yyerror("the %s builtin cannot be used with "
+				    "BEGIN or END probes", kwp->word);
 		}
 		yylval.v.i = kwp->type;
 		return kwp->token;

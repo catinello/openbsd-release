@@ -109,6 +109,7 @@ $code.=<<___;
 .globl	$func
 .type	$func,\@function,$nargs
 $func:
+	endbr64
 	cmp	\$0,$len
 	je	.Labort
 	push	%rbx
@@ -453,6 +454,7 @@ $code.=<<___;
 .type	RC4_set_key,\@function,3
 .align	16
 RC4_set_key:
+	endbr64
 	lea	8($dat),$dat
 	lea	($inp,$len),$inp
 	neg	$len
@@ -489,18 +491,6 @@ RC4_set_key:
 	mov	%eax,-4($dat)
 	ret
 .size	RC4_set_key,.-RC4_set_key
-
-.globl	RC4_options
-.type	RC4_options,\@abi-omnipotent
-.align	16
-RC4_options:
-	lea	.Lopts(%rip),%rax
-	ret
-.align	64
-.Lopts:
-.asciz	"rc4(64x,int)"
-.align	64
-.size	RC4_options,.-RC4_options
 ___
 }
 

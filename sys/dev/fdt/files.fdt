@@ -1,4 +1,4 @@
-#	$OpenBSD: files.fdt,v 1.182 2023/03/19 11:17:16 kettenis Exp $
+#	$OpenBSD: files.fdt,v 1.198 2023/08/29 12:09:40 kettenis Exp $
 #
 # Config file and device description for machine-independent FDT code.
 # Included by ports that need it.
@@ -48,7 +48,7 @@ file	dev/fdt/sxipio.c		sxipio
 define	rsb {}
 device	sxirsb: rsb
 attach	sxirsb at fdt
-file	dev/fdt/sxirsb.c		sxirsb
+file	dev/fdt/sxirsb.c		sxirsb needs-flag
 
 device	sxipwm
 attach	sxipwm at fdt
@@ -207,12 +207,12 @@ file	dev/fdt/virtio_mmio.c		virtio_mmio
 attach	ahci at fdt with ahci_fdt
 file	dev/fdt/ahci_fdt.c		ahci_fdt
 
-# Synopsis Designware GMAC core
+# Synopsys DesignWare GMAC core
 device	dwge: ether, ifnet, mii, ifmedia
 attach	dwge at fdt
 file	dev/fdt/if_dwge.c		dwge
 
-# Synopsis Designware Ethernet QoS
+# Synopsys DesignWare Ethernet QoS
 attach	dwqe at fdt with dwqe_fdt
 file	dev/fdt/if_dwqe_fdt.c		dwqe_fdt
 
@@ -345,6 +345,10 @@ device	rkcomphy
 attach	rkcomphy at fdt
 file	dev/fdt/rkcomphy.c		rkcomphy
 
+device	rkusbphy
+attach	rkusbphy at fdt
+file	dev/fdt/rkusbphy.c		rkusbphy
+
 device	rkdrm: drmbase, wsemuldisplaydev, rasops15, rasops16, rasops24, rasops32
 attach	rkdrm at fdt
 file	dev/fdt/rkdrm.c				rkdrm
@@ -377,6 +381,10 @@ file	dev/fdt/rkiic.c			rkiic
 device	rkiis
 attach	rkiis at fdt
 file	dev/fdt/rkiis.c			rkiis
+
+device	rkiovd
+attach	rkiovd at fdt
+file	dev/fdt/rkiovd.c		rkiovd
 
 device	rkpcie: pcibus
 attach	rkpcie at fdt
@@ -414,9 +422,16 @@ device	rkvop
 attach	rkvop at fdt
 file	dev/fdt/rkvop.c			rkvop
 
+attach	dwiic at fdt with dwiic_fdt
+file	dev/fdt/dwiic_fdt.c		dwiic_fdt
+
 device	dwmmc: sdmmcbus
 attach	dwmmc at fdt
 file	dev/fdt/dwmmc.c			dwmmc
+
+device	dwmshc: sdhc, sdmmcbus
+attach	dwmshc at fdt
+file	dev/fdt/dwmshc.c		dwmshc
 
 device	dwdog
 attach	dwdog at fdt
@@ -652,6 +667,16 @@ device	tascodec
 attach	tascodec at i2c
 file	dev/fdt/tascodec.c		tascodec
 
+# Qualcomm Always On Subsystem
+device	qcaoss
+attach	qcaoss at fdt
+file	dev/fdt/qcaoss.c		qcaoss
+
+# Qualcomm CPU Clock
+device	qccpu
+attach	qccpu at fdt
+file	dev/fdt/qccpu.c		qccpu
+
 device	qcdwusb: fdt
 attach	qcdwusb at fdt
 file	dev/fdt/qcdwusb.c		qcdwusb
@@ -664,10 +689,35 @@ file	dev/fdt/qcgpio_fdt.c		qcgpio
 attach	qciic at fdt with qciic_fdt
 file	dev/fdt/qciic_fdt.c		qciic
 
+# Qualcomm Inter-Processor Communication controller
+device	qcipcc
+attach	qcipcc at fdt
+file	dev/fdt/qcipcc.c		qcipcc
+
+# Qualcomm Hardware Spinlock
+device	qcmtx
+attach	qcmtx at fdt
+file	dev/fdt/qcmtx.c			qcmtx
+
+# Qualcomm Peripheral Authentication Service
+device	qcpas
+attach	qcpas at fdt
+file	dev/fdt/qcpas.c			qcpas
+
 # Qualcomm SCM
 device	qcscm
 attach	qcscm at fdt
 file	dev/fdt/qcscm.c			qcscm
+
+# Qualcomm Shared Memory API
+device	qcsmem
+attach	qcsmem at fdt
+file	dev/fdt/qcsmem.c		qcsmem
+
+# Qualcomm Shared Memory Point-to-Point
+device	qcsmptp
+attach	qcsmptp at fdt
+file	dev/fdt/qcsmptp.c		qcsmptp
 
 # Qualcomm SPMI controller
 device	qcspmi: spmi
@@ -678,6 +728,11 @@ file	dev/fdt/qcspmi.c		qcspmi
 device	qcpdc
 attach	qcpdc at fdt
 file	dev/fdt/qcpdc.c			qcpdc
+
+# Qualcomm Temperature Sensor
+device	qctsens
+attach	qctsens at fdt
+file	dev/fdt/qctsens.c		qctsens
 
 # Qualcomm PMIC
 device	qcpmic: spmi
@@ -699,10 +754,20 @@ device	qcpwm
 attach	qcpwm at spmi
 file	dev/fdt/qcpwm.c			qcpwm
 
+# Qualcomm RNG
+device	qcrng
+attach	qcrng at fdt
+file	dev/fdt/qcrng.c			qcrng
+
 # Qualcomm PMIC RTC
 device	qcrtc
 attach	qcrtc at spmi
 file	dev/fdt/qcrtc.c			qcrtc
+
+# Qualcomm PMIC Shared Direct Access Memory
+device	qcsdam
+attach	qcsdam at spmi
+file	dev/fdt/qcsdam.c		qcsdam
 
 # TI TPS6598x Type-C controller
 device	tipd

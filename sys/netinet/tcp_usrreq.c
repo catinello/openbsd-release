@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_usrreq.c,v 1.217 2023/03/14 00:24:05 yasuoka Exp $	*/
+/*	$OpenBSD: tcp_usrreq.c,v 1.222 2023/09/16 09:33:27 mpi Exp $	*/
 /*	$NetBSD: tcp_usrreq.c,v 1.20 1996/02/13 23:44:16 christos Exp $	*/
 
 /*
@@ -166,6 +166,7 @@ const struct sysctl_bounded_args tcpctl_vars[] = {
 	{ TCPCTL_SYN_BUCKET_LIMIT, &tcp_syn_bucket_limit, 1, INT_MAX },
 	{ TCPCTL_RFC3390, &tcp_do_rfc3390, 0, 2 },
 	{ TCPCTL_ALWAYS_KEEPALIVE, &tcp_always_keepalive, 0, 1 },
+	{ TCPCTL_TSO, &tcp_do_tso, 0, 1 },
 };
 
 struct	inpcbtable tcbtable;
@@ -210,7 +211,7 @@ tcp_fill_info(struct tcpcb *tp, struct socket *so, struct mbuf *m)
 	struct proc *p = curproc;
 	struct tcp_info *ti;
 	u_int t = 1000;		/* msec => usec */
-	uint32_t now;
+	uint64_t now;
 
 	if (sizeof(*ti) > MLEN) {
 		MCLGETL(m, M_WAITOK, sizeof(*ti));
@@ -1236,7 +1237,7 @@ tcp_sysctl_tcpstat(void *oldp, size_t *oldlenp, void *newp)
 #define ASSIGN(field)	do { tcpstat.field = counters[i++]; } while (0)
 
 	memset(&tcpstat, 0, sizeof tcpstat);
-	counters_read(tcpcounters, counters, nitems(counters));
+	counters_read(tcpcounters, counters, nitems(counters), NULL);
 	ASSIGN(tcps_connattempt);
 	ASSIGN(tcps_accepts);
 	ASSIGN(tcps_connects);
@@ -1335,6 +1336,14 @@ tcp_sysctl_tcpstat(void *oldp, size_t *oldlenp, void *newp)
 	ASSIGN(tcps_sack_rcv_opts);
 	ASSIGN(tcps_sack_snd_opts);
 	ASSIGN(tcps_sack_drop_opts);
+	ASSIGN(tcps_outswtso);
+	ASSIGN(tcps_outhwtso);
+	ASSIGN(tcps_outpkttso);
+	ASSIGN(tcps_outbadtso);
+	ASSIGN(tcps_inswlro);
+	ASSIGN(tcps_inhwlro);
+	ASSIGN(tcps_inpktlro);
+	ASSIGN(tcps_inbadlro);
 
 #undef ASSIGN
 
@@ -1494,8 +1503,8 @@ tcp_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
 
 	default:
 		NET_LOCK();
-		error = sysctl_bounded_arr(tcpctl_vars, nitems(tcpctl_vars), name,
-		     namelen, oldp, oldlenp, newp, newlen);
+		error = sysctl_bounded_arr(tcpctl_vars, nitems(tcpctl_vars),
+		    name, namelen, oldp, oldlenp, newp, newlen);
 		NET_UNLOCK();
 		return (error);
 	}

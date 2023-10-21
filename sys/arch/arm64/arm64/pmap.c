@@ -1,4 +1,4 @@
-/* $OpenBSD: pmap.c,v 1.92 2023/01/11 11:09:17 kettenis Exp $ */
+/* $OpenBSD: pmap.c,v 1.99 2023/08/10 19:29:32 kettenis Exp $ */
 /*
  * Copyright (c) 2008-2009,2014-2016 Dale Rahn <drahn@dalerahn.com>
  *
@@ -1220,10 +1220,12 @@ pmap_bootstrap(long kvo, paddr_t lpt1, long kernelstart, long kernelend,
 	vp1 = (struct pmapvp1 *)pt1pa;
 	pmap_kernel()->pm_vp.l1 = (struct pmapvp1 *)va;
 	pmap_kernel()->pm_privileged = 1;
+	pmap_kernel()->pm_guarded = ATTR_GP;
 	pmap_kernel()->pm_asid = 0;
 
 	pmap_tramp.pm_vp.l1 = (struct pmapvp1 *)va + 1;
 	pmap_tramp.pm_privileged = 1;
+	pmap_tramp.pm_guarded = ATTR_GP;
 	pmap_tramp.pm_asid = 0;
 
 	/* Mark ASID 0 as in-use. */
@@ -1688,6 +1690,10 @@ pmap_pte_update(struct pte_desc *pted, uint64_t *pl3)
 	else
 		access_bits = ap_bits_user[pted->pted_pte & PROT_MASK];
 
+#ifndef SMALL_KERNEL
+	access_bits |= pm->pm_guarded;
+#endif
+
 	pte = (pted->pted_pte & PTE_RPGN) | attr | access_bits | L3_P;
 	*pl3 = access_bits ? pte : 0;
 }
@@ -1921,13 +1927,6 @@ pmap_clear_reference(struct vm_page *pg)
 	mtx_leave(&pg->mdpage.pv_mtx);
 
 	return 0;
-}
-
-void
-pmap_copy(pmap_t dst_pmap, pmap_t src_pmap, vaddr_t dst_addr,
-	vsize_t len, vaddr_t src_addr)
-{
-	/* NOOP */
 }
 
 void
@@ -2230,6 +2229,38 @@ pmap_show_mapping(uint64_t va)
 }
 
 void
+pmap_setpauthkeys(struct pmap *pm)
+{
+	if (ID_AA64ISAR1_APA(cpu_id_aa64isar1) >= ID_AA64ISAR1_APA_BASE ||
+	    ID_AA64ISAR1_API(cpu_id_aa64isar1) >= ID_AA64ISAR1_API_BASE) {
+		__asm volatile (".arch armv8.3-a; msr apiakeylo_el1, %0"
+		    :: "r"(pm->pm_apiakey[0]));
+		__asm volatile (".arch armv8.3-a; msr apiakeyhi_el1, %0"
+		    :: "r"(pm->pm_apiakey[1]));
+		__asm volatile (".arch armv8.3-a; msr apdakeylo_el1, %0"
+		    :: "r"(pm->pm_apdakey[0]));
+		__asm volatile (".arch armv8.3-a; msr apdakeyhi_el1, %0"
+		    :: "r"(pm->pm_apdakey[1]));
+		__asm volatile (".arch armv8.3-a; msr apibkeylo_el1, %0"
+		    :: "r"(pm->pm_apibkey[0]));
+		__asm volatile (".arch armv8.3-a; msr apibkeyhi_el1, %0"
+		    :: "r"(pm->pm_apibkey[1]));
+		__asm volatile (".arch armv8.3-a; msr apdbkeylo_el1, %0"
+		    :: "r"(pm->pm_apdbkey[0]));
+		__asm volatile (".arch armv8.3-a; msr apdbkeyhi_el1, %0"
+		    :: "r"(pm->pm_apdbkey[1]));
+	}
+
+	if (ID_AA64ISAR1_GPA(cpu_id_aa64isar1) >= ID_AA64ISAR1_GPA_IMPL ||
+	    ID_AA64ISAR1_GPI(cpu_id_aa64isar1) >= ID_AA64ISAR1_GPI_IMPL) {
+		__asm volatile (".arch armv8.3-a; msr apgakeylo_el1, %0"
+		    :: "r"(pm->pm_apgakey[0]));
+		__asm volatile (".arch armv8.3-a; msr apgakeyhi_el1, %0"
+		    :: "r"(pm->pm_apgakey[1]));
+	}
+}
+
+void
 pmap_setttb(struct proc *p)
 {
 	struct cpu_info *ci = curcpu();
@@ -2244,6 +2275,9 @@ pmap_setttb(struct proc *p)
 	if (pm != pmap_kernel() &&
 	    (pm->pm_asid & ~PMAP_ASID_MASK) != pmap_asid_gen)
 		pmap_allocate_asid(pm);
+
+	if (pm != pmap_kernel())
+		pmap_setpauthkeys(pm);
 
 	WRITE_SPECIALREG(ttbr0_el1, pmap_kernel()->pm_pt0pa);
 	__asm volatile("isb");

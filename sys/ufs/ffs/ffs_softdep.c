@@ -1,4 +1,4 @@
-/*	$OpenBSD: ffs_softdep.c,v 1.150 2021/04/28 09:53:53 claudio Exp $	*/
+/*	$OpenBSD: ffs_softdep.c,v 1.152 2023/07/05 15:13:28 beck Exp $	*/
 
 /*
  * Copyright 1998, 2000 Marshall Kirk McKusick. All Rights Reserved.
@@ -1224,6 +1224,8 @@ softdep_mount(struct vnode *devvp, struct mount *mp, struct fs *fs,
 	struct buf *bp;
 	int error, cyl;
 
+	KASSERTMSG(1, "softdep_mount should not have been called");
+
 	/*
 	 * When doing soft updates, the counters in the
 	 * superblock may have gotten out of sync, so we have
@@ -1926,7 +1928,7 @@ softdep_setup_freeblocks(struct inode *ip, off_t length)
 	DIP_ASSIGN(ip, size, 0);
 
 	/*
-	 * Push the zero'ed inode to to its disk buffer so that we are free
+	 * Push the zero'ed inode to its disk buffer so that we are free
 	 * to delete its dependencies below. Once the dependencies are gone
 	 * the buffer can be safely released.
 	 */

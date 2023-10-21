@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.255 2022/12/28 21:30:18 jmc Exp $	*/
+/*	$OpenBSD: relay.c,v 1.257 2023/09/03 10:22:03 nicm Exp $	*/
 
 /*
  * Copyright (c) 2006 - 2014 Reyk Floeter <reyk@openbsd.org>
@@ -2065,10 +2065,6 @@ relay_tls_ctx_create_proto(struct protocol *proto, struct tls_config *tls_cfg)
 	uint32_t		 protocols = 0;
 
 	/* Set the allowed SSL protocols */
-	if (proto->tlsflags & TLSFLAG_TLSV1_0)
-		protocols |= TLS_PROTOCOL_TLSv1_0;
-	if (proto->tlsflags & TLSFLAG_TLSV1_1)
-		protocols |= TLS_PROTOCOL_TLSv1_1;
 	if (proto->tlsflags & TLSFLAG_TLSV1_2)
 		protocols |= TLS_PROTOCOL_TLSv1_2;
 	if (proto->tlsflags & TLSFLAG_TLSV1_3)
@@ -2633,7 +2629,7 @@ relay_bufferevent_write_chunk(struct ctl_relay_event *cre,
     struct evbuffer *buf, size_t size)
 {
 	int ret;
-	ret = relay_bufferevent_write(cre, buf->buffer, size);
+	ret = relay_bufferevent_write(cre, EVBUFFER_DATA(buf), size);
 	if (ret != -1)
 		evbuffer_drain(buf, size);
 	return (ret);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: clock.c,v 1.10 2023/02/04 23:20:54 cheloha Exp $	*/
+/*	$OpenBSD: clock.c,v 1.14 2023/09/17 14:50:51 cheloha Exp $	*/
 
 /*
  * Copyright (c) 2020 Mark Kettenis <kettenis@openbsd.org>
@@ -53,8 +53,6 @@ static struct timecounter tb_timecounter = {
 	.tc_user = TC_TB,
 };
 
-void	cpu_startclock(void);
-
 void
 dec_rearm(void *unused, uint64_t nsecs)
 {
@@ -96,11 +94,9 @@ cpu_initclocks(void)
 
 	stathz = hz;
 	profhz = stathz * 10;
-	clockintr_init(CL_RNDSTAT);
+	statclock_is_randomized = 1;
 
 	evcount_attach(&clock_count, "clock", NULL);
-
-	cpu_startclock();
 }
 
 void
@@ -141,7 +137,6 @@ decr_intr(struct trapframe *frame)
 void
 setstatclockrate(int newhz)
 {
-	clockintr_setstatclockrate(newhz);
 }
 
 void

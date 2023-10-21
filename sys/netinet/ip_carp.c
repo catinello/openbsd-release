@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip_carp.c,v 1.356 2023/03/08 04:43:09 guenther Exp $	*/
+/*	$OpenBSD: ip_carp.c,v 1.358 2023/09/16 09:33:27 mpi Exp $	*/
 
 /*
  * Copyright (c) 2002 Michael Shalayeff. All rights reserved.
@@ -749,7 +749,8 @@ carp_sysctl_carpstat(void *oldp, size_t *oldlenp, void *newp)
 
 	CTASSERT(sizeof(carpstat) == (carps_ncounters * sizeof(uint64_t)));
 	memset(&carpstat, 0, sizeof carpstat);
-	counters_read(carpcounters, (uint64_t *)&carpstat, carps_ncounters);
+	counters_read(carpcounters, (uint64_t *)&carpstat, carps_ncounters,
+	    NULL);
 	return (sysctl_rdstruct(oldp, oldlenp, newp,
 	    &carpstat, sizeof(carpstat)));
 }
@@ -1693,7 +1694,7 @@ carp_set_ifp(struct carp_softc *sc, struct ifnet *ifp0)
 
 	sc->sc_carpdevidx = ifp0->if_index;
 	sc->sc_if.if_capabilities = ifp0->if_capabilities &
-	    IFCAP_CSUM_MASK;
+	    (IFCAP_CSUM_MASK | IFCAP_TSOv4 | IFCAP_TSOv6);
 
 	SRPL_FOREACH_LOCKED(vr, cif, sc_list) {
 		struct carp_vhost_entry *vrhead, *schead;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_mmap.c,v 1.180 2023/03/08 04:43:09 guenther Exp $	*/
+/*	$OpenBSD: uvm_mmap.c,v 1.182 2023/05/09 10:35:20 kn Exp $	*/
 /*	$NetBSD: uvm_mmap.c,v 1.49 2001/02/18 21:19:08 chs Exp $	*/
 
 /*
@@ -449,7 +449,6 @@ sys_msync(struct proc *p, void *v, register_t *retval)
 	} */ *uap = v;
 	vaddr_t addr;
 	vsize_t size, pageoff;
-	vm_map_t map;
 	int flags, uvmflags;
 
 	/* extract syscall args from the uap */
@@ -470,9 +469,6 @@ sys_msync(struct proc *p, void *v, register_t *retval)
 	if (addr > SIZE_MAX - size)
 		return EINVAL;		/* disallow wrap-around. */
 
-	/* get map */
-	map = &p->p_vmspace->vm_map;
-
 	/* translate MS_ flags into PGO_ flags */
 	uvmflags = PGO_CLEANIT;
 	if (flags & MS_INVALIDATE)
@@ -482,7 +478,7 @@ sys_msync(struct proc *p, void *v, register_t *retval)
 	else
 		uvmflags |= PGO_SYNCIO;	 /* XXXCDC: force sync for now! */
 
-	return uvm_map_clean(map, addr, addr+size, uvmflags);
+	return uvm_map_clean(&p->p_vmspace->vm_map, addr, addr+size, uvmflags);
 }
 
 /*
@@ -1249,7 +1245,7 @@ sys_kbind(struct proc *p, void *v, register_t *retval)
 		else
 			s -= extra;
 redo:
-		/* make sure sure the desired page is mapped into kernel_map */
+		/* make sure the desired page is mapped into kernel_map */
 		if (baseva != last_baseva) {
 			if (kva != 0) {
 				vm_map_lock(kernel_map);

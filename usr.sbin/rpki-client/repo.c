@@ -1,4 +1,4 @@
-/*	$OpenBSD: repo.c,v 1.41 2022/12/28 21:30:18 jmc Exp $ */
+/*	$OpenBSD: repo.c,v 1.51 2023/07/20 05:18:31 claudio Exp $ */
 /*
  * Copyright (c) 2021 Claudio Jeker <claudio@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -97,10 +97,12 @@ struct repo {
 	const struct rsyncrepo	*rsync;
 	const struct tarepo	*ta;
 	struct entityq		 queue;		/* files waiting for repo */
-	struct repostats	 stats;
+	struct repotalstats	 stats[TALSZ_MAX];
+	struct repostats	 repostats;
 	struct timespec		 start_time;
 	time_t			 alarm;		/* sync timeout */
 	int			 talid;
+	int			 stats_used[TALSZ_MAX];
 	unsigned int		 id;		/* identifier */
 };
 static SLIST_HEAD(, repo)	repos = SLIST_HEAD_INITIALIZER(repos);
@@ -117,6 +119,7 @@ static void		 remove_contents(char *);
 struct filepath {
 	RB_ENTRY(filepath)	entry;
 	char			*file;
+	time_t			 mtime;
 };
 
 static inline int
@@ -131,12 +134,13 @@ RB_PROTOTYPE(filepath_tree, filepath, entry, filepathcmp);
  * Functions to lookup which files have been accessed during computation.
  */
 int
-filepath_add(struct filepath_tree *tree, char *file)
+filepath_add(struct filepath_tree *tree, char *file, time_t mtime)
 {
 	struct filepath *fp;
 
 	if ((fp = malloc(sizeof(*fp))) == NULL)
 		err(1, NULL);
+	fp->mtime = mtime;
 	if ((fp->file = strdup(file)) == NULL)
 		err(1, NULL);
 
@@ -302,7 +306,8 @@ repo_done(const void *vp, int ok)
 
 		entityq_flush(&rp->queue, rp);
 		clock_gettime(CLOCK_MONOTONIC, &flush_time);
-		timespecsub(&flush_time, &rp->start_time, &rp->stats.sync_time);
+		timespecsub(&flush_time, &rp->start_time,
+		    &rp->repostats.sync_time);
 	}
 }
 
@@ -555,16 +560,18 @@ rrdp_free(void)
  * Check if a directory is an active rrdp repository.
  * Returns 1 if found else 0.
  */
-static int
-rrdp_is_active(const char *dir)
+static struct repo *
+repo_rrdp_bypath(const char *dir)
 {
-	struct rrdprepo *rr;
+	struct repo *rp;
 
-	SLIST_FOREACH(rr, &rrdprepos, entry)
-		if (strcmp(dir, rr->basedir) == 0)
-			return rr->state != REPO_FAILED;
-
-	return 0;
+	SLIST_FOREACH(rp, &repos, entry) {
+		if (rp->rrdp == NULL)
+			continue;
+		if (strcmp(dir, rp->rrdp->basedir) == 0)
+			return rp;
+	}
+	return NULL;
 }
 
 /*
@@ -612,22 +619,26 @@ repo_alloc(int talid)
  * Parse the RRDP state file if it exists and set the session struct
  * based on that information.
  */
-static void
-rrdp_parse_state(const struct rrdprepo *rr, struct rrdp_session *state)
+static struct rrdp_session *
+rrdp_session_parse(const struct rrdprepo *rr)
 {
 	FILE *f;
-	int fd, ln = 0;
+	struct rrdp_session *state;
+	int fd, ln = 0, deltacnt = 0;
 	const char *errstr;
 	char *line = NULL, *file;
 	size_t len = 0;
 	ssize_t n;
+
+	if ((state = calloc(1, sizeof(*state))) == NULL)
+		err(1, NULL);
 
 	file = rrdp_state_filename(rr, 0);
 	if ((fd = open(file, O_RDONLY)) == -1) {
 		if (errno != ENOENT)
 			warn("%s: open state file", rr->basedir);
 		free(file);
-		return;
+		return state;
 	}
 	free(file);
 	f = fdopen(fd, "r");
@@ -648,39 +659,47 @@ rrdp_parse_state(const struct rrdprepo *rr, struct rrdp_session *state)
 				goto fail;
 			break;
 		case 2:
+			if (strcmp(line, "-") == 0)
+				break;
 			if ((state->last_mod = strdup(line)) == NULL)
 				err(1, NULL);
 			break;
 		default:
-			goto fail;
+			if (deltacnt >= MAX_RRDP_DELTAS)
+				goto fail;
+			if ((state->deltas[deltacnt++] = strdup(line)) == NULL)
+				err(1, NULL);
+			break;
 		}
 		ln++;
 	}
 
-	free(line);
 	if (ferror(f))
 		goto fail;
 	fclose(f);
-	return;
+	free(line);
+	return state;
 
-fail:
+ fail:
 	warnx("%s: troubles reading state file", rr->basedir);
 	fclose(f);
+	free(line);
 	free(state->session_id);
 	free(state->last_mod);
 	memset(state, 0, sizeof(*state));
+	return state;
 }
 
 /*
  * Carefully write the RRDP session state file back.
  */
 void
-rrdp_save_state(unsigned int id, struct rrdp_session *state)
+rrdp_session_save(unsigned int id, struct rrdp_session *state)
 {
 	struct rrdprepo *rr;
 	char *temp, *file;
-	FILE *f;
-	int fd;
+	FILE *f = NULL;
+	int fd, i;
 
 	rr = rrdp_find(id);
 	if (rr == NULL)
@@ -689,10 +708,8 @@ rrdp_save_state(unsigned int id, struct rrdp_session *state)
 	file = rrdp_state_filename(rr, 0);
 	temp = rrdp_state_filename(rr, 1);
 
-	if ((fd = mkostemp(temp, O_CLOEXEC)) == -1) {
-		warn("mkostemp %s", temp);
+	if ((fd = mkostemp(temp, O_CLOEXEC)) == -1)
 		goto fail;
-	}
 	(void)fchmod(fd, 0644);
 	f = fdopen(fd, "w");
 	if (f == NULL)
@@ -700,37 +717,94 @@ rrdp_save_state(unsigned int id, struct rrdp_session *state)
 
 	/* write session state file out */
 	if (fprintf(f, "%s\n%lld\n", state->session_id,
-	    state->serial) < 0) {
-		fclose(f);
-		goto fail;
-	}
-	if (state->last_mod != NULL) {
-		if (fprintf(f, "%s\n", state->last_mod) < 0) {
-			fclose(f);
-			goto fail;
-		}
-	}
-	if (fclose(f) != 0)
+	    state->serial) < 0)
 		goto fail;
 
-	if (rename(temp, file) == -1)
-		warn("%s: rename state file", rr->basedir);
+	if (state->last_mod != NULL) {
+		if (fprintf(f, "%s\n", state->last_mod) < 0)
+			goto fail;
+	} else {
+		if (fprintf(f, "-\n") < 0)
+			goto fail;
+	}
+	for (i = 0; i < MAX_RRDP_DELTAS && state->deltas[i] != NULL; i++) {
+		if (fprintf(f, "%s\n", state->deltas[i]) < 0)
+			goto fail;
+	}
+	if (fclose(f) != 0) {
+		f = NULL;
+		goto fail;
+	}
+
+	if (rename(temp, file) == -1) {
+		warn("%s: rename %s to %s", rr->basedir, temp, file);
+		unlink(temp);
+	}
 
 	free(temp);
 	free(file);
 	return;
 
-fail:
-	warnx("%s: failed to save state", rr->basedir);
+ fail:
+	warn("%s: save state to %s", rr->basedir, temp);
+	if (f != NULL)
+		fclose(f);
 	unlink(temp);
 	free(temp);
 	free(file);
 }
 
+/*
+ * Free an rrdp_session pointer. Safe to call with NULL.
+ */
+void
+rrdp_session_free(struct rrdp_session *s)
+{
+	size_t i;
+
+	if (s == NULL)
+		return;
+	free(s->session_id);
+	free(s->last_mod);
+	for (i = 0; i < sizeof(s->deltas) / sizeof(s->deltas[0]); i++)
+		free(s->deltas[i]);
+	free(s);
+}
+
+void
+rrdp_session_buffer(struct ibuf *b, const struct rrdp_session *s)
+{
+	size_t i;
+
+	io_str_buffer(b, s->session_id);
+	io_simple_buffer(b, &s->serial, sizeof(s->serial));
+	io_str_buffer(b, s->last_mod);
+	for (i = 0; i < sizeof(s->deltas) / sizeof(s->deltas[0]); i++)
+		io_str_buffer(b, s->deltas[i]);
+}
+
+struct rrdp_session *
+rrdp_session_read(struct ibuf *b)
+{
+	struct rrdp_session *s;
+	size_t i;
+
+	if ((s = calloc(1, sizeof(*s))) == NULL)
+		err(1, NULL);
+
+	io_read_str(b, &s->session_id);
+	io_read_buf(b, &s->serial, sizeof(s->serial));
+	io_read_str(b, &s->last_mod);
+	for (i = 0; i < sizeof(s->deltas) / sizeof(s->deltas[0]); i++)
+		io_read_str(b, &s->deltas[i]);
+
+	return s;
+}
+
 static struct rrdprepo *
 rrdp_get(const char *uri)
 {
-	struct rrdp_session state = { 0 };
+	struct rrdp_session *state;
 	struct rrdprepo *rr;
 
 	SLIST_FOREACH(rr, &rrdprepos, entry)
@@ -760,10 +834,9 @@ rrdp_get(const char *uri)
 	}
 
 	/* parse state and start the sync */
-	rrdp_parse_state(rr, &state);
-	rrdp_fetch(rr->id, rr->notifyuri, rr->notifyuri, &state);
-	free(state.session_id);
-	free(state.last_mod);
+	state = rrdp_session_parse(rr);
+	rrdp_fetch(rr->id, rr->notifyuri, rr->notifyuri, state);
+	rrdp_session_free(state);
 
 	logx("%s: pulling from %s", rr->notifyuri, "network");
 
@@ -800,7 +873,8 @@ rrdp_handle_file(unsigned int id, enum publish_type pt, char *uri,
 	struct filepath *fp;
 	ssize_t s;
 	char *fn = NULL;
-	int fd = -1, try = 0;
+	int fd = -1, try = 0, deleted = 0;
+	int flags;
 
 	rr = rrdp_find(id);
 	if (rr == NULL)
@@ -832,11 +906,13 @@ rrdp_handle_file(unsigned int id, enum publish_type pt, char *uri,
 
 	/* write new content or mark uri as deleted. */
 	if (pt == PUB_DEL) {
-		filepath_add(&rr->deleted, uri);
+		filepath_add(&rr->deleted, uri, 0);
 	} else {
 		fp = filepath_find(&rr->deleted, uri);
-		if (fp != NULL)
+		if (fp != NULL) {
 			filepath_put(&rr->deleted, fp);
+			deleted = 1;
+		}
 
 		/* add new file to rrdp dir */
 		if ((fn = rrdp_filename(rr, uri, 0)) == NULL)
@@ -845,8 +921,17 @@ rrdp_handle_file(unsigned int id, enum publish_type pt, char *uri,
 		if (repo_mkpath(AT_FDCWD, fn) == -1)
 			goto fail;
 
-		fd = open(fn, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+		flags = O_WRONLY|O_CREAT|O_TRUNC;
+		if (pt == PUB_ADD && !deleted)
+			flags |= O_EXCL;
+		fd = open(fn, flags, 0644);
 		if (fd == -1) {
+			if (errno == EEXIST) {
+				warnx("%s: duplicate publish element for %s",
+				    rr->notifyuri, fn);
+				free(fn);
+				return 0;
+			}
 			warn("open %s", fn);
 			goto fail;
 		}
@@ -1012,18 +1097,18 @@ ta_lookup(int id, struct tal *tal)
 
 	/* Look up in repository table. (Lookup should actually fail here) */
 	SLIST_FOREACH(rp, &repos, entry) {
-		if (strcmp(rp->repouri, tal->descr) == 0)
+		if (strcmp(rp->repouri, tal->uri[0]) == 0)
 			return rp;
 	}
 
 	rp = repo_alloc(id);
 	rp->basedir = repo_dir(tal->descr, "ta", 0);
-	if ((rp->repouri = strdup(tal->descr)) == NULL)
+	if ((rp->repouri = strdup(tal->uri[0])) == NULL)
 		err(1, NULL);
 
 	/* check if sync disabled ... */
 	if (noop) {
-		logx("ta/%s: using cache", rp->repouri);
+		logx("%s: using cache", rp->basedir);
 		entityq_flush(&rp->queue, rp);
 		return rp;
 	}
@@ -1206,6 +1291,27 @@ repo_synced(const struct repo *rp)
 }
 
 /*
+ * Return the protocol string "rrdp", "rsync", "https" which was used to sync.
+ * Result is only correct if repository was properly synced.
+ */
+const char *
+repo_proto(const struct repo *rp)
+{
+
+	if (rp->ta != NULL) {
+		const struct tarepo *tr = rp->ta;
+		if (tr->uriidx < tr->urisz &&
+		    strncasecmp(tr->uri[tr->uriidx], "rsync://", 8) == 0)
+			return "rsync";
+		else
+			return "https";
+	}
+	if (rp->rrdp != NULL)
+		return "rrdp";
+	return "rsync";
+}
+
+/*
  * Return the repository tal ID.
  */
 int
@@ -1301,48 +1407,49 @@ repo_check_timeout(int timeout)
  * Update stats object of repository depending on rtype and subtype.
  */
 void
-repo_stat_inc(struct repo *rp, enum rtype type, enum stype subtype)
+repo_stat_inc(struct repo *rp, int talid, enum rtype type, enum stype subtype)
 {
 	if (rp == NULL)
 		return;
+	rp->stats_used[talid] = 1;
 	switch (type) {
 	case RTYPE_CER:
 		if (subtype == STYPE_OK)
-			rp->stats.certs++;
+			rp->stats[talid].certs++;
 		if (subtype == STYPE_FAIL)
-			rp->stats.certs_fail++;
+			rp->stats[talid].certs_fail++;
 		if (subtype == STYPE_BGPSEC) {
-			rp->stats.certs--;
-			rp->stats.brks++;
+			rp->stats[talid].certs--;
+			rp->stats[talid].brks++;
 		}
 		break;
 	case RTYPE_MFT:
 		if (subtype == STYPE_OK)
-			rp->stats.mfts++;
+			rp->stats[talid].mfts++;
 		if (subtype == STYPE_FAIL)
-			rp->stats.mfts_fail++;
+			rp->stats[talid].mfts_fail++;
 		if (subtype == STYPE_STALE)
-			rp->stats.mfts_stale++;
+			rp->stats[talid].mfts_stale++;
 		break;
 	case RTYPE_ROA:
 		switch (subtype) {
 		case STYPE_OK:
-			rp->stats.roas++;
+			rp->stats[talid].roas++;
 			break;
 		case STYPE_FAIL:
-			rp->stats.roas_fail++;
+			rp->stats[talid].roas_fail++;
 			break;
 		case STYPE_INVALID:
-			rp->stats.roas_invalid++;
+			rp->stats[talid].roas_invalid++;
 			break;
 		case STYPE_TOTAL:
-			rp->stats.vrps++;
+			rp->stats[talid].vrps++;
 			break;
 		case STYPE_UNIQUE:
-			rp->stats.vrps_uniqs++;
+			rp->stats[talid].vrps_uniqs++;
 			break;
 		case STYPE_DEC_UNIQUE:
-			rp->stats.vrps_uniqs--;
+			rp->stats[talid].vrps_uniqs--;
 			break;
 		default:
 			break;
@@ -1351,44 +1458,53 @@ repo_stat_inc(struct repo *rp, enum rtype type, enum stype subtype)
 	case RTYPE_ASPA:
 		switch (subtype) {
 		case STYPE_OK:
-			rp->stats.aspas++;
+			rp->stats[talid].aspas++;
 			break;
 		case STYPE_FAIL:
-			rp->stats.aspas_fail++;
+			rp->stats[talid].aspas_fail++;
 			break;
 		case STYPE_INVALID:
-			rp->stats.aspas_invalid++;
+			rp->stats[talid].aspas_invalid++;
 			break;
 		case STYPE_TOTAL:
-			rp->stats.vaps++;
+			rp->stats[talid].vaps++;
 			break;
 		case STYPE_UNIQUE:
-			rp->stats.vaps_uniqs++;
+			rp->stats[talid].vaps_uniqs++;
 			break;
-		case STYPE_BOTH:
-			rp->stats.vaps_pas++;
+		case STYPE_DEC_UNIQUE:
+			rp->stats[talid].vaps_uniqs--;
 			break;
-		case STYPE_ONLY_IPV4:
-			rp->stats.vaps_pas4++;
-			break;
-		case STYPE_ONLY_IPV6:
-			rp->stats.vaps_pas6++;
+		case STYPE_PROVIDERS:
+			rp->stats[talid].vaps_pas++;
 			break;
 		default:
 			break;
 		}
 		break;
 	case RTYPE_CRL:
-		rp->stats.crls++;
+		rp->stats[talid].crls++;
 		break;
 	case RTYPE_GBR:
-		rp->stats.gbrs++;
+		rp->stats[talid].gbrs++;
 		break;
 	case RTYPE_TAK:
-		rp->stats.taks++;
+		rp->stats[talid].taks++;
 		break;
 	default:
 		break;
+	}
+}
+
+void
+repo_tal_stats_collect(void (*cb)(const struct repo *,
+    const struct repotalstats *, void *), int talid, void *arg)
+{
+	struct repo	*rp;
+
+	SLIST_FOREACH(rp, &repos, entry) {
+		if (rp->stats_used[talid])
+			cb(rp, &rp->stats[talid], arg);
 	}
 }
 
@@ -1398,9 +1514,8 @@ repo_stats_collect(void (*cb)(const struct repo *, const struct repostats *,
 {
 	struct repo	*rp;
 
-	SLIST_FOREACH(rp, &repos, entry) {
-		cb(rp, &rp->stats, arg);
-	}
+	SLIST_FOREACH(rp, &repos, entry)
+		cb(rp, &rp->repostats, arg);
 }
 
 /*
@@ -1411,11 +1526,15 @@ repo_stats_collect(void (*cb)(const struct repo *, const struct repostats *,
 static void
 repo_cleanup_rrdp(struct filepath_tree *tree)
 {
+	struct repo *rp;
 	struct rrdprepo *rr;
 	struct filepath *fp, *nfp;
 	char *fn;
 
-	SLIST_FOREACH(rr, &rrdprepos, entry) {
+	SLIST_FOREACH(rp, &repos, entry) {
+		if (rp->rrdp == NULL)
+			continue;
+		rr = (struct rrdprepo *)rp->rrdp;
 		RB_FOREACH_SAFE(fp, filepath_tree, &rr->deleted, nfp) {
 			if (!rrdp_uri_valid(rr, fp->file)) {
 				warnx("%s: external URI %s", rr->notifyuri,
@@ -1432,7 +1551,7 @@ repo_cleanup_rrdp(struct filepath_tree *tree)
 			} else {
 				if (verbose > 1)
 					logx("deleted %s", fn);
-				stats.del_files++;
+				rp->repostats.del_files++;
 			}
 			free(fn);
 
@@ -1445,7 +1564,7 @@ repo_cleanup_rrdp(struct filepath_tree *tree)
 				} else {
 					if (verbose > 1)
 						logx("deleted %s", fn);
-					stats.del_files++;
+					rp->repostats.del_files++;
 				}
 			} else
 				warnx("%s: referenced file supposed to be "
@@ -1481,6 +1600,28 @@ repo_move_valid(struct filepath_tree *tree)
 			base = strchr(fp->file + rrdpsz, '/');
 			assert(base != NULL);
 			fn = base + 1;
+
+			/*
+			 * Adjust file last modification time in order to
+			 * minimize RSYNC synchronization load after transport
+			 * failover.
+			 * While serializing RRDP datastructures to disk, set
+			 * the last modified timestamp to the CMS signing-time,
+			 * the X.509 notBefore, or CRL lastUpdate timestamp.
+			 */
+			if (fp->mtime != 0) {
+				int ret;
+				struct timespec ts[2];
+
+				ts[0].tv_nsec = UTIME_OMIT;
+				ts[1].tv_sec = fp->mtime;
+				ts[1].tv_nsec = 0;
+				ret = utimensat(AT_FDCWD, fp->file, ts, 0);
+				if (ret == -1) {
+					warn("utimensat %s", fp->file);
+					continue;
+				}
+			}
 		}
 
 		if (repo_mkpath(AT_FDCWD, fn) == -1)
@@ -1503,18 +1644,16 @@ repo_move_valid(struct filepath_tree *tree)
 	}
 }
 
-#define	BASE_DIR	(void *)0x01
-#define	RSYNC_DIR	(void *)0x02
-#define	RRDP_DIR	(void *)0x03
+struct fts_state {
+	enum { BASE_DIR, RSYNC_DIR, RRDP_DIR }	type;
+	struct repo				*rp;
+} fts_state;
 
 static const struct rrdprepo *
 repo_is_rrdp(struct repo *rp)
 {
 	/* check for special pointers first these are not a repository */
-	if (rp == NULL || rp == BASE_DIR || rp == RSYNC_DIR || rp == RRDP_DIR)
-		return NULL;
-
-	if (rp->rrdp)
+	if (rp != NULL && rp->rrdp != NULL)
 		return rp->rrdp->state == REPO_DONE ? rp->rrdp : NULL;
 	return NULL;
 }
@@ -1527,13 +1666,159 @@ skip_dotslash(char *in)
 	return in;
 }
 
+static void
+repo_cleanup_entry(FTSENT *e, struct filepath_tree *tree, int cachefd)
+{
+	const struct rrdprepo *rr;
+	char *path;
+
+	path = skip_dotslash(e->fts_path);
+	switch (e->fts_info) {
+	case FTS_NSOK:
+		if (filepath_exists(tree, path)) {
+			e->fts_parent->fts_number++;
+			break;
+		}
+		if (fts_state.type == RRDP_DIR && fts_state.rp != NULL) {
+			e->fts_parent->fts_number++;
+			/* handle rrdp .state files explicitly */
+			if (e->fts_level == 3 &&
+			    strcmp(e->fts_name, ".state") == 0)
+				break;
+			/* can't delete these extra files */
+			fts_state.rp->repostats.extra_files++;
+			if (verbose > 1)
+				logx("superfluous %s", path);
+			break;
+		}
+		rr = repo_is_rrdp(fts_state.rp);
+		if (rr != NULL) {
+			struct stat st;
+			char *fn;
+
+			if (asprintf(&fn, "%s/%s", rr->basedir, path) == -1)
+				err(1, NULL);
+
+			/*
+			 * If the file exists in the rrdp dir
+			 * that file is newer and needs to be kept
+			 * so unlink this file instead of moving
+			 * it over the file in the rrdp dir.
+			 */
+			if (fstatat(cachefd, fn, &st, 0) == 0 &&
+			    S_ISREG(st.st_mode)) {
+				free(fn);
+				goto unlink;
+			}
+			if (repo_mkpath(cachefd, fn) == 0) {
+				if (renameat(AT_FDCWD, e->fts_accpath,
+				    cachefd, fn) == -1)
+					warn("rename %s to %s", path, fn);
+				else if (verbose > 1)
+					logx("moved %s", path);
+				fts_state.rp->repostats.extra_files++;
+			}
+			free(fn);
+		} else {
+ unlink:
+			if (unlink(e->fts_accpath) == -1) {
+				warn("unlink %s", path);
+			} else if (fts_state.type == RSYNC_DIR) {
+				/* no need to keep rsync files */
+				if (verbose > 1)
+					logx("deleted superfluous %s", path);
+				if (fts_state.rp != NULL)
+					fts_state.rp->repostats.del_extra_files++;
+				else
+					stats.repo_stats.del_extra_files++;
+			} else {
+				if (verbose > 1)
+					logx("deleted %s", path);
+				if (fts_state.rp != NULL)
+					fts_state.rp->repostats.del_files++;
+				else
+					stats.repo_stats.del_files++;
+			}
+		}
+		break;
+	case FTS_D:
+		if (e->fts_level == FTS_ROOTLEVEL)
+			fts_state.type = BASE_DIR;
+		if (e->fts_level == 1) {
+			/* rpki.example.org or .rrdp / .rsync */
+			if (strcmp(".rsync", e->fts_name) == 0) {
+				fts_state.type = RSYNC_DIR;
+				fts_state.rp = NULL;
+			} else if (strcmp(".rrdp", e->fts_name) == 0) {
+				fts_state.type = RRDP_DIR;
+				fts_state.rp = NULL;
+			}
+		}
+		if (e->fts_level == 2) {
+			/* rpki.example.org/repository or .rrdp/hashdir */
+			if (fts_state.type == BASE_DIR)
+				fts_state.rp = repo_bypath(path);
+			/*
+			 * special handling for rrdp directories,
+			 * clear them if they are not used anymore but
+			 * only if rrdp is active.
+			 * Look them up just using the hash.
+			 */
+			if (fts_state.type == RRDP_DIR)
+				fts_state.rp = repo_rrdp_bypath(path);
+		}
+		if (e->fts_level == 3 && fts_state.type == RSYNC_DIR) {
+			/* .rsync/rpki.example.org/repository */
+			fts_state.rp = repo_bypath(path + strlen(".rsync/"));
+		}
+		break;
+	case FTS_DP:
+		if (e->fts_level == FTS_ROOTLEVEL)
+			break;
+		if (e->fts_level == 1) {
+			/* do not remove .rsync and .rrdp */
+			fts_state.rp = NULL;
+			if (fts_state.type == RRDP_DIR ||
+			    fts_state.type == RSYNC_DIR)
+				break;
+		}
+
+		e->fts_parent->fts_number += e->fts_number;
+
+		if (e->fts_number == 0) {
+			if (rmdir(e->fts_accpath) == -1)
+				warn("rmdir %s", path);
+			if (fts_state.rp != NULL)
+				fts_state.rp->repostats.del_dirs++;
+			else
+				stats.repo_stats.del_dirs++;
+		}
+		break;
+	case FTS_SL:
+	case FTS_SLNONE:
+		warnx("symlink %s", path);
+		if (unlink(e->fts_accpath) == -1)
+			warn("unlink %s", path);
+		stats.repo_stats.del_extra_files++;
+		break;
+	case FTS_NS:
+	case FTS_ERR:
+		if (e->fts_errno == ENOENT && e->fts_level == FTS_ROOTLEVEL)
+			break;
+		warnx("fts_read %s: %s", path, strerror(e->fts_errno));
+		break;
+	default:
+		warnx("fts_read %s: unhandled[%x]", path, e->fts_info);
+		break;
+	}
+}
+
 void
 repo_cleanup(struct filepath_tree *tree, int cachefd)
 {
 	char *argv[2] = { ".", NULL };
 	FTS *fts;
 	FTSENT *e;
-	const struct rrdprepo *rr;
 
 	/* first move temp files which have been used to valid dir */
 	repo_move_valid(tree);
@@ -1544,135 +1829,7 @@ repo_cleanup(struct filepath_tree *tree, int cachefd)
 		err(1, "fts_open");
 	errno = 0;
 	while ((e = fts_read(fts)) != NULL) {
-		char *path = skip_dotslash(e->fts_path);
-		switch (e->fts_info) {
-		case FTS_NSOK:
-			if (filepath_exists(tree, path)) {
-				e->fts_parent->fts_number++;
-				break;
-			}
-			if (e->fts_parent->fts_pointer == RRDP_DIR) {
-				e->fts_parent->fts_number++;
-				/* handle rrdp .state files explicitly */
-				if (e->fts_level == 3 &&
-				    strcmp(e->fts_name, ".state") == 0)
-					break;
-				/* can't delete these extra files */
-				stats.extra_files++;
-				if (verbose > 1)
-					logx("superfluous %s", path);
-				break;
-			}
-			if (e->fts_parent->fts_pointer == RSYNC_DIR) {
-				/* no need to keep rsync files */
-				if (verbose > 1)
-					logx("superfluous %s", path);
-			}
-			rr = repo_is_rrdp(e->fts_parent->fts_pointer);
-			if (rr != NULL) {
-				struct stat st;
-				char *fn;
-
-				if (asprintf(&fn, "%s/%s", rr->basedir,
-				    path) == -1)
-					err(1, NULL);
-
-				/*
-				 * If the file exists in the rrdp dir
-				 * that file is newer and needs to be kept
-				 * so unlink this file instead of moving
-				 * it over the file in the rrdp dir.
-				 */
-				if (fstatat(cachefd, fn, &st, 0) == 0 &&
-				    S_ISREG(st.st_mode)) {
-					free(fn);
-					goto unlink;
-				}
-				if (repo_mkpath(cachefd, fn) == 0) {
-					if (renameat(AT_FDCWD, e->fts_accpath,
-					    cachefd, fn) == -1)
-						warn("rename %s to %s", path,
-						    fn);
-					else if (verbose > 1)
-						logx("moved %s", path);
-					stats.extra_files++;
-				}
-				free(fn);
-			} else {
- unlink:
-				if (unlink(e->fts_accpath) == -1) {
-					warn("unlink %s", path);
-				} else {
-					if (verbose > 1)
-						logx("deleted %s", path);
-					stats.del_files++;
-				}
-			}
-			break;
-		case FTS_D:
-			if (e->fts_level == 1) {
-				if (strcmp(".rsync", e->fts_name) == 0)
-					e->fts_pointer = RSYNC_DIR;
-				else if (strcmp(".rrdp", e->fts_name) == 0)
-					e->fts_pointer = RRDP_DIR;
-				else
-					e->fts_pointer = BASE_DIR;
-			} else
-				e->fts_pointer = e->fts_parent->fts_pointer;
-
-			/*
-			 * special handling for rrdp directories,
-			 * clear them if they are not used anymore but
-			 * only if rrdp is active.
-			 */
-			if (e->fts_pointer == RRDP_DIR && e->fts_level == 2) {
-				if (!rrdp_is_active(path))
-					e->fts_pointer = NULL;
-			}
-			if (e->fts_pointer == BASE_DIR && e->fts_level > 1) {
-				e->fts_pointer = repo_bypath(path);
-				if (e->fts_pointer == NULL)
-					e->fts_pointer = BASE_DIR;
-			}
-			break;
-		case FTS_DP:
-			if (e->fts_level == FTS_ROOTLEVEL)
-				break;
-			if (e->fts_level == 1)
-				/* do not remove .rsync and .rrdp */
-				if (e->fts_pointer == RRDP_DIR ||
-				    e->fts_pointer == RSYNC_DIR)
-					break;
-
-			e->fts_parent->fts_number += e->fts_number;
-
-			if (e->fts_number == 0) {
-				if (rmdir(e->fts_accpath) == -1)
-					warn("rmdir %s", path);
-				else
-					stats.del_dirs++;
-			}
-			break;
-		case FTS_SL:
-		case FTS_SLNONE:
-			warnx("symlink %s", path);
-			if (unlink(e->fts_accpath) == -1)
-				warn("unlink %s", path);
-			break;
-		case FTS_NS:
-		case FTS_ERR:
-			if (e->fts_errno == ENOENT &&
-			    e->fts_level == FTS_ROOTLEVEL)
-				continue;
-			warnx("fts_read %s: %s", path,
-			    strerror(e->fts_errno));
-			break;
-		default:
-			warnx("fts_read %s: unhandled[%x]", path,
-			    e->fts_info);
-			break;
-		}
-
+		repo_cleanup_entry(e, tree, cachefd);
 		errno = 0;
 	}
 	if (errno)
@@ -1700,7 +1857,8 @@ repo_free(void)
 }
 
 /*
- * Remove all files and directories under base but do not remove base itself.
+ * Remove all files and directories under base.
+ * Do not remove base directory itself and the .state file.
  */
 static void
 remove_contents(char *base)
@@ -1717,6 +1875,9 @@ remove_contents(char *base)
 		case FTS_NSOK:
 		case FTS_SL:
 		case FTS_SLNONE:
+			if (e->fts_level == 1 &&
+			    strcmp(e->fts_name, ".state") == 0)
+				break;
 			if (unlink(e->fts_accpath) == -1)
 				warn("unlink %s", e->fts_path);
 			break;

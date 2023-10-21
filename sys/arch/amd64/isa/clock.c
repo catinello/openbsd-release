@@ -1,4 +1,4 @@
-/*	$OpenBSD: clock.c,v 1.39 2023/02/04 19:19:36 cheloha Exp $	*/
+/*	$OpenBSD: clock.c,v 1.42 2023/09/17 14:50:50 cheloha Exp $	*/
 /*	$NetBSD: clock.c,v 1.1 2003/04/26 18:39:50 fvdl Exp $	*/
 
 /*-
@@ -283,8 +283,11 @@ i8254_initclocks(void)
 
 	stathz = 128;
 	profhz = 1024;		/* XXX does not divide into 1 billion */
-	clockintr_init(0);
+}
 
+void
+i8254_start_both_clocks(void)
+{
 	clockintr_cpu_init(NULL);
 
 	/*
@@ -519,7 +522,6 @@ setstatclockrate(int arg)
 			mc146818_write(NULL, MC_REGA,
 			    MC_BASE_32_KHz | MC_RATE_1024_Hz);
 	}
-	clockintr_setstatclockrate(arg);
 }
 
 void

@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.124 2023/03/01 09:29:32 dtucker Exp $
+#	$OpenBSD: Makefile,v 1.127 2023/09/24 08:14:13 claudio Exp $
 
 OPENSSL?=	yes
 
@@ -10,10 +10,8 @@ SUBDIR+=	misc
 
 REGRESS_SETUP_ONCE=misc	# For sk-dummy.so
 
-REGRESS_FAIL_EARLY?=	yes
-
 # Key conversion operations are not supported when built w/out OpenSSL.
-.if ${OPENSSL:L} != no
+.if !defined(LTESTS_FROM) && ${OPENSSL:L} != no
 REGRESS_TARGETS=	t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12
 .endif
 
@@ -101,7 +99,8 @@ LTESTS= 	connect \
 		agent-restrict \
 		hostbased \
 		channel-timeout \
-		connection-timeout
+		connection-timeout \
+		match-subsystem
 
 INTEROP_TESTS=	putty-transfer putty-ciphers putty-kex conch-ciphers
 #INTEROP_TESTS+=ssh-com ssh-com-client ssh-com-keygen ssh-com-sftp
@@ -221,8 +220,14 @@ t-${t}: timestamp
 	    sh ${.CURDIR}/test-exec.sh ${.OBJDIR} ${.CURDIR}/${t}.sh
 .endfor
 
+.undef LTESTS_STARTED
 .for t in ${LTESTS}
+.if defined(LTESTS_FROM) && ${LTESTS_FROM} == t-${t}
+LTESTS_STARTED=yes
+.endif
+.if !defined(LTESTS_FROM) || defined(LTESTS_STARTED)
 REGRESS_TARGETS+=t-${t}
+.endif
 .endfor
 
 .for t in ${INTEROP_TESTS}

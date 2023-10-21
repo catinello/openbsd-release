@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtsock.c,v 1.359 2023/01/22 12:05:44 mvs Exp $	*/
+/*	$OpenBSD: rtsock.c,v 1.370 2023/09/16 09:33:27 mpi Exp $	*/
 /*	$NetBSD: rtsock.c,v 1.18 1996/03/29 00:32:10 cgd Exp $	*/
 
 /*
@@ -690,7 +690,7 @@ route_output(struct mbuf *m, struct socket *so)
 	u_char			 vers, type;
 
 	if (m == NULL || ((m->m_len < sizeof(int32_t)) &&
-	    (m = m_pullup(m, sizeof(int32_t))) == 0))
+	    (m = m_pullup(m, sizeof(int32_t))) == NULL))
 		return (ENOBUFS);
 	if ((m->m_flags & M_PKTHDR) == 0)
 		panic("route_output");
@@ -705,7 +705,8 @@ route_output(struct mbuf *m, struct socket *so)
 	sounlock(so);
 
 	len = m->m_pkthdr.len;
-	if (len < offsetof(struct rt_msghdr, rtm_hdrlen) + 1 ||
+	if (len < offsetof(struct rt_msghdr, rtm_hdrlen) +
+	    sizeof(rtm->rtm_hdrlen) ||
 	    len != mtod(m, struct rt_msghdr *)->rtm_msglen) {
 		error = EINVAL;
 		goto fail;
@@ -853,8 +854,10 @@ route_output(struct mbuf *m, struct socket *so)
 			error = EINVAL;
 			goto fail;
 		}
-		if ((error =
-		    rt_setsource(tableid, info.rti_info[RTAX_IFA])) != 0)
+		NET_LOCK();
+		error = rt_setsource(tableid, info.rti_info[RTAX_IFA]);
+		NET_UNLOCK();
+		if (error)
 			goto fail;
 	} else {
 		error = rtm_output(rtm, &rt, &info, prio, tableid);
@@ -862,7 +865,9 @@ route_output(struct mbuf *m, struct socket *so)
 			type = rtm->rtm_type;
 			seq = rtm->rtm_seq;
 			free(rtm, M_RTABLE, len);
+			NET_LOCK_SHARED();
 			rtm = rtm_report(rt, type, seq, tableid);
+			NET_UNLOCK_SHARED();
 			len = rtm->rtm_msglen;
 		}
 	}
@@ -2159,7 +2164,7 @@ sysctl_rtable(int *name, u_int namelen, void *where, size_t *given, void *new,
 	switch (w.w_op) {
 	case NET_RT_DUMP:
 	case NET_RT_FLAGS:
-		NET_LOCK();
+		NET_LOCK_SHARED();
 		for (i = 1; i <= AF_MAX; i++) {
 			if (af != 0 && af != i)
 				continue;
@@ -2171,13 +2176,13 @@ sysctl_rtable(int *name, u_int namelen, void *where, size_t *given, void *new,
 			if (error)
 				break;
 		}
-		NET_UNLOCK();
+		NET_UNLOCK_SHARED();
 		break;
 
 	case NET_RT_IFLIST:
-		NET_LOCK();
+		NET_LOCK_SHARED();
 		error = sysctl_iflist(af, &w);
-		NET_UNLOCK();
+		NET_UNLOCK_SHARED();
 		break;
 
 	case NET_RT_STATS:
@@ -2193,15 +2198,15 @@ sysctl_rtable(int *name, u_int namelen, void *where, size_t *given, void *new,
 		    &tableinfo, sizeof(tableinfo));
 		return (error);
 	case NET_RT_IFNAMES:
-		NET_LOCK();
+		NET_LOCK_SHARED();
 		error = sysctl_ifnames(&w);
-		NET_UNLOCK();
+		NET_UNLOCK_SHARED();
 		break;
 	case NET_RT_SOURCE:
 		tableid = w.w_arg;
 		if (!rtable_exists(tableid))
 			return (ENOENT);
-		NET_LOCK();
+		NET_LOCK_SHARED();
 		for (i = 1; i <= AF_MAX; i++) {
 			if (af != 0 && af != i)
 				continue;
@@ -2212,7 +2217,7 @@ sysctl_rtable(int *name, u_int namelen, void *where, size_t *given, void *new,
 			if (error)
 				break;
 		}
-		NET_UNLOCK();
+		NET_UNLOCK_SHARED();
 		break;
 	}
 	free(w.w_tmem, M_RTABLE, w.w_tmemsize);
@@ -2240,7 +2245,7 @@ sysctl_rtable_rtstat(void *oldp, size_t *oldlenp, void *newp)
 
 	CTASSERT(sizeof(rtstat) == (nitems(counters) * sizeof(uint32_t)));
 	memset(&rtstat, 0, sizeof rtstat);
-	counters_read(rtcounters, counters, nitems(counters));
+	counters_read(rtcounters, counters, nitems(counters), NULL);
 
 	for (i = 0; i < nitems(counters); i++)
 		words[i] = (uint32_t)counters[i];
@@ -2350,7 +2355,6 @@ int
 rt_setsource(unsigned int rtableid, struct sockaddr *src)
 {
 	struct ifaddr	*ifa;
-	int		error;
 	/*
 	 * If source address is 0.0.0.0 or ::
 	 * use automatic source selection
@@ -2374,20 +2378,14 @@ rt_setsource(unsigned int rtableid, struct sockaddr *src)
 		return (EAFNOSUPPORT);
 	}
 
-	KERNEL_LOCK();
 	/*
 	 * Check if source address is assigned to an interface in the
 	 * same rdomain
 	 */
-	if ((ifa = ifa_ifwithaddr(src, rtableid)) == NULL) {
-		KERNEL_UNLOCK();
+	if ((ifa = ifa_ifwithaddr(src, rtableid)) == NULL)
 		return (EINVAL);
-	}
 
-	error = rtable_setsource(rtableid, src->sa_family, ifa->ifa_addr);
-	KERNEL_UNLOCK();
-
-	return (error);
+	return rtable_setsource(rtableid, src->sa_family, ifa->ifa_addr);
 }
 
 /*

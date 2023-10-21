@@ -1,4 +1,4 @@
-/* $OpenBSD: status.c,v 1.237 2023/01/20 21:36:00 nicm Exp $ */
+/* $OpenBSD: status.c,v 1.240 2023/08/15 07:01:47 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -1471,8 +1471,6 @@ process_key:
 	return (0);
 
 append_key:
-	if (key <= 0x1f || (key >= KEYC_BASE && key < KEYC_BASE_END))
-		return (0);
 	if (key <= 0x7f)
 		utf8_set(&tmp, key);
 	else if (KEYC_IS_UNICODE(key))
@@ -1766,8 +1764,9 @@ status_prompt_complete_list_menu(struct client *c, char **list, u_int size,
 	else
 		offset = 0;
 
-	if (menu_display(menu, MENU_NOMOUSE|MENU_TAB, 0, NULL, offset,
-	    py, c, NULL, status_prompt_menu_callback, spm) != 0) {
+	if (menu_display(menu, MENU_NOMOUSE|MENU_TAB, 0, NULL, offset, py, c,
+	    BOX_LINES_DEFAULT, NULL, NULL, NULL, NULL,
+	    status_prompt_menu_callback, spm) != 0) {
 		menu_free(menu);
 		free(spm);
 		return (0);
@@ -1859,8 +1858,9 @@ status_prompt_complete_window_menu(struct client *c, struct session *s,
 	else
 		offset = 0;
 
-	if (menu_display(menu, MENU_NOMOUSE|MENU_TAB, 0, NULL, offset,
-	    py, c, NULL, status_prompt_menu_callback, spm) != 0) {
+	if (menu_display(menu, MENU_NOMOUSE|MENU_TAB, 0, NULL, offset, py, c,
+	    BOX_LINES_DEFAULT, NULL, NULL, NULL, NULL,
+	    status_prompt_menu_callback, spm) != 0) {
 		menu_free(menu);
 		free(spm);
 		return (NULL);

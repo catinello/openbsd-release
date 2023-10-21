@@ -1,4 +1,4 @@
-/*	$OpenBSD: qs.c,v 1.4 2023/03/13 17:31:28 claudio Exp $ */
+/*	$OpenBSD: qs.c,v 1.5 2023/05/09 14:35:45 claudio Exp $ */
 /*
  * Copyright (c) 2020 Claudio Jeker <claudio@openbsd.org>
  *

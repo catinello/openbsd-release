@@ -1,4 +1,4 @@
-/*	$OpenBSD: apm.c,v 1.130 2023/02/10 14:34:16 visa Exp $	*/
+/*	$OpenBSD: apm.c,v 1.132 2023/07/02 19:02:27 cheloha Exp $	*/
 
 /*-
  * Copyright (c) 1998-2001 Michael Shalayeff. All rights reserved.
@@ -265,10 +265,8 @@ apm_suspend(int state)
 		rtcstart();		/* in i8254 mode, rtc is profclock */
 	inittodr(gettime());
 
-#ifdef __HAVE_CLOCKINTR
 	clockintr_cpu_init(NULL);
 	clockintr_trigger();
-#endif
 
 	config_suspend_all(DVACT_RESUME);
 	cold = 0;
@@ -907,7 +905,7 @@ apm_thread(void *v)
 		rw_enter_write(&sc->sc_lock);
 		(void) apm_periodic_check(sc);
 		rw_exit_write(&sc->sc_lock);
-		tsleep_nsec(&lbolt, PWAIT, "apmev", INFSLP);
+		tsleep_nsec(&nowake, PWAIT, "apmev", SEC_TO_NSEC(1));
 	}
 }
 

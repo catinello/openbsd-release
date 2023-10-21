@@ -1,4 +1,4 @@
-/*	$OpenBSD: init_main.c,v 1.320 2023/01/01 07:00:51 jsg Exp $	*/
+/*	$OpenBSD: init_main.c,v 1.322 2023/08/29 16:19:34 claudio Exp $	*/
 /*	$NetBSD: init_main.c,v 1.84.4.1 1996/06/02 09:08:06 mrg Exp $	*/
 
 /*
@@ -47,6 +47,7 @@
 #include <sys/resourcevar.h>
 #include <sys/signalvar.h>
 #include <sys/systm.h>
+#include <sys/clockintr.h>
 #include <sys/namei.h>
 #include <sys/vnode.h>
 #include <sys/tty.h>
@@ -313,6 +314,7 @@ main(void *framep)
 	/* Initialize run queues */
 	sched_init_runqueues();
 	sleep_queue_init();
+	clockqueue_init(&curcpu()->ci_queue);
 	sched_init_cpu(curcpu());
 	p->p_cpu->ci_randseed = (arc4random() & 0x7fffffff) + 1;
 
@@ -479,16 +481,12 @@ main(void *framep)
 
 	/*
 	 * Now can look at time, having had a chance to verify the time
-	 * from the file system.  Reset p->p_rtime as it may have been
-	 * munched in mi_switch() after the time got set.
+	 * from the file system. 
 	 */
 	LIST_FOREACH(pr, &allprocess, ps_list) {
 		nanouptime(&pr->ps_start);
-		TAILQ_FOREACH(p, &pr->ps_threads, p_thr_link) {
-			nanouptime(&p->p_cpu->ci_schedstate.spc_runtime);
-			timespecclear(&p->p_rtime);
-		}
 	}
+	nanouptime(&curcpu()->ci_schedstate.spc_runtime);
 
 	uvm_swap_init();
 

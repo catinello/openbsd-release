@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.44 2022/12/06 00:40:09 cheloha Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.46 2023/08/29 16:19:34 claudio Exp $	*/
 
 /*
  * Copyright (c) 1998-2003 Michael Shalayeff
@@ -202,6 +202,7 @@ cpu_boot_secondary_processors(void)
 
 		ci->ci_randseed = (arc4random() & 0x7fffffff) + 1;
 
+		clockqueue_init(&ci->ci_queue);
 		sched_init_cpu(ci);
 
 		/* Release the specified CPU by triggering an EIR{0}. */
@@ -261,6 +262,10 @@ cpu_hatch(void)
 	/* Wait for additional CPUs to spinup. */
 	while (!start_secondary_cpu)
 		;
+
+	s = splhigh();
+	nanouptime(&ci->ci_schedstate.spc_runtime);
+	splx(s);
 
 	SCHED_LOCK(s);
 	cpu_switchto(NULL, sched_chooseproc());

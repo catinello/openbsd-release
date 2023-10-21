@@ -1,4 +1,4 @@
-/*	$OpenBSD: policy.c,v 1.93 2023/02/08 19:59:10 tb Exp $	*/
+/*	$OpenBSD: policy.c,v 1.96 2023/08/14 11:55:03 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2020-2021 Tobias Heider <tobhe@openbsd.org>
@@ -398,10 +398,8 @@ sa_state(struct iked *env, struct iked_sa *sa, int state)
 		case IKEV2_STATE_CLOSED:
 			log_debug("%s: %s -> %s from %s to %s policy '%s'",
 			    SPI_SA(sa, __func__), a, b,
-			    print_host((struct sockaddr *)&sa->sa_peer.addr,
-			    NULL, 0),
-			    print_host((struct sockaddr *)&sa->sa_local.addr,
-			    NULL, 0),
+			    print_addr(&sa->sa_peer.addr),
+			    print_addr(&sa->sa_local.addr),
 			    sa->sa_policy ? sa->sa_policy->pol_name :
 			    "<unknown>");
 			break;
@@ -739,9 +737,13 @@ sa_configure_iface(struct iked *env, struct iked_sa *sa, int add)
 
 		switch(saflow->flow_src.addr_af) {
 		case AF_INET:
+			if (sa->sa_cp_addr == NULL)
+				continue;
 			caddr = (struct sockaddr *)&sa->sa_cp_addr->addr;
 			break;
 		case AF_INET6:
+			if (sa->sa_cp_addr6 == NULL)
+				continue;
 			caddr = (struct sockaddr *)&sa->sa_cp_addr6->addr;
 			break;
 		default:
@@ -784,8 +786,8 @@ childsa_free(struct iked_childsa *csa)
 		csb->csa_bundled = NULL;
 	if ((csb = csa->csa_peersa) != NULL)
 		csb->csa_peersa = NULL;
-	ibuf_release(csa->csa_encrkey);
-	ibuf_release(csa->csa_integrkey);
+	ibuf_free(csa->csa_encrkey);
+	ibuf_free(csa->csa_integrkey);
 	free(csa);
 }
 

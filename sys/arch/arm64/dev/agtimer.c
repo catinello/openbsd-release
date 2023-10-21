@@ -1,4 +1,4 @@
-/* $OpenBSD: agtimer.c,v 1.22 2023/02/04 19:19:36 cheloha Exp $ */
+/* $OpenBSD: agtimer.c,v 1.28 2023/09/17 14:50:51 cheloha Exp $ */
 /*
  * Copyright (c) 2011 Dale Rahn <drahn@openbsd.org>
  * Copyright (c) 2013 Patrick Wildt <patrick@blueri.se>
@@ -290,12 +290,10 @@ void
 agtimer_cpu_initclocks(void)
 {
 	struct agtimer_softc	*sc = agtimer_cd.cd_devs[0];
-	uint32_t		 reg;
-	uint64_t		 kctl;
 
 	stathz = hz;
 	profhz = stathz * 10;
-	clockintr_init(CL_RNDSTAT);
+	statclock_is_randomized = 1;
 
 	if (sc->sc_ticks_per_second != agtimer_frequency) {
 		agtimer_set_clockrate(agtimer_frequency);
@@ -304,57 +302,22 @@ agtimer_cpu_initclocks(void)
 	/* configure virtual timer interrupt */
 	sc->sc_ih = arm_intr_establish_fdt_idx(sc->sc_node, 2,
 	    IPL_CLOCK|IPL_MPSAFE, agtimer_intr, NULL, "tick");
-
-	clockintr_cpu_init(&agtimer_intrclock);
-
-	reg = agtimer_get_ctrl();
-	reg &= ~GTIMER_CNTV_CTL_IMASK;
-	reg |= GTIMER_CNTV_CTL_ENABLE;
-	agtimer_set_tval(INT32_MAX);
-	agtimer_set_ctrl(reg);
-
-	clockintr_trigger();
-
-	/* enable userland access to virtual counter */
-	kctl = READ_SPECIALREG(CNTKCTL_EL1);
-	WRITE_SPECIALREG(CNTKCTL_EL1, kctl | CNTKCTL_EL0VCTEN);
 }
 
 void
 agtimer_delay(u_int usecs)
 {
-	uint64_t		clock, oclock, delta, delaycnt;
-	uint64_t		csec, usec;
-	volatile int		j;
+	uint64_t cycles, start;
 
-	if (usecs > (0x80000000 / agtimer_frequency)) {
-		csec = usecs / 10000;
-		usec = usecs % 10000;
-
-		delaycnt = (agtimer_frequency / 100) * csec +
-		    (agtimer_frequency / 100) * usec / 10000;
-	} else {
-		delaycnt = agtimer_frequency * usecs / 1000000;
-	}
-	if (delaycnt <= 1)
-		for (j = 100; j > 0; j--)
-			;
-
-	oclock = agtimer_readcnt64();
-	while (1) {
-		for (j = 100; j > 0; j--)
-			;
-		clock = agtimer_readcnt64();
-		delta = clock - oclock;
-		if (delta > delaycnt)
-			break;
-	}
+	start = agtimer_readcnt64();
+	cycles = (uint64_t)usecs * agtimer_frequency / 1000000;
+	while (agtimer_readcnt64() - start < cycles)
+		CPU_BUSY_CYCLE();
 }
 
 void
 agtimer_setstatclockrate(int newhz)
 {
-	clockintr_setstatclockrate(newhz);
 }
 
 void
@@ -364,7 +327,8 @@ agtimer_startclock(void)
 	uint64_t kctl;
 	uint32_t reg;
 
-	arm_intr_route(sc->sc_ih, 1, curcpu());
+	if (!CPU_IS_PRIMARY(curcpu()))
+		arm_intr_route(sc->sc_ih, 1, curcpu());
 
 	clockintr_cpu_init(&agtimer_intrclock);
 

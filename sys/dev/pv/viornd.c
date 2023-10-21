@@ -1,4 +1,4 @@
-/*	$OpenBSD: viornd.c,v 1.5 2021/11/05 11:38:29 mpi Exp $	*/
+/*	$OpenBSD: viornd.c,v 1.7 2023/07/28 16:54:48 dv Exp $	*/
 
 /*
  * Copyright (c) 2014 Stefan Fritsch <sf@sfritsch.de>
@@ -88,7 +88,7 @@ viornd_attach(struct device *parent, struct device *self, void *aux)
 
 	vsc->sc_vqs = &sc->sc_vq;
 	vsc->sc_nvqs = 1;
-	vsc->sc_config_change = 0;
+	vsc->sc_config_change = NULL;
 	if (vsc->sc_child != NULL)
 		panic("already attached to something else");
 	vsc->sc_child = self;
@@ -138,6 +138,7 @@ viornd_attach(struct device *parent, struct device *self, void *aux)
 	timeout_add(&sc->sc_tick, 1);
 
 	printf("\n");
+	virtio_set_status(vsc, VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK);
 	return;
 err2:
 	bus_dmamap_destroy(vsc->sc_dmat, sc->sc_dmamap);

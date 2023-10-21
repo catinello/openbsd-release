@@ -1,4 +1,4 @@
-/*	$OpenBSD: identcpu.c,v 1.131 2023/01/14 03:28:51 jsg Exp $	*/
+/*	$OpenBSD: identcpu.c,v 1.138 2023/09/03 09:30:43 mlarkin Exp $	*/
 /*	$NetBSD: identcpu.c,v 1.1 2003/04/26 18:39:28 fvdl Exp $	*/
 
 /*
@@ -216,6 +216,7 @@ const struct {
 	{ SEFF0EDX_SRBDS_CTRL,	"SRBDS_CTRL" },
 	{ SEFF0EDX_MD_CLEAR,	"MD_CLEAR" },
 	{ SEFF0EDX_TSXFA,	"TSXFA" },
+	{ SEFF0EDX_IBT,		"IBT" },
 	{ SEFF0EDX_IBRS,	"IBRS,IBPB" },
 	{ SEFF0EDX_STIBP,	"STIBP" },
 	{ SEFF0EDX_L1DF,	"L1DF" },
@@ -227,19 +228,52 @@ const struct {
 }, cpu_cpuid_perf_eax[] = {
 	{ CPUIDEAX_VERID,	"PERF" },
 }, cpu_cpuid_apmi_edx[] = {
+	{ CPUIDEDX_HWPSTATE,	"HWPSTATE" },
 	{ CPUIDEDX_ITSC,	"ITSC" },
 }, cpu_amdspec_ebxfeatures[] = {
-	{ CPUIDEBX_IBPB,	"IBPB" },
-	{ CPUIDEBX_IBRS,	"IBRS" },
-	{ CPUIDEBX_STIBP,	"STIBP" },
-	{ CPUIDEBX_SSBD,	"SSBD" },
-	{ CPUIDEBX_VIRT_SSBD,	"VIRTSSBD" },
-	{ CPUIDEBX_SSBD_NOTREQ,	"SSBDNR" },
+	{ CPUIDEBX_INVLPGB,		"INVLPGB" },
+	{ CPUIDEBX_IBPB,		"IBPB" },
+	{ CPUIDEBX_IBRS,		"IBRS" },
+	{ CPUIDEBX_STIBP,		"STIBP" },
+	{ CPUIDEBX_IBRS_ALWAYSON,	"IBRS_ALL" },
+	{ CPUIDEBX_STIBP_ALWAYSON,	"STIBP_ALL" },
+	{ CPUIDEBX_IBRS_PREF,		"IBRS_PREF" },
+	{ CPUIDEBX_IBRS_SAME_MODE,	"IBRS_SM" },
+	{ CPUIDEBX_SSBD,		"SSBD" },
+	{ CPUIDEBX_VIRT_SSBD,		"VIRTSSBD" },
+	{ CPUIDEBX_SSBD_NOTREQ,		"SSBDNR" },
 }, cpu_xsave_extfeatures[] = {
 	{ XSAVE_XSAVEOPT,	"XSAVEOPT" },
 	{ XSAVE_XSAVEC,		"XSAVEC" },
 	{ XSAVE_XGETBV1,	"XGETBV1" },
 	{ XSAVE_XSAVES,		"XSAVES" },
+	{ XSAVE_XFD,		"XFD" },
+}, cpu_arch_cap_features[] = {
+	/* ARCH_CAP_RDCL_NO (not printed) == !MELTDOWN */
+	{ ARCH_CAP_IBRS_ALL,		"IBRS_ALL" },
+	{ ARCH_CAP_RSBA,		"RSBA" },
+	{ ARCH_CAP_SKIP_L1DFL_VMENTRY,	"SKIP_L1DFL" },
+	{ ARCH_CAP_SSB_NO,		"SSB_NO" },
+	{ ARCH_CAP_MDS_NO,		"MDS_NO" },
+	{ ARCH_CAP_IF_PSCHANGE_MC_NO,	"IF_PSCHANGE" },
+	{ ARCH_CAP_TSX_CTRL,		"TSX_CTRL" },
+	{ ARCH_CAP_TAA_NO,		"TAA_NO" },
+	{ ARCH_CAP_MCU_CONTROL,		"MCU_CONTROL" },
+	{ ARCH_CAP_MISC_PACKAGE_CTLS,	"MISC_PKG_CT" },
+	{ ARCH_CAP_ENERGY_FILTERING_CTL, "ENERGY_FILT" },
+	{ ARCH_CAP_DOITM,		"DOITM" },
+	{ ARCH_CAP_SBDR_SSDP_NO,	"SBDR_SSDP_N" },
+	{ ARCH_CAP_FBSDP_NO,		"FBSDP_NO" },
+	{ ARCH_CAP_PSDP_NO,		"PSDP_NO" },
+	{ ARCH_CAP_FB_CLEAR,		"FB_CLEAR" },
+	{ ARCH_CAP_FB_CLEAR_CTRL,	"FB_CLEAR_CT" },
+	{ ARCH_CAP_RRSBA,		"RRSBA" },
+	{ ARCH_CAP_BHI_NO,		"BHI_NO" },
+	{ ARCH_CAP_XAPIC_DISABLE_STATUS, "XAPIC_DIS" },
+	{ ARCH_CAP_OVERCLOCKING_STATUS,	"OVERCLOCK" },
+	{ ARCH_CAP_PBRSB_NO,		"PBRSB_NO" },
+	{ ARCH_CAP_GDS_CTRL,		"GDS_CTRL" },
+	{ ARCH_CAP_GDS_NO,		"GDS_NO" },
 };
 
 int
@@ -619,6 +653,21 @@ identifycpu(struct cpu_info *ci)
 	printf(", %02x-%02x-%02x", ci->ci_family, ci->ci_model,
 	    ci->ci_signature & 0x0f);
 
+	if ((cpu_ecxfeature & CPUIDECX_HV) == 0) {
+		uint64_t level = 0;
+		uint32_t dummy;
+
+		if (strcmp(cpu_vendor, "AuthenticAMD") == 0) {
+			level = rdmsr(MSR_PATCH_LEVEL);
+		} else if (strcmp(cpu_vendor, "GenuineIntel") == 0) {
+			wrmsr(MSR_BIOS_SIGN, 0);
+			CPUID(1, dummy, dummy, dummy, dummy);
+			level = rdmsr(MSR_BIOS_SIGN) >> 32;
+		}
+		if (level != 0)
+			printf(", patch %08llx", level);
+	}
+
 	printf("\n%s: ", ci->ci_dev->dv_xname);
 
 	for (i = 0; i < nitems(cpu_cpuid_features); i++)
@@ -672,7 +721,7 @@ identifycpu(struct cpu_info *ci)
 			ci->ci_feature_tpmflags |= TPM_ARAT;
 	}
 
-	/* AMD speculation control features */
+	/* speculation control features */
 	if (!strcmp(cpu_vendor, "AuthenticAMD")) {
 		if (ci->ci_pnfeatset >= 0x80000008) {
 			CPUID(0x80000008, dummy, ci->ci_feature_amdspec_ebx,
@@ -683,6 +732,13 @@ identifycpu(struct cpu_info *ci)
 					printf(",%s",
 					    cpu_amdspec_ebxfeatures[i].str);
 		}
+	} else if (!strcmp(cpu_vendor, "GenuineIntel") &&
+	    (ci->ci_feature_sefflags_edx & SEFF0EDX_ARCH_CAP)) {
+		uint64_t msr = rdmsr(MSR_ARCH_CAPABILITIES);
+
+		for (i = 0; i < nitems(cpu_arch_cap_features); i++)
+			if (msr & cpu_arch_cap_features[i].bit)
+				printf(",%s", cpu_arch_cap_features[i].str);
 	}
 
 	/* xsave subfeatures */
@@ -1047,8 +1103,8 @@ cpu_check_vmm_cap(struct cpu_info *ci)
 		 */
 		if (ci->ci_feature_sefflags_edx & SEFF0EDX_ARCH_CAP) {
 			msr = rdmsr(MSR_ARCH_CAPABILITIES);
-			if ((msr & ARCH_CAPABILITIES_RDCL_NO) ||
-			    ((msr & ARCH_CAPABILITIES_SKIP_L1DFL_VMENTRY) &&
+			if ((msr & ARCH_CAP_RDCL_NO) ||
+			    ((msr & ARCH_CAP_SKIP_L1DFL_VMENTRY) &&
 			    ci->ci_vmm_cap.vcc_vmx.vmx_has_l1_flush_msr))
 				ci->ci_vmm_cap.vcc_vmx.vmx_has_l1_flush_msr =
 				    VMX_SKIP_L1D_FLUSH;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: tak.c,v 1.8 2023/03/12 11:46:35 tb Exp $ */
+/*	$OpenBSD: tak.c,v 1.12 2023/09/25 11:08:45 tb Exp $ */
 /*
  * Copyright (c) 2022 Job Snijders <job@fastly.com>
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
@@ -191,11 +191,11 @@ tak_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
 	fn = p->fn;
 
 	if ((tak = d2i_TAK(NULL, &d, dsz)) == NULL) {
-		cryptowarnx("%s: failed to parse Trust Anchor Key", fn);
+		warnx("%s: failed to parse Trust Anchor Key", fn);
 		goto out;
 	}
 
-	if (!valid_econtent_version(fn, tak->version))
+	if (!valid_econtent_version(fn, tak->version, 0))
 		goto out;
 
 	p->res->current = parse_takey(fn, tak->current);
@@ -225,9 +225,11 @@ tak_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
  * Returns the TAK or NULL if the object was malformed.
  */
 struct tak *
-tak_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
+tak_parse(X509 **x509, const char *fn, int talid, const unsigned char *der,
+    size_t len)
 {
 	struct parse		 p;
+	struct cert		*cert = NULL;
 	unsigned char		*cms;
 	size_t			 cmsz;
 	time_t			 signtime = 0;
@@ -272,6 +274,9 @@ tak_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 	if (!tak_parse_econtent(cms, cmsz, &p))
 		goto out;
 
+	if ((cert = cert_parse_ee_cert(fn, *x509)) == NULL)
+		goto out;
+
 	if (strcmp(p.res->aki, p.res->current->ski) != 0) {
 		warnx("%s: current TAKey's SKI does not match EE AKI", fn);
 		goto out;
@@ -285,6 +290,7 @@ tak_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 		X509_free(*x509);
 		*x509 = NULL;
 	}
+	cert_free(cert);
 	free(cms);
 	return p.res;
 }

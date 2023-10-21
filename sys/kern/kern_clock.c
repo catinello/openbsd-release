@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_clock.c,v 1.107 2023/03/03 20:16:44 cheloha Exp $	*/
+/*	$OpenBSD: kern_clock.c,v 1.119 2023/09/14 22:27:09 cheloha Exp $	*/
 /*	$NetBSD: kern_clock.c,v 1.34 1996/06/09 04:51:03 briggs Exp $	*/
 
 /*-
@@ -39,6 +39,7 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/clockintr.h>
 #include <sys/timeout.h>
 #include <sys/kernel.h>
 #include <sys/limits.h>
@@ -48,10 +49,6 @@
 #include <sys/sysctl.h>
 #include <sys/sched.h>
 #include <sys/timetc.h>
-
-#if defined(GPROF) || defined(DDBPROF)
-#include <sys/gmon.h>
-#endif
 
 #include "dt.h"
 #if NDT > 0
@@ -83,14 +80,18 @@
  */
 
 int	stathz;
-int	schedhz;
 int	profhz;
 int	profprocs;
 int	ticks = INT_MAX - (15 * 60 * HZ);
-static int psdiv, pscnt;		/* prof => stat divider */
-int	psratio;			/* ratio: prof / stat */
 
-volatile unsigned long jiffies = ULONG_MAX - (10 * 60 * HZ);
+/* Don't force early wrap around, triggers bug in inteldrm */
+volatile unsigned long jiffies;
+
+uint32_t hardclock_period;	/* [I] hardclock period (ns) */
+uint32_t statclock_avg;		/* [I] average statclock period (ns) */
+uint32_t statclock_min;		/* [I] minimum statclock period (ns) */
+uint32_t statclock_mask;	/* [I] set of allowed offsets */
+int statclock_is_randomized;	/* [I] fixed or pseudorandom period? */
 
 /*
  * Initialize clock frequencies and start both clocks running.
@@ -98,28 +99,44 @@ volatile unsigned long jiffies = ULONG_MAX - (10 * 60 * HZ);
 void
 initclocks(void)
 {
+	uint32_t half_avg, var;
+
 	/*
-	 * Set divisors to 1 (normal case) and let the machine-specific
-	 * code do its bit.
+	 * Let the machine-specific code do its bit.
 	 */
-	psdiv = pscnt = 1;
 	cpu_initclocks();
 
+	KASSERT(hz > 0 && hz <= 1000000000);
+	hardclock_period = 1000000000 / hz;
+	roundrobin_period = hardclock_period * 10;
+
+	KASSERT(stathz >= 1 && stathz <= 1000000000);
+
 	/*
-	 * Compute profhz/stathz.
+	 * Compute the average statclock() period.  Then find var, the
+	 * largest power of two such that var <= statclock_avg / 2.
 	 */
-	psratio = profhz / stathz;
+	statclock_avg = 1000000000 / stathz;
+	half_avg = statclock_avg / 2;
+	for (var = 1U << 31; var > half_avg; var /= 2)
+		continue;
+
+	/*
+	 * Set a lower bound for the range using statclock_avg and var.
+	 * The mask for that range is just (var - 1).
+	 */
+	statclock_min = statclock_avg - (var / 2);
+	statclock_mask = var - 1;
+
+	KASSERT(profhz >= stathz && profhz <= 1000000000);
+	KASSERT(profhz % stathz == 0);
+	profclock_period = 1000000000 / profhz;
 
 	inittimecounter();
-}
 
-/*
- * hardclock does the accounting needed for ITIMER_PROF and ITIMER_VIRTUAL.
- * We don't want to send signals with psignal from hardclock because it makes
- * MULTIPROCESSOR locking very complicated. Instead, to use an idea from
- * FreeBSD, we set a flag on the thread and when it goes to return to
- * userspace it signals itself.
- */
+	/* Start dispatching clock interrupts on the primary CPU. */
+	cpu_startclock();
+}
 
 /*
  * The real-time timer, interrupting hz times per second.
@@ -127,35 +144,9 @@ initclocks(void)
 void
 hardclock(struct clockframe *frame)
 {
-	struct proc *p;
-	struct cpu_info *ci = curcpu();
-
-	p = curproc;
-	if (p && ((p->p_flag & (P_SYSTEM | P_WEXIT)) == 0)) {
-		struct process *pr = p->p_p;
-
-		/*
-		 * Run current process's virtual and profile time, as needed.
-		 */
-		if (CLKF_USERMODE(frame) &&
-		    timespecisset(&pr->ps_timer[ITIMER_VIRTUAL].it_value) &&
-		    itimerdecr(&pr->ps_timer[ITIMER_VIRTUAL], tick_nsec) == 0) {
-			atomic_setbits_int(&p->p_flag, P_ALRMPEND);
-			need_proftick(p);
-		}
-		if (timespecisset(&pr->ps_timer[ITIMER_PROF].it_value) &&
-		    itimerdecr(&pr->ps_timer[ITIMER_PROF], tick_nsec) == 0) {
-			atomic_setbits_int(&p->p_flag, P_PROFPEND);
-			need_proftick(p);
-		}
-	}
-
-	if (--ci->ci_schedstate.spc_rrticks <= 0)
-		roundrobin(ci);
-
 #if NDT > 0
 	DT_ENTER(profile, NULL);
-	if (CPU_IS_PRIMARY(ci))
+	if (CPU_IS_PRIMARY(curcpu()))
 		DT_ENTER(interval, NULL);
 #endif
 
@@ -163,7 +154,7 @@ hardclock(struct clockframe *frame)
 	 * If we are not the primary CPU, we're not allowed to do
 	 * any more work.
 	 */
-	if (CPU_IS_PRIMARY(ci) == 0)
+	if (CPU_IS_PRIMARY(curcpu()) == 0)
 		return;
 
 	tc_ticktock();
@@ -256,7 +247,6 @@ startprofclock(struct process *pr)
 		atomic_setbits_int(&pr->ps_flags, PS_PROFIL);
 		if (++profprocs == 1) {
 			s = splstatclock();
-			psdiv = pscnt = psratio;
 			setstatclockrate(profhz);
 			splx(s);
 		}
@@ -275,7 +265,6 @@ stopprofclock(struct process *pr)
 		atomic_clearbits_int(&pr->ps_flags, PS_PROFIL);
 		if (--profprocs == 0) {
 			s = splstatclock();
-			psdiv = pscnt = 1;
 			setstatclockrate(stathz);
 			splx(s);
 		}
@@ -287,64 +276,34 @@ stopprofclock(struct process *pr)
  * do process and kernel statistics.
  */
 void
-statclock(struct clockframe *frame)
+statclock(struct clockintr *cl, void *cf, void *arg)
 {
-#if defined(GPROF) || defined(DDBPROF)
-	struct gmonparam *g;
-	u_long i;
-#endif
+	uint64_t count, i;
+	struct clockframe *frame = cf;
 	struct cpu_info *ci = curcpu();
 	struct schedstate_percpu *spc = &ci->ci_schedstate;
 	struct proc *p = curproc;
 	struct process *pr;
 
-	/*
-	 * Notice changes in divisor frequency, and adjust clock
-	 * frequency accordingly.
-	 */
-	if (spc->spc_psdiv != psdiv) {
-		spc->spc_psdiv = psdiv;
-		spc->spc_pscnt = psdiv;
-		if (psdiv == 1) {
-			setstatclockrate(stathz);
-		} else {
-			setstatclockrate(profhz);
-		}
+	if (statclock_is_randomized) {
+		count = clockintr_advance_random(cl, statclock_min,
+		    statclock_mask);
+	} else {
+		count = clockintr_advance(cl, statclock_avg);
 	}
 
 	if (CLKF_USERMODE(frame)) {
 		pr = p->p_p;
-		if (pr->ps_flags & PS_PROFIL)
-			addupc_intr(p, CLKF_PC(frame));
-		if (--spc->spc_pscnt > 0)
-			return;
 		/*
 		 * Came from user mode; CPU was in user state.
 		 * If this process is being profiled record the tick.
 		 */
-		p->p_uticks++;
+		p->p_uticks += count;
 		if (pr->ps_nice > NZERO)
-			spc->spc_cp_time[CP_NICE]++;
+			spc->spc_cp_time[CP_NICE] += count;
 		else
-			spc->spc_cp_time[CP_USER]++;
+			spc->spc_cp_time[CP_USER] += count;
 	} else {
-#if defined(GPROF) || defined(DDBPROF)
-		/*
-		 * Kernel statistics are just like addupc_intr, only easier.
-		 */
-		g = ci->ci_gmon;
-		if (g != NULL && g->state == GMON_PROF_ON) {
-			i = CLKF_PC(frame) - g->lowpc;
-			if (i < g->textsize) {
-				i /= HISTFRACTION * sizeof(*g->kcount);
-				g->kcount[i]++;
-			}
-		}
-#endif
-		if (p != NULL && p->p_p->ps_flags & PS_PROFIL)
-			addupc_intr(p, PROC_PC(p));
-		if (--spc->spc_pscnt > 0)
-			return;
 		/*
 		 * Came from kernel mode, so we were:
 		 * - spinning on a lock
@@ -360,26 +319,24 @@ statclock(struct clockframe *frame)
 		 */
 		if (CLKF_INTR(frame)) {
 			if (p != NULL)
-				p->p_iticks++;
+				p->p_iticks += count;
 			spc->spc_cp_time[spc->spc_spinning ?
-			    CP_SPIN : CP_INTR]++;
+			    CP_SPIN : CP_INTR] += count;
 		} else if (p != NULL && p != spc->spc_idleproc) {
-			p->p_sticks++;
+			p->p_sticks += count;
 			spc->spc_cp_time[spc->spc_spinning ?
-			    CP_SPIN : CP_SYS]++;
+			    CP_SPIN : CP_SYS] += count;
 		} else
 			spc->spc_cp_time[spc->spc_spinning ?
-			    CP_SPIN : CP_IDLE]++;
+			    CP_SPIN : CP_IDLE] += count;
 	}
-	spc->spc_pscnt = psdiv;
 
 	if (p != NULL) {
-		p->p_cpticks++;
+		p->p_cpticks += count;
 		/*
-		 * If no schedclock is provided, call it here at ~~12-25 Hz;
-		 * ~~16 Hz is best
+		 * schedclock() runs every fourth statclock().
 		 */
-		if (schedhz == 0) {
+		for (i = 0; i < count; i++) {
 			if ((++spc->spc_schedticks & 3) == 0)
 				schedclock(p);
 		}

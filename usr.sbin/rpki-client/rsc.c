@@ -1,4 +1,4 @@
-/*	$OpenBSD: rsc.c,v 1.25 2023/03/12 13:31:39 tb Exp $ */
+/*	$OpenBSD: rsc.c,v 1.28 2023/09/25 11:08:45 tb Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2022 Job Snijders <job@fastly.com>
@@ -334,12 +334,11 @@ rsc_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
 	 */
 
 	if ((rsc = d2i_RpkiSignedChecklist(NULL, &d, dsz)) == NULL) {
-		cryptowarnx("%s: RSC: failed to parse RpkiSignedChecklist",
-		    p->fn);
+		warnx("%s: RSC: failed to parse RpkiSignedChecklist", p->fn);
 		goto out;
 	}
 
-	if (!valid_econtent_version(p->fn, rsc->version))
+	if (!valid_econtent_version(p->fn, rsc->version, 0))
 		goto out;
 
 	resources = rsc->resources;
@@ -372,7 +371,8 @@ rsc_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
  * Returns the RSC or NULL if the object was malformed.
  */
 struct rsc *
-rsc_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
+rsc_parse(X509 **x509, const char *fn, int talid, const unsigned char *der,
+    size_t len)
 {
 	struct parse		 p;
 	unsigned char		*cms;

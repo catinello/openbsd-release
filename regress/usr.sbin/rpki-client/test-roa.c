@@ -1,4 +1,4 @@
-/*	$Id: test-roa.c,v 1.20 2022/11/05 10:32:51 job Exp $ */
+/*	$Id: test-roa.c,v 1.24 2023/09/25 11:09:30 tb Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -70,7 +70,7 @@ main(int argc, char *argv[])
 
 	for (i = 0; i < argc; i++) {
 		buf = load_file(argv[i], &len);
-		if ((p = roa_parse(&xp, argv[i], buf, len)) == NULL) {
+		if ((p = roa_parse(&xp, argv[i], -1, buf, len)) == NULL) {
 			free(buf);
 			break;
 		}
@@ -94,4 +94,10 @@ main(int argc, char *argv[])
 
 	printf("OK\n");
 	return 0;
+}
+
+time_t
+get_current_time(void)
+{
+	return time(NULL);
 }

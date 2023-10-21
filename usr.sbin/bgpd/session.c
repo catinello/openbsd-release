@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.442 2023/03/09 13:12:19 claudio Exp $ */
+/*	$OpenBSD: session.c,v 1.447 2023/08/04 09:20:12 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -1189,20 +1189,15 @@ session_setup_socket(struct peer *p)
 		return (-1);
 	}
 
-	/* only increase bufsize (and thus window) if md5 or ipsec is in use */
-	if (p->conf.auth.method != AUTH_NONE) {
-		/* try to increase bufsize. no biggie if it fails */
-		bsize = 65535;
-		while (bsize > 8192 &&
-		    setsockopt(p->fd, SOL_SOCKET, SO_RCVBUF, &bsize,
-		    sizeof(bsize)) == -1 && errno != EINVAL)
-			bsize /= 2;
-		bsize = 65535;
-		while (bsize > 8192 &&
-		    setsockopt(p->fd, SOL_SOCKET, SO_SNDBUF, &bsize,
-		    sizeof(bsize)) == -1 && errno != EINVAL)
-			bsize /= 2;
-	}
+	/* limit bufsize. no biggie if it fails */
+	bsize = 65535;
+	while (bsize > 8192 && setsockopt(p->fd, SOL_SOCKET, SO_RCVBUF,
+	    &bsize, sizeof(bsize)) == -1 && errno != EINVAL)
+		bsize /= 2;
+	bsize = 65535;
+	while (bsize > 8192 && setsockopt(p->fd, SOL_SOCKET, SO_SNDBUF,
+	    &bsize, sizeof(bsize)) == -1 && errno != EINVAL)
+		bsize /= 2;
 
 	return (0);
 }
@@ -1388,7 +1383,7 @@ session_sendmsg(struct bgp_msg *msg, struct peer *p)
 		if ((mrt->peer_id == 0 && mrt->group_id == 0) ||
 		    mrt->peer_id == p->conf.id || (mrt->group_id != 0 &&
 		    mrt->group_id == p->conf.groupid))
-			mrt_dump_bgp_msg(mrt, msg->buf->buf, msg->len, p,
+			mrt_dump_bgp_msg(mrt, ibuf_data(msg->buf), msg->len, p,
 			    msg->type);
 	}
 
@@ -1594,7 +1589,7 @@ session_open(struct peer *p)
 			uint8_t op_len = optparamlen;
 			errs += ibuf_add(buf->buf, &op_len, 1);
 		}
-		errs += ibuf_add(buf->buf, opb->buf, ibuf_size(opb));
+		errs += ibuf_add_buf(buf->buf, opb);
 	}
 
 	ibuf_free(opb);
@@ -3207,6 +3202,7 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 		case IMSG_CTL_SHOW_RIB_ATTR:
 		case IMSG_CTL_SHOW_RIB_MEM:
 		case IMSG_CTL_SHOW_NETWORK:
+		case IMSG_CTL_SHOW_FLOWSPEC:
 		case IMSG_CTL_SHOW_SET:
 			if (idx != PFD_PIPE_ROUTE_CTL)
 				fatalx("ctl rib request not from RDE");
@@ -3465,7 +3461,8 @@ peer_matched(struct peer *p, struct ctl_neighbor *n)
 			return 0;
 	} else if (n && n->descr[0]) {
 		s = n->is_group ? p->conf.group : p->conf.descr;
-		if (strcmp(s, n->descr))
+		/* cannot trust n->descr to be properly terminated */
+		if (strncmp(s, n->descr, sizeof(n->descr)))
 			return 0;
 	}
 	return 1;

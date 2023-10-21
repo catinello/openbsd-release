@@ -1,4 +1,4 @@
-#	$OpenBSD: RAMDISK,v 1.35 2022/06/26 20:05:06 sthen Exp $
+#	$OpenBSD: RAMDISK,v 1.40 2023/09/23 18:29:55 kettenis Exp $
 
 machine		riscv64
 maxusers	4
@@ -27,6 +27,7 @@ config		bsd	root on rd0a swap on rd0b
 
 # mainbus
 mainbus0	at root
+softraid0	at root
 
 # cpu0
 cpu0		at mainbus0
@@ -51,7 +52,11 @@ sfuart*		at fdt?
 
 # StarFive SoCs
 stfclock*	at fdt? early 1
+stfpcie*	at fdt?
+pci*		at stfpcie?
+stfpciephy*	at fdt? early 1
 stfpinctrl*	at fdt? early 1
+stfrng*		at fdt?
 
 virtio*		at fdt?
 virtio*		at pci?
@@ -72,6 +77,7 @@ gpiorestart*	at fdt?
 
 cad*		at fdt?
 dwge*		at fdt?
+dwqe*		at fdt?
 
 dwmmc*		at fdt?
 sdmmc*		at dwmmc?
@@ -165,6 +171,7 @@ rlphy*		at mii?		# Realtek 8139 internal PHYs
 sqphy*		at mii?		# Seeq 8x220 PHYs
 ukphy*		at mii?		# "unknown" PHYs
 urlphy*		at mii?		# Realtek RTL8150L internal PHY
+ytphy*		at mii?		# MotorComm YT8511 PHY
 
 pseudo-device	loop 1
 pseudo-device	vlan

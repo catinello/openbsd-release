@@ -1,4 +1,4 @@
-/*	$OpenBSD: crl.c,v 1.24 2023/03/10 12:44:56 job Exp $ */
+/*	$OpenBSD: crl.c,v 1.27 2023/06/29 10:28:25 tb Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -43,7 +43,7 @@ crl_parse(const char *fn, const unsigned char *der, size_t len)
 
 	oder = der;
 	if ((crl->x509_crl = d2i_X509_CRL(NULL, &der, len)) == NULL) {
-		cryptowarnx("%s: d2i_X509_CRL", fn);
+		warnx("%s: d2i_X509_CRL", fn);
 		goto out;
 	}
 	if (der != oder + len) {
@@ -51,9 +51,14 @@ crl_parse(const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	}
 
+	if (X509_CRL_get_version(crl->x509_crl) != 1) {
+		warnx("%s: RFC 6487 section 5: version 2 expected", fn);
+		goto out;
+	}
+
 	X509_CRL_get0_signature(crl->x509_crl, NULL, &palg);
 	if (palg == NULL) {
-		cryptowarnx("%s: X509_CRL_get0_signature", fn);
+		warnx("%s: X509_CRL_get0_signature", fn);
 		goto out;
 	}
 	X509_ALGOR_get0(&cobj, NULL, NULL, palg);
@@ -75,7 +80,7 @@ crl_parse(const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	}
 	if (!x509_get_time(at, &crl->lastupdate)) {
-		warnx("%s: ASN1_time_parse failed", fn);
+		warnx("%s: ASN1_TIME_to_tm failed", fn);
 		goto out;
 	}
 
@@ -85,7 +90,7 @@ crl_parse(const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	}
 	if (!x509_get_time(at, &crl->nextupdate)) {
-		warnx("%s: ASN1_time_parse failed", fn);
+		warnx("%s: ASN1_TIME_to_tm failed", fn);
 		goto out;
 	}
 

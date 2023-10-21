@@ -1,4 +1,4 @@
-/*	$Id: test-tal.c,v 1.9 2022/04/20 17:26:53 tb Exp $ */
+/*	$Id: test-tal.c,v 1.13 2023/06/20 12:52:32 job Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -31,6 +31,7 @@
 
 int outformats;
 int verbose;
+int filemode;
 
 int
 main(int argc, char *argv[])
@@ -79,4 +80,10 @@ main(int argc, char *argv[])
 
 	printf("OK\n");
 	return 0;
+}
+
+time_t
+get_current_time(void)
+{
+	return time(NULL);
 }

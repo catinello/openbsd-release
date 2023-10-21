@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.15 2022/11/19 16:02:37 cheloha Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.19 2023/09/19 19:20:33 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2019 Mike Larkin <mlarkin@openbsd.org>
@@ -101,6 +101,11 @@ struct cpu_info {
 #endif
 	int			ci_want_resched;
 
+	struct opp_table	*ci_opp_table;
+	volatile int		ci_opp_idx;
+	volatile int		ci_opp_max;
+	uint32_t		ci_cpu_supply;
+
 #ifdef MULTIPROCESSOR
 	struct srp_hazard	ci_srp_hazards[SRP_HAZARD_NUM];
 	volatile int		ci_flags;
@@ -119,6 +124,7 @@ struct cpu_info {
 
 #ifdef GPROF
 	struct gmonparam	*ci_gmon;
+	struct clockintr	*ci_gmonclock;
 #endif
 
 	char			ci_panicbuf[512];
@@ -170,7 +176,6 @@ extern struct cpu_info *cpu_info_list;
 extern struct cpu_info *cpu_info[MAXCPUS];
 
 void	cpu_boot_secondary_processors(void);
-void	cpu_startclock(void);
 
 #endif /* !MULTIPROCESSOR */
 
@@ -266,6 +271,9 @@ void fpu_save(struct proc *, struct trapframe *);
 void fpu_load(struct proc *);
 
 extern int cpu_errata_sifive_cip_1200;
+
+#define	cpu_idle_enter()	do { /* nothing */ } while (0)
+#define	cpu_idle_leave()	do { /* nothing */ } while (0)
 
 #endif /* _KERNEL */
 

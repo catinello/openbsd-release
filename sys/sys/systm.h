@@ -1,4 +1,4 @@
-/*	$OpenBSD: systm.h,v 1.161 2023/01/31 15:18:56 deraadt Exp $	*/
+/*	$OpenBSD: systm.h,v 1.167 2023/09/14 20:58:51 cheloha Exp $	*/
 /*	$NetBSD: systm.h,v 1.50 1996/06/09 04:55:09 briggs Exp $	*/
 
 /*-
@@ -233,14 +233,21 @@ int	tvtohz(const struct timeval *);
 int	tstohz(const struct timespec *);
 void	realitexpire(void *);
 
+extern uint32_t hardclock_period;
+extern uint32_t statclock_avg;
+extern int statclock_is_randomized;
+
 struct clockframe;
 void	hardclock(struct clockframe *);
-void	statclock(struct clockframe *);
+
+struct clockintr;
+void	statclock(struct clockintr *, void *, void *);
 
 void	initclocks(void);
 void	inittodr(time_t);
 void	resettodr(void);
 void	cpu_initclocks(void);
+void	cpu_startclock(void);
 
 void	startprofclock(struct process *);
 void	stopprofclock(struct process *);
@@ -249,10 +256,8 @@ void	setstatclockrate(int);
 void	start_periodic_resettodr(void);
 void	stop_periodic_resettodr(void);
 
-struct sleep_state;
-void	sleep_setup(struct sleep_state *, const volatile void *, int,
-	    const char *, int);
-int	sleep_finish(struct sleep_state *, int);
+void	sleep_setup(const volatile void *, int, const char *);
+int	sleep_finish(int, int);
 void	sleep_queue_init(void);
 
 struct cond;

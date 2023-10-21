@@ -1,4 +1,4 @@
-#	$OpenBSD: files,v 1.722 2023/02/13 19:18:53 patrick Exp $
+#	$OpenBSD: files,v 1.725 2023/08/07 01:59:38 dlg Exp $
 #	$NetBSD: files,v 1.87 1996/05/19 17:17:50 jonathan Exp $
 
 #	@(#)files.newconf	7.5 (Berkeley) 5/10/93
@@ -424,6 +424,10 @@ file	dev/ic/malo.c			malo
 device	bwi: ether, ifnet, ifmedia, firmload, wlan
 file	dev/ic/bwi.c			bwi
 
+# Intel OnChip System Fabric
+device	iosf
+file	dev/ic/iosf.c			iosf	needs-flag
+
 # Attributes which machine-independent bus support can be attached to.
 # These should be defined here, because some of these busses can have
 # devices which provide these attributes, and we'd like to avoid hairy
@@ -530,7 +534,7 @@ file	dev/ic/dwiic.c			dwiic
 device	imxiic: i2cbus
 file	dev/ic/imxiic.c			imxiic
 
-# Synopsis Designware Ethernet QoS
+# Synopsys DesignWare Ethernet QoS
 device	dwqe: ether, ifnet, ifmedia, mii
 file	dev/ic/dwqe.c			dwqe
 
@@ -568,6 +572,7 @@ pseudo-device vlan: ifnet, ether
 pseudo-device carp: ifnet, ether
 pseudo-device sppp: ifnet
 pseudo-device gif: ifnet
+pseudo-device sec: ifnet
 pseudo-device gre: ifnet, ether, etherbridge
 pseudo-device crypto: ifnet
 pseudo-device trunk: ifnet, ether, ifmedia
@@ -1002,6 +1007,7 @@ file uvm/uvm_vnode.c
 
 # IPv6
 file net/if_gif.c			gif			needs-count
+file net/if_sec.c			sec			needs-count
 file netinet/ip_ecn.c
 file netinet6/in6_pcb.c			inet6
 file netinet6/in6.c			inet6

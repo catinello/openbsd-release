@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.304 2023/03/07 10:30:38 claudio Exp $ */
+/*	$OpenBSD: kroute.c,v 1.305 2023/06/01 09:47:34 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>

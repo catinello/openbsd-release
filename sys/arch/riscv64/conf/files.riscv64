@@ -1,4 +1,4 @@
-#	$OpenBSD: files.riscv64,v 1.24 2022/06/12 10:51:55 kettenis Exp $
+#	$OpenBSD: files.riscv64,v 1.27 2023/09/23 18:29:55 kettenis Exp $
 
 # Standard stanzas config(8) can't run without
 maxpartitions 16
@@ -35,7 +35,6 @@ file	arch/riscv64/riscv64/syscall.c
 file	arch/riscv64/riscv64/pagezero.S
 file	arch/riscv64/riscv64/trap.c
 file	arch/riscv64/riscv64/sbi.c
-file	arch/riscv64/riscv64/cpufunc_asm.S
 file	arch/riscv64/riscv64/fpu.c
 
 file	arch/riscv64/riscv64/db_disasm.c	ddb
@@ -124,10 +123,25 @@ device	stfclock
 attach	stfclock at fdt
 file	arch/riscv64/dev/stfclock.c		stfclock
 
+# StarFive PCIe
+device	stfpcie: pcibus
+attach	stfpcie at fdt
+file	arch/riscv64/dev/stfpcie.c		stfpcie
+
+# StarFive PCIe PHY
+device	stfpciephy
+attach	stfpciephy at fdt
+file	arch/riscv64/dev/stfpciephy.c		stfpciephy
+
 # StarFive pinctrl
 device	stfpinctrl
 attach	stfpinctrl at fdt
 file	arch/riscv64/dev/stfpinctrl.c		stfpinctrl
+
+# StarFive random number generator
+device	stfrng
+attach	stfrng at fdt
+file	arch/riscv64/dev/stfrng.c		stfrng
 
 # StarFive temperature sensor
 device	stftemp

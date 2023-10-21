@@ -1,4 +1,4 @@
-/* $OpenBSD: server.c,v 1.203 2022/06/30 09:55:53 nicm Exp $ */
+/* $OpenBSD: server.c,v 1.205 2023/09/15 15:49:05 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>

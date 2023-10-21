@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_fork.c,v 1.246 2023/02/10 14:34:17 visa Exp $	*/
+/*	$OpenBSD: kern_fork.c,v 1.252 2023/09/13 14:25:49 claudio Exp $	*/
 /*	$NetBSD: kern_fork.c,v 1.29 1996/02/09 18:59:34 christos Exp $	*/
 
 /*
@@ -56,6 +56,7 @@
 #include <sys/ptrace.h>
 #include <sys/atomic.h>
 #include <sys/unistd.h>
+#include <sys/tracepoint.h>
 
 #include <sys/syscallargs.h>
 
@@ -180,7 +181,7 @@ process_initialize(struct process *pr, struct proc *p)
 	pr->ps_mainproc = p;
 	TAILQ_INIT(&pr->ps_threads);
 	TAILQ_INSERT_TAIL(&pr->ps_threads, p, p_thr_link);
-	pr->ps_refcnt = 1;
+	pr->ps_threadcnt = 1;
 	p->p_p = pr;
 
 	/* give the process the same creds as the initial thread */
@@ -241,7 +242,8 @@ process_new(struct proc *p, struct process *parent, int flags)
 	unveil_copy(parent, pr);
 
 	pr->ps_flags = parent->ps_flags &
-	    (PS_SUGID | PS_SUGIDEXEC | PS_PLEDGE | PS_EXECPLEDGE | PS_WXNEEDED);
+	    (PS_SUGID | PS_SUGIDEXEC | PS_PLEDGE | PS_EXECPLEDGE |
+	    PS_WXNEEDED | PS_CHROOT);
 	if (parent->ps_session->s_ttyvp != NULL)
 		pr->ps_flags |= parent->ps_flags & PS_CONTROLT;
 
@@ -315,6 +317,8 @@ fork_thread_start(struct proc *p, struct proc *parent, int flags)
 
 	SCHED_LOCK(s);
 	ci = sched_choosecpu_fork(parent, flags);
+	TRACEPOINT(sched, fork, p->p_tid + THREAD_PID_OFFSET,
+	    p->p_p->ps_pid, CPU_INFO_UNIT(ci));
 	setrunqueue(ci, p, p->p_usrpri);
 	SCHED_UNLOCK(s);
 }
@@ -539,7 +543,7 @@ thread_fork(struct proc *curp, void *stack, void *tcb, pid_t *tidptr,
 
 	/* other links */
 	p->p_p = pr;
-	pr->ps_refcnt++;
+	pr->ps_threadcnt++;
 
 	/* local copies */
 	p->p_fd		= pr->ps_fd;
@@ -560,6 +564,7 @@ thread_fork(struct proc *curp, void *stack, void *tcb, pid_t *tidptr,
 
 	SCHED_LOCK(s);
 	TAILQ_INSERT_TAIL(&pr->ps_threads, p, p_thr_link);
+
 	/*
 	 * if somebody else wants to take us to single threaded mode,
 	 * count ourselves in.

@@ -1,4 +1,4 @@
-/*	$OpenBSD: in.h,v 1.141 2021/06/02 00:09:57 dlg Exp $	*/
+/*	$OpenBSD: in.h,v 1.144 2023/05/13 13:35:17 bluhm Exp $	*/
 /*	$NetBSD: in.h,v 1.20 1996/02/13 23:41:47 christos Exp $	*/
 
 /*
@@ -136,7 +136,7 @@ typedef __in_port_t	in_port_t;	/* IP port type */
  * sysctl(3).  (net.inet.ip.port{hi}{first,last})
  *
  * Changing those values has bad security implications if you are
- * using a a stateless firewall that is allowing packets outside of that
+ * using a stateless firewall that is allowing packets outside of that
  * range in order to allow transparent outgoing connections.
  *
  * Such a firewall configuration will generally depend on the use of these
@@ -779,7 +779,9 @@ int	   in_broadcast(struct in_addr, u_int);
 int	   in_canforward(struct in_addr);
 int	   in_cksum(struct mbuf *, int);
 int	   in4_cksum(struct mbuf *, u_int8_t, int, int);
+void	   in_hdr_cksum_out(struct mbuf *, struct ifnet *);
 void	   in_proto_cksum_out(struct mbuf *, struct ifnet *);
+int	   in_ifcap_cksum(struct mbuf *, struct ifnet *, int);
 void	   in_ifdetach(struct ifnet *);
 int	   in_mask2len(struct in_addr *);
 void	   in_len2mask(struct in_addr *, int);

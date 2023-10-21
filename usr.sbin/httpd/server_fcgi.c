@@ -1,4 +1,4 @@
-/*	$OpenBSD: server_fcgi.c,v 1.95 2022/08/15 12:29:17 claudio Exp $	*/
+/*	$OpenBSD: server_fcgi.c,v 1.96 2023/07/12 12:37:28 tb Exp $	*/
 
 /*
  * Copyright (c) 2014 Florian Obser <florian@openbsd.org>
@@ -381,7 +381,7 @@ server_fcgi(struct httpd *env, struct client *clt)
 		server_read_httpcontent(clt->clt_bev, clt);
 		errstr = clt->clt_fcgi_error;
 		clt->clt_fcgi_error = NULL;
-		if (errstr == NULL || errstr[0] != '\0')
+		if (errstr[0] != '\0')
 			goto fail;
 		errstr = NULL;
 		bufferevent_enable(clt->clt_bev, EV_READ);

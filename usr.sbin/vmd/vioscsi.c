@@ -1,4 +1,4 @@
-/*	$OpenBSD: vioscsi.c,v 1.22 2022/12/23 19:25:22 dv Exp $  */
+/*	$OpenBSD: vioscsi.c,v 1.24 2023/09/06 19:26:39 dv Exp $  */
 
 /*
  * Copyright (c) 2017 Carlos Cardenas <ccardenas@openbsd.org>
@@ -206,7 +206,6 @@ vioscsi_start_read(struct vioscsi_dev *dev, off_t block, size_t n_blocks)
 		goto nomem;
 	info->len = n_blocks * VIOSCSI_BLOCK_SIZE_CDROM;
 	info->offset = block * VIOSCSI_BLOCK_SIZE_CDROM;
-	info->file = &dev->file;
 
 	return info;
 
@@ -217,13 +216,11 @@ nomem:
 }
 
 static const uint8_t *
-vioscsi_finish_read(struct ioinfo *info)
+vioscsi_finish_read(struct vioscsi_dev *dev, struct ioinfo *info)
 {
-	struct virtio_backing *f;
+	struct virtio_backing *f = &dev->file;
 
-	f = info->file;
 	if (f->pread(f->p, info->buf, info->len, info->offset) != info->len) {
-		info->error = errno;
 		log_warn("vioscsi read error");
 		return NULL;
 	}
@@ -928,7 +925,7 @@ vioscsi_handle_read_6(struct vioscsi_dev *dev,
 	}
 
 	/* read block */
-	read_buf = vioscsi_finish_read(info);
+	read_buf = vioscsi_finish_read(dev, info);
 
 	if (read_buf == NULL) {
 		log_warnx("%s: error reading position %ud",
@@ -1057,7 +1054,7 @@ vioscsi_handle_read_10(struct vioscsi_dev *dev,
 	}
 
 	/* read block */
-	read_buf = vioscsi_finish_read(info);
+	read_buf = vioscsi_finish_read(dev, info);
 
 	if (read_buf == NULL) {
 		log_warnx("%s: error reading position %ud", __func__, read_lba);
@@ -1333,6 +1330,7 @@ vioscsi_handle_read_toc(struct vioscsi_dev *dev,
 	toc_data_len = toc_data_p - toc_data;
 	_lto2b((uint32_t)toc_data_len - 2, toc_data);
 
+	memset(&resp, 0, sizeof(resp));
 	vioscsi_prepare_resp(&resp, VIRTIO_SCSI_S_OK, SCSI_OK, 0, 0, 0);
 
 	/* Move index for response */

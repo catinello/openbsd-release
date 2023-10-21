@@ -185,6 +185,7 @@ int amdgpu_num_kcq = -1;
 int amdgpu_smartshift_bias;
 int amdgpu_use_xgmi_p2p = 1;
 int amdgpu_vcnfw_log;
+int amdgpu_sg_display = -1; /* auto */
 
 static void amdgpu_drv_delayed_reset_work_handler(struct work_struct *work);
 
@@ -930,6 +931,16 @@ MODULE_PARM_DESC(vcnfw_log, "Enable vcnfw log(0 = disable (default value), 1 = e
 module_param_named(vcnfw_log, amdgpu_vcnfw_log, int, 0444);
 
 /**
+ * DOC: sg_display (int)
+ * Disable S/G (scatter/gather) display (i.e., display from system memory).
+ * This option is only relevant on APUs.  Set this option to 0 to disable
+ * S/G display if you experience flickering or other issues under memory
+ * pressure and report the issue.
+ */
+MODULE_PARM_DESC(sg_display, "S/G Display (-1 = auto (default), 0 = disable)");
+module_param_named(sg_display, amdgpu_sg_display, int, 0444);
+
+/**
  * DOC: smu_pptable_id (int)
  * Used to override pptable id. id = 0 use VBIOS pptable.
  * id > 0 use the soft pptable with specicfied id.
@@ -1605,6 +1616,7 @@ static const u16 amdgpu_unsupported_pciidlist[] = {
 	0x5874,
 	0x5940,
 	0x5941,
+	0x5b70,
 	0x5b72,
 	0x5b73,
 	0x5b74,
@@ -2230,6 +2242,8 @@ amdgpu_pci_remove(struct pci_dev *pdev)
 	struct drm_device *dev = pci_get_drvdata(pdev);
 	struct amdgpu_device *adev = drm_to_adev(dev);
 
+	drm_dev_unplug(dev);
+
 	if (adev->pm.rpm_mode != AMDGPU_RUNPM_NONE) {
 		pm_runtime_get_sync(dev->dev);
 		pm_runtime_forbid(dev->dev);
@@ -2268,8 +2282,6 @@ amdgpu_pci_remove(struct pci_dev *pdev)
 	}
 
 	amdgpu_driver_unload_kms(dev);
-
-	drm_dev_unplug(dev);
 
 	/*
 	 * Flush any in flight DMA operations from device.
@@ -2409,8 +2421,10 @@ static int amdgpu_pmops_suspend(struct device *dev)
 
 	if (amdgpu_acpi_is_s0ix_active(adev))
 		adev->in_s0ix = true;
-	else
+	else if (amdgpu_acpi_is_s3_active(adev))
 		adev->in_s3 = true;
+	if (!adev->in_s0ix && !adev->in_s3)
+		return 0;
 	return amdgpu_device_suspend(drm_dev, true);
 }
 
@@ -2430,6 +2444,9 @@ static int amdgpu_pmops_resume(struct device *dev)
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
 	struct amdgpu_device *adev = drm_to_adev(drm_dev);
 	int r;
+
+	if (!adev->in_s0ix && !adev->in_s3)
+		return 0;
 
 	/* Avoids registers access if device is physically gone */
 	if (!pci_device_is_present(adev->pdev))
@@ -2454,7 +2471,10 @@ static int amdgpu_pmops_freeze(struct device *dev)
 	adev->in_s4 = false;
 	if (r)
 		return r;
-	return amdgpu_asic_reset(adev);
+
+	if (amdgpu_acpi_should_gpu_reset(adev))
+		return amdgpu_asic_reset(adev);
+	return 0;
 }
 
 static int amdgpu_pmops_thaw(struct device *dev)
@@ -2903,6 +2923,7 @@ MODULE_LICENSE("GPL and additional rights");
 #endif /* __linux__ */
 
 #include <drm/drm_drv.h>
+#include <drm/drm_utils.h>
 
 #include "vga.h"
 
@@ -3328,6 +3349,9 @@ amdgpu_wsioctl(void *v, u_long cmd, caddr_t data, int flag, struct proc *p)
 			return 0;
 		}
 		break;
+	case WSDISPLAYIO_SVIDEO:
+	case WSDISPLAYIO_GVIDEO:
+		return 0;
 	}
 
 	return (-1);
@@ -3561,6 +3585,7 @@ amdgpu_attachhook(struct device *self)
 	}
 {
 	struct wsemuldisplaydev_attach_args aa;
+	int orientation_quirk;
 
 	task_set(&adev->switchtask, amdgpu_doswitch, ri);
 	task_set(&adev->burner_task, amdgpu_burner_cb, adev);
@@ -3569,6 +3594,14 @@ amdgpu_attachhook(struct device *self)
 		return;
 
 	ri->ri_flg = RI_CENTER | RI_VCONS | RI_WRONLY;
+
+	orientation_quirk = drm_get_panel_orientation_quirk(ri->ri_width,
+	    ri->ri_height);
+	if (orientation_quirk == DRM_MODE_PANEL_ORIENTATION_LEFT_UP)
+		ri->ri_flg |= RI_ROTATE_CCW;
+	else if (orientation_quirk == DRM_MODE_PANEL_ORIENTATION_RIGHT_UP)
+		ri->ri_flg |= RI_ROTATE_CW;
+
 	rasops_init(ri, 160, 160);
 
 	ri->ri_hw = adev;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: exec_i386.c,v 1.10 2023/02/23 19:48:21 miod Exp $	*/
+/*	$OpenBSD: exec_i386.c,v 1.11 2023/07/22 10:11:19 jsg Exp $	*/
 
 /*
  * Copyright (c) 1997-1998 Michael Shalayeff

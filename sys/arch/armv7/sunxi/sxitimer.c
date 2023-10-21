@@ -1,4 +1,4 @@
-/*	$OpenBSD: sxitimer.c,v 1.20 2023/02/04 19:19:36 cheloha Exp $	*/
+/*	$OpenBSD: sxitimer.c,v 1.24 2023/09/17 14:50:51 cheloha Exp $	*/
 /*
  * Copyright (c) 2007,2009 Dale Rahn <drahn@openbsd.org>
  * Copyright (c) 2013 Raphael Graf <r@undefined.ch>
@@ -77,6 +77,7 @@ void	sxitimer_attach(struct device *, struct device *, void *);
 int	sxitimer_tickintr(void *);
 int	sxitimer_statintr(void *);
 void	sxitimer_cpu_initclocks(void);
+void	sxitimer_cpu_startclock(void);
 void	sxitimer_setstatclockrate(int);
 uint64_t	sxitimer_readcnt64(void);
 uint32_t	sxitimer_readcnt32(void);
@@ -179,7 +180,7 @@ sxitimer_attach(struct device *parent, struct device *self, void *aux)
 
 	stathz = hz;
 	profhz = stathz * 10;
-	clockintr_init(CL_RNDSTAT);
+	statclock_is_randomized = 1;
 
 	/* stop timer, and set clk src */
 	bus_space_write_4(sxitimer_iot, sxitimer_ioh,
@@ -191,7 +192,7 @@ sxitimer_attach(struct device *parent, struct device *self, void *aux)
 	tc_init(&sxitimer_timecounter);
 
 	arm_clock_register(sxitimer_cpu_initclocks, sxitimer_delay,
-	    sxitimer_setstatclockrate, NULL);
+	    sxitimer_setstatclockrate, sxitimer_cpu_startclock);
 
 	printf(": %d kHz", sxitimer_freq[CNTRTIMER] / 1000);
 
@@ -229,7 +230,11 @@ sxitimer_cpu_initclocks(void)
 	bus_space_write_4(sxitimer_iot, sxitimer_ioh,
 	    TIMER_CTRL(CNTRTIMER),
 	    ctrl | TIMER_ENABLE | TIMER_RELOAD | TIMER_CONTINOUS);
+}
 
+void
+sxitimer_cpu_startclock(void)
+{
 	/* start clock interrupt cycle */
 	clockintr_cpu_init(&sxitimer_intrclock);
 	clockintr_trigger();
@@ -299,7 +304,6 @@ sxitimer_delay(u_int usecs)
 void
 sxitimer_setstatclockrate(int newhz)
 {
-	clockintr_setstatclockrate(newhz);
 }
 
 u_int

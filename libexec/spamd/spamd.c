@@ -1,4 +1,4 @@
-/*	$OpenBSD: spamd.c,v 1.159 2023/01/14 07:36:16 tb Exp $	*/
+/*	$OpenBSD: spamd.c,v 1.161 2023/09/05 16:01:58 jca Exp $	*/
 
 /*
  * Copyright (c) 2015 Henning Brauer <henning@openbsd.org>
@@ -39,7 +39,6 @@
 #include <string.h>
 #include <syslog.h>
 #include <unistd.h>
-#include <limits.h>
 #include <tls.h>
 
 #include <netdb.h>
@@ -729,10 +728,8 @@ initcon(struct con *cp, int fd, struct sockaddr *sa)
 	    0 : stutter;
 	error = getnameinfo(sa, sa->sa_len, cp->addr, sizeof(cp->addr), NULL, 0,
 	    NI_NUMERICHOST);
-#ifdef useless
 	if (error)
-		errx(1, "%s", gai_strerror(error));
-#endif
+		strlcpy(cp->addr, "<unknown>", sizeof(cp->addr));
 	ctime_r(&t, ctimebuf);
 	ctimebuf[sizeof(ctimebuf) - 2] = '\0'; /* nuke newline */
 	snprintf(cp->obuf, cp->osize, "220 %s ESMTP %s; %s\r\n",

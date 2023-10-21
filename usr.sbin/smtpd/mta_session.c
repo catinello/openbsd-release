@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta_session.c,v 1.147 2022/09/26 08:48:52 martijn Exp $	*/
+/*	$OpenBSD: mta_session.c,v 1.149 2023/05/31 16:51:46 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -26,6 +26,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <tls.h>
 #include <unistd.h>
 
@@ -1157,7 +1158,7 @@ mta_response(struct mta_session *s, char *line)
 			s->rcptcount = 0;
 			if (s->relay->limits->sessdelay_transaction) {
 				log_debug("debug: mta: waiting for %llds before next transaction",
-				    (long long int)s->relay->limits->sessdelay_transaction);
+				    (long long)s->relay->limits->sessdelay_transaction);
 				s->hangon = s->relay->limits->sessdelay_transaction -1;
 				s->flags |= MTA_HANGON;
 				runq_schedule(hangon,
@@ -1177,7 +1178,7 @@ mta_response(struct mta_session *s, char *line)
 		}
 		if (s->relay->limits->sessdelay_transaction) {
 			log_debug("debug: mta: waiting for %llds after reset",
-			    (long long int)s->relay->limits->sessdelay_transaction);
+			    (long long)s->relay->limits->sessdelay_transaction);
 			s->hangon = s->relay->limits->sessdelay_transaction -1;
 			s->flags |= MTA_HANGON;
 			runq_schedule(hangon,

@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_map.c,v 1.313 2023/02/24 15:17:48 mpi Exp $	*/
+/*	$OpenBSD: uvm_map.c,v 1.319 2023/08/02 09:19:47 mpi Exp $	*/
 /*	$NetBSD: uvm_map.c,v 1.86 2000/11/27 08:40:03 chs Exp $	*/
 
 /*
@@ -1793,7 +1793,7 @@ uvm_map_remap_as_stack(struct proc *p, vaddr_t addr, vaddr_t sz)
 
 	/*
 	 * UVM_FLAG_SIGALTSTACK indicates that immutable may be bypassed,
-	 * but the range is checked that it is contigous, is not a syscall
+	 * but the range is checked that it is contiguous, is not a syscall
 	 * mapping, and protection RW.  Then, a new mapping (all zero) is
 	 * placed upon the region, which prevents an attacker from pivoting
 	 * into pre-placed MAP_STACK space.
@@ -2144,15 +2144,8 @@ uvm_map_pageable_wire(struct vm_map *map, struct vm_map_entry *first,
 	 *    to be created.  then we clip each map entry to the region to
 	 *    be wired and increment its wiring count.
 	 *
-	 * 2: we downgrade to a read lock, and call uvm_fault_wire to fault
+	 * 2: we mark the map busy, unlock it and call uvm_fault_wire to fault
 	 *    in the pages for any newly wired area (wired_count == 1).
-	 *
-	 *    downgrading to a read lock for uvm_fault_wire avoids a possible
-	 *    deadlock with another thread that may have faulted on one of
-	 *    the pages to be wired (it would mark the page busy, blocking
-	 *    us, then in turn block on the map lock that we hold).
-	 *    because we keep the read lock on the map, the copy-on-write
-	 *    status of the entries we modify here cannot change.
 	 */
 	for (iter = first; iter != end;
 	    iter = RBT_NEXT(uvm_map_addr, iter)) {
@@ -2185,7 +2178,7 @@ uvm_map_pageable_wire(struct vm_map *map, struct vm_map_entry *first,
 	timestamp_save = map->timestamp;
 #endif
 	vm_map_busy(map);
-	vm_map_downgrade(map);
+	vm_map_unlock(map);
 
 	error = 0;
 	for (iter = first; error == 0 && iter != end;
@@ -2198,14 +2191,10 @@ uvm_map_pageable_wire(struct vm_map *map, struct vm_map_entry *first,
 		    iter->protection);
 	}
 
+	vm_map_lock(map);
+	vm_map_unbusy(map);
+
 	if (error) {
-		/*
-		 * uvm_fault_wire failure
-		 *
-		 * Reacquire lock and undo our work.
-		 */
-		vm_map_upgrade(map);
-		vm_map_unbusy(map);
 #ifdef DIAGNOSTIC
 		if (timestamp_save != map->timestamp)
 			panic("uvm_map_pageable_wire: stale map");
@@ -2244,13 +2233,10 @@ uvm_map_pageable_wire(struct vm_map *map, struct vm_map_entry *first,
 		return error;
 	}
 
-	/* We are currently holding a read lock. */
+
 	if ((lockflags & UVM_LK_EXIT) == 0) {
-		vm_map_unbusy(map);
-		vm_map_unlock_read(map);
+		vm_map_unlock(map);
 	} else {
-		vm_map_upgrade(map);
-		vm_map_unbusy(map);
 #ifdef DIAGNOSTIC
 		if (timestamp_save != map->timestamp)
 			panic("uvm_map_pageable_wire: stale map");
@@ -2392,7 +2378,7 @@ out:
  * all mapped regions.
  *
  * Map must not be locked.
- * If no flags are specified, all ragions are unwired.
+ * If no flags are specified, all regions are unwired.
  */
 int
 uvm_map_pageable_all(struct vm_map *map, int flags, vsize_t limit)
@@ -2495,6 +2481,7 @@ uvm_map_setup(struct vm_map *map, pmap_t pmap, vaddr_t min, vaddr_t max,
 	map->s_start = map->s_end = 0; /* Empty stack area by default. */
 	map->flags = flags;
 	map->timestamp = 0;
+	map->busy = NULL;
 	if (flags & VM_MAP_ISVMSPACE)
 		rw_init_flags(&map->lock, "vmmaplk", RWL_DUPOK);
 	else
@@ -2689,7 +2676,7 @@ uvm_map_splitentry(struct vm_map *map, struct vm_map_entry *orig,
 	 * Link orig and next into free-space tree.
 	 *
 	 * Don't insert 'next' into the addr tree until orig has been linked,
-	 * in case the free-list looks at adjecent entries in the addr tree
+	 * in case the free-list looks at adjacent entries in the addr tree
 	 * for its decisions.
 	 */
 	if (orig->fspace > 0)
@@ -3716,15 +3703,6 @@ uvm_mapent_forkshared(struct vmspace *new_vm, struct vm_map *new_map,
 	    old_entry->end - old_entry->start, 0, old_entry->protection,
 	    old_entry->max_protection, old_map, old_entry, dead);
 
-	/*
-	 * pmap_copy the mappings: this routine is optional
-	 * but if it is there it will reduce the number of
-	 * page faults in the new proc.
-	 */
-	if (!UVM_ET_ISHOLE(new_entry))
-		pmap_copy(new_map->pmap, old_map->pmap, new_entry->start,
-		    (new_entry->end - new_entry->start), new_entry->start);
-
 	return (new_entry);
 }
 
@@ -3805,8 +3783,6 @@ uvm_mapent_forkcopy(struct vmspace *new_vm, struct vm_map *new_map,
 		 * resolve all copy-on-write faults now
 		 * (note that there is nothing to do if
 		 * the old mapping does not have an amap).
-		 * XXX: is it worthwhile to bother with
-		 * pmap_copy in this case?
 		 */
 		if (old_entry->aref.ar_amap)
 			amap_cow_now(new_map, new_entry);
@@ -3821,12 +3797,7 @@ uvm_mapent_forkcopy(struct vmspace *new_vm, struct vm_map *new_map,
 			 * fork operation.
 			 *
 			 * if we do not write-protect the parent, then
-			 * we must be sure to write-protect the child
-			 * after the pmap_copy() operation.
-			 *
-			 * XXX: pmap_copy should have some way of telling
-			 * us that it didn't do anything so we can avoid
-			 * calling pmap_protect needlessly.
+			 * we must be sure to write-protect the child.
 			 */
 			if (!UVM_ET_ISNEEDSCOPY(old_entry)) {
 				if (old_entry->max_protection & PROT_WRITE) {
@@ -3854,15 +3825,6 @@ uvm_mapent_forkcopy(struct vmspace *new_vm, struct vm_map *new_map,
 			else
 				protect_child = FALSE;
 		}
-		/*
-		 * copy the mappings
-		 * XXX: need a way to tell if this does anything
-		 */
-		if (!UVM_ET_ISHOLE(new_entry))
-			pmap_copy(new_map->pmap, old_map->pmap,
-			    new_entry->start,
-			    (old_entry->end - old_entry->start),
-			    old_entry->start);
 
 		/* protect the child's mappings if necessary */
 		if (protect_child) {
@@ -4526,13 +4488,6 @@ uvm_map_extract(struct vm_map *srcmap, vaddr_t start, vsize_t len,
 		    newentry->protection != PROT_NONE)
 			newentry->protection = newentry->max_protection;
 		newentry->protection &= ~PROT_EXEC;
-
-		/*
-		 * Step 2: perform pmap copy.
-		 * (Doing this in the loop saves one RB traversal.)
-		 */
-		pmap_copy(kernel_map->pmap, srcmap->pmap,
-		    cp_start - start + dstaddr, cp_len, cp_start);
 	}
 	pmap_update(kernel_map->pmap);
 
@@ -5345,7 +5300,7 @@ vm_map_lock_try_ln(struct vm_map *map, char *file, int line)
 		rv = mtx_enter_try(&map->mtx);
 	} else {
 		mtx_enter(&map->flags_lock);
-		if (map->flags & VM_MAP_BUSY) {
+		if ((map->flags & VM_MAP_BUSY) && (map->busy != curproc)) {
 			mtx_leave(&map->flags_lock);
 			return (FALSE);
 		}
@@ -5354,7 +5309,8 @@ vm_map_lock_try_ln(struct vm_map *map, char *file, int line)
 		/* check if the lock is busy and back out if we won the race */
 		if (rv) {
 			mtx_enter(&map->flags_lock);
-			if (map->flags & VM_MAP_BUSY) {
+			if ((map->flags & VM_MAP_BUSY) &&
+			    (map->busy != curproc)) {
 				rw_exit(&map->lock);
 				rv = FALSE;
 			}
@@ -5379,7 +5335,8 @@ vm_map_lock_ln(struct vm_map *map, char *file, int line)
 		do {
 			mtx_enter(&map->flags_lock);
 tryagain:
-			while (map->flags & VM_MAP_BUSY) {
+			while ((map->flags & VM_MAP_BUSY) &&
+			    (map->busy != curproc)) {
 				map->flags |= VM_MAP_WANTLOCK;
 				msleep_nsec(&map->flags, &map->flags_lock,
 				    PVM, vmmapbsy, INFSLP);
@@ -5388,7 +5345,7 @@ tryagain:
 		} while (rw_enter(&map->lock, RW_WRITE|RW_SLEEPFAIL) != 0);
 		/* check if the lock is busy and back out if we won the race */
 		mtx_enter(&map->flags_lock);
-		if (map->flags & VM_MAP_BUSY) {
+		if ((map->flags & VM_MAP_BUSY) && (map->busy != curproc)) {
 			rw_exit(&map->lock);
 			goto tryagain;
 		}
@@ -5397,7 +5354,8 @@ tryagain:
 		mtx_enter(&map->mtx);
 	}
 
-	map->timestamp++;
+	if (map->busy != curproc)
+		map->timestamp++;
 	LPRINTF(("map   lock: %p (at %s %d)\n", map, file, line));
 	uvm_tree_sanity(map, file, line);
 	uvm_tree_size_chk(map, file, line);
@@ -5418,6 +5376,7 @@ vm_map_lock_read_ln(struct vm_map *map, char *file, int line)
 void
 vm_map_unlock_ln(struct vm_map *map, char *file, int line)
 {
+	KASSERT(map->busy == NULL || map->busy == curproc);
 	uvm_tree_sanity(map, file, line);
 	uvm_tree_size_chk(map, file, line);
 	LPRINTF(("map unlock: %p (at %s %d)\n", map, file, line));
@@ -5440,37 +5399,14 @@ vm_map_unlock_read_ln(struct vm_map *map, char *file, int line)
 }
 
 void
-vm_map_downgrade_ln(struct vm_map *map, char *file, int line)
-{
-	uvm_tree_sanity(map, file, line);
-	uvm_tree_size_chk(map, file, line);
-	LPRINTF(("map unlock: %p (at %s %d)\n", map, file, line));
-	LPRINTF(("map   lock: %p (at %s %d)\n", map, file, line));
-	KASSERT((map->flags & VM_MAP_INTRSAFE) == 0);
-	if ((map->flags & VM_MAP_INTRSAFE) == 0)
-		rw_enter(&map->lock, RW_DOWNGRADE);
-}
-
-void
-vm_map_upgrade_ln(struct vm_map *map, char *file, int line)
-{
-	/* XXX: RO */ uvm_tree_sanity(map, file, line);
-	/* XXX: RO */ uvm_tree_size_chk(map, file, line);
-	LPRINTF(("map unlock: %p (at %s %d)\n", map, file, line));
-	KASSERT((map->flags & VM_MAP_INTRSAFE) == 0);
-	if ((map->flags & VM_MAP_INTRSAFE) == 0) {
-		rw_exit_read(&map->lock);
-		rw_enter_write(&map->lock);
-	}
-	LPRINTF(("map   lock: %p (at %s %d)\n", map, file, line));
-	uvm_tree_sanity(map, file, line);
-}
-
-void
 vm_map_busy_ln(struct vm_map *map, char *file, int line)
 {
 	KASSERT((map->flags & VM_MAP_INTRSAFE) == 0);
+	KASSERT(rw_write_held(&map->lock));
+	KASSERT(map->busy == NULL);
+
 	mtx_enter(&map->flags_lock);
+	map->busy = curproc;
 	map->flags |= VM_MAP_BUSY;
 	mtx_leave(&map->flags_lock);
 }
@@ -5481,8 +5417,11 @@ vm_map_unbusy_ln(struct vm_map *map, char *file, int line)
 	int oflags;
 
 	KASSERT((map->flags & VM_MAP_INTRSAFE) == 0);
+	KASSERT(map->busy == curproc);
+
 	mtx_enter(&map->flags_lock);
 	oflags = map->flags;
+	map->busy = NULL;
 	map->flags &= ~(VM_MAP_BUSY|VM_MAP_WANTLOCK);
 	mtx_leave(&map->flags_lock);
 	if (oflags & VM_MAP_WANTLOCK)

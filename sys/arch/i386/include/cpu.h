@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.181 2022/12/06 01:56:44 cheloha Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.183 2023/08/23 01:55:46 cheloha Exp $	*/
 /*	$NetBSD: cpu.h,v 1.35 1996/05/05 19:29:26 christos Exp $	*/
 
 /*-
@@ -168,6 +168,7 @@ struct cpu_info {
 	struct ksensor		ci_sensor;
 #if defined(GPROF) || defined(DDBPROF)
 	struct gmonparam	*ci_gmon;
+	struct clockintr	*ci_gmonclock;
 #endif
 	struct clockintr_queue	ci_queue;
 	char			ci_panicbuf[512];
@@ -398,6 +399,9 @@ extern int i386_has_sse2;
 
 extern void (*update_cpuspeed)(void);
 
+extern void (*initclock_func)(void);
+extern void (*startclock_func)(void);
+
 /* machdep.c */
 void	dumpconf(void);
 void	cpu_reset(void);
@@ -415,7 +419,6 @@ void	switch_exit(struct proc *);
 void	proc_trampoline(void);
 
 /* clock.c */
-extern void (*initclock_func)(void);
 void	startclocks(void);
 void	rtcinit(void);
 void	rtcstart(void);
@@ -423,6 +426,7 @@ void	rtcstop(void);
 void	i8254_delay(int);
 void	i8254_initclocks(void);
 void	i8254_startclock(void);
+void	i8254_start_both_clocks(void);
 void	i8254_inittimecounter(void);
 void	i8254_inittimecounter_simple(void);
 

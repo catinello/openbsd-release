@@ -1,4 +1,4 @@
-/* $OpenBSD: amptimer.c,v 1.16 2023/02/04 19:19:36 cheloha Exp $ */
+/* $OpenBSD: amptimer.c,v 1.20 2023/09/17 14:50:51 cheloha Exp $ */
 /*
  * Copyright (c) 2011 Dale Rahn <drahn@openbsd.org>
  *
@@ -287,7 +287,7 @@ amptimer_cpu_initclocks(void)
 
 	stathz = hz;
 	profhz = hz * 10;
-	clockintr_init(CL_RNDSTAT);
+	statclock_is_randomized = 1;
 
 	if (sc->sc_ticks_per_second != amptimer_frequency) {
 		amptimer_set_clockrate(amptimer_frequency);
@@ -301,10 +301,6 @@ amptimer_cpu_initclocks(void)
 	/* Enable private timer counter and interrupt. */
 	bus_space_write_4(sc->sc_iot, sc->sc_pioh, PTIMER_CTRL,
 	    (PTIMER_CTRL_ENABLE | PTIMER_CTRL_IRQEN));
-
-	/* Start the clock interrupt cycle. */
-	clockintr_cpu_init(&amptimer_intrclock);
-	clockintr_trigger();
 }
 
 void
@@ -343,7 +339,6 @@ amptimer_delay(u_int usecs)
 void
 amptimer_setstatclockrate(int newhz)
 {
-	clockintr_setstatclockrate(newhz);
 }
 
 void

@@ -1,7 +1,7 @@
-/*	$OpenBSD: btrace.c,v 1.69 2023/03/10 23:02:30 bluhm Exp $ */
+/*	$OpenBSD: btrace.c,v 1.78 2023/09/15 10:59:02 claudio Exp $ */
 
 /*
- * Copyright (c) 2019 - 2021 Martin Pieuchot <mpi@openbsd.org>
+ * Copyright (c) 2019 - 2023 Martin Pieuchot <mpi@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -95,6 +95,7 @@ bool			 stmt_test(struct bt_stmt *, struct dt_evt *);
 void			 stmt_time(struct bt_stmt *, struct dt_evt *);
 void			 stmt_zero(struct bt_stmt *);
 struct bt_arg		*ba_read(struct bt_arg *);
+struct bt_arg		*baeval(struct bt_arg *, struct dt_evt *);
 const char		*ba2hash(struct bt_arg *, struct dt_evt *);
 long			 baexpr2long(struct bt_arg *, struct dt_evt *);
 const char		*ba2bucket(struct bt_arg *, struct bt_arg *,
@@ -117,11 +118,16 @@ size_t			 dt_ndtpi;	/* # of elements in the array */
 struct dtioc_arg_info  **dt_args;	/* array of probe arguments */
 
 struct dt_evt		 bt_devt;	/* fake event for BEGIN/END */
+#define EVENT_BEGIN	 0
+#define EVENT_END	 (unsigned int)(-1)
 uint64_t		 bt_filtered;	/* # of events filtered out */
+
+struct syms		*kelf, *uelf;
 
 char			**vargs;
 int			 nargs = 0;
 int			 verbose = 0;
+int			 dtfd;
 volatile sig_atomic_t	 quit_pending;
 
 static void
@@ -152,6 +158,9 @@ main(int argc, char *argv[])
 			break;
 		case 'n':
 			noaction = 1;
+			break;
+		case 'p':
+			uelf = kelf_open(optarg);
 			break;
 		case 'v':
 			verbose++;
@@ -204,6 +213,7 @@ main(int argc, char *argv[])
 		fd = open(__PATH_DEVDT, O_RDONLY);
 		if (fd == -1)
 			err(1, "could not open %s", __PATH_DEVDT);
+		dtfd = fd;
 	}
 
 	if (showprobes) {
@@ -223,8 +233,8 @@ main(int argc, char *argv[])
 __dead void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-lnv] [-e program | file] [argument ...]\n",
-	    getprogname());
+	fprintf(stderr, "usage: %s [-lnv] [-e program | file] [-p file] "
+	    "[argument ...]\n", getprogname());
 	exit(1);
 }
 
@@ -443,6 +453,37 @@ rules_do(int fd)
 	}
 }
 
+static uint64_t
+rules_action_scan(struct bt_stmt *bs)
+{
+	struct bt_arg *ba;
+	uint64_t evtflags = 0;
+
+	while (bs != NULL) {
+		SLIST_FOREACH(ba, &bs->bs_args, ba_next)
+			evtflags |= ba2dtflags(ba);
+
+		/* Also check the value for map/hist insertion */
+		switch (bs->bs_act) {
+		case B_AC_BUCKETIZE:
+		case B_AC_INSERT:
+			ba = (struct bt_arg *)bs->bs_var;
+			evtflags |= ba2dtflags(ba);
+			break;
+		case B_AC_TEST:
+			evtflags |= rules_action_scan(
+			    (struct bt_stmt *)bs->bs_var);
+			break;
+		default:
+			break;
+		}
+
+		bs = SLIST_NEXT(bs, bs_next);
+	}
+
+	return evtflags;
+}
+
 void
 rules_setup(int fd)
 {
@@ -467,21 +508,7 @@ rules_setup(int fd)
 			evtflags |= ba2dtflags(ba);
 		}
 
-		SLIST_FOREACH(bs, &r->br_action, bs_next) {
-			SLIST_FOREACH(ba, &bs->bs_args, ba_next)
-				evtflags |= ba2dtflags(ba);
-
-			/* Also check the value for map/hist insertion */
-			switch (bs->bs_act) {
-			case B_AC_BUCKETIZE:
-			case B_AC_INSERT:
-				ba = (struct bt_arg *)bs->bs_var;
-				evtflags |= ba2dtflags(ba);
-				break;
-			default:
-				break;
-			}
-		}
+		evtflags |= rules_action_scan(SLIST_FIRST(&r->br_action));
 
 		SLIST_FOREACH(bp, &r->br_probes, bp_next) {
 			debug("parsed probe '%s'", debug_probe_name(bp));
@@ -516,10 +543,10 @@ rules_setup(int fd)
 	}
 
 	if (dokstack)
-		kelf_open();
+		kelf = kelf_open(_PATH_KSYMS);
 
 	/* Initialize "fake" event for BEGIN/END */
-	bt_devt.dtev_pbn = -1;
+	bt_devt.dtev_pbn = EVENT_BEGIN;
 	strlcpy(bt_devt.dtev_comm, getprogname(), sizeof(bt_devt.dtev_comm));
 	bt_devt.dtev_pid = getpid();
 	bt_devt.dtev_tid = getthrid();
@@ -593,10 +620,13 @@ rules_teardown(int fd)
 		}
 	}
 
-	if (dokstack)
-		kelf_close();
+	kelf_close(kelf);
+	kelf = NULL;
+	kelf_close(uelf);
+	uelf = NULL;
 
 	/* Update "fake" event for BEGIN/END */
+	bt_devt.dtev_pbn = EVENT_END;
 	clock_gettime(CLOCK_REALTIME, &bt_devt.dtev_tsp);
 
 	if (rend)
@@ -703,17 +733,21 @@ builtin_nsecs(struct dt_evt *dtev)
 }
 
 const char *
-builtin_stack(struct dt_evt *dtev, int kernel)
+builtin_stack(struct dt_evt *dtev, int kernel, unsigned long offset)
 {
 	struct stacktrace *st = &dtev->dtev_kstack;
-	static char buf[4096], *bp;
+	static char buf[4096];
+	const char *last = "\nkernel\n";
+	char *bp;
 	size_t i;
 	int sz;
 
-	if (!kernel)
-		return "";
-	if (st->st_count == 0)
+	if (!kernel) {
+		st = &dtev->dtev_ustack;
+		last = "\nuserland\n";
+	} else if (st->st_count == 0) {
 		return "\nuserland\n";
+	}
 
 	buf[0] = '\0';
 	bp = buf;
@@ -721,7 +755,12 @@ builtin_stack(struct dt_evt *dtev, int kernel)
 	for (i = 0; i < st->st_count; i++) {
 		int l;
 
-		l = kelf_snprintsym(bp, sz - 1, st->st_pc[i]);
+		if (!kernel)
+			l = kelf_snprintsym(uelf, bp, sz - 1, st->st_pc[i],
+			    offset);
+		else
+			l = kelf_snprintsym(kelf, bp, sz - 1, st->st_pc[i],
+			    offset);
 		if (l < 0)
 			break;
 		if (l >= sz - 1) {
@@ -732,7 +771,7 @@ builtin_stack(struct dt_evt *dtev, int kernel)
 		bp += l;
 		sz -= l;
 	}
-	snprintf(bp, sz, "\nkernel\n");
+	snprintf(bp, sz, "%s", last);
 
 	return buf;
 }
@@ -816,6 +855,7 @@ stmt_bucketize(struct bt_stmt *bs, struct dt_evt *dtev)
 	struct bt_arg *brange, *bhist = SLIST_FIRST(&bs->bs_args);
 	struct bt_arg *bval = (struct bt_arg *)bs->bs_var;
 	struct bt_var *bv = bhist->ba_value;
+	struct hist *hist;
 	const char *bucket;
 	long step = 0;
 
@@ -832,8 +872,17 @@ stmt_bucketize(struct bt_stmt *bs, struct dt_evt *dtev)
 	debug("hist=%p '%s' increment bucket '%s'\n", bv->bv_value,
 	    bv_name(bv), bucket);
 
-	bv->bv_value = (struct bt_arg *)
-	    hist_increment((struct hist *)bv->bv_value, bucket, step);
+	/* hist is NULL before first insert or after clear() */
+	hist = (struct hist *)bv->bv_value;
+	if (hist == NULL)
+		hist = hist_new(step);
+
+	hist_increment(hist, bucket);
+
+	debug("hist=%p '%s' increment bucket=%p '%s' bval=%p\n", hist,
+	    bv_name(bv), brange, bucket, bval);
+
+	bv->bv_value = (struct bt_arg *)hist;
 	bv->bv_type = B_VT_HIST;
 }
 
@@ -905,6 +954,7 @@ stmt_insert(struct bt_stmt *bs, struct dt_evt *dtev)
 	struct bt_var *bv = bmap->ba_value;
 	struct map *map;
 	const char *hash;
+	long val;
 
 	assert(bmap->ba_type == B_AT_MAP);
 	assert(SLIST_NEXT(bval, ba_next) == NULL);
@@ -914,7 +964,37 @@ stmt_insert(struct bt_stmt *bs, struct dt_evt *dtev)
 
 	/* map is NULL before first insert or after clear() */
 	map = (struct map *)bv->bv_value;
-	map = map_insert(map, hash, bval, dtev);
+	if (map == NULL)
+		map = map_new();
+
+	/* Operate on existring value for count(), max(), min() and sum(). */
+	switch (bval->ba_type) {
+	case B_AT_MF_COUNT:
+		val = ba2long(map_get(map, hash), NULL);
+		val++;
+		bval = ba_new(val, B_AT_LONG);
+		break;
+	case B_AT_MF_MAX:
+		val = ba2long(map_get(map, hash), NULL);
+		val = MAXIMUM(val, ba2long(bval->ba_value, dtev));
+		bval = ba_new(val, B_AT_LONG);
+		break;
+	case B_AT_MF_MIN:
+		val = ba2long(map_get(map, hash), NULL);
+		val = MINIMUM(val, ba2long(bval->ba_value, dtev));
+		bval = ba_new(val, B_AT_LONG);
+		break;
+	case B_AT_MF_SUM:
+		val = ba2long(map_get(map, hash), NULL);
+		val += ba2long(bval->ba_value, dtev);
+		bval = ba_new(val, B_AT_LONG);
+		break;
+	default:
+		bval = baeval(bval, dtev);
+		break;
+	}
+
+	map_insert(map, hash, bval);
 
 	debug("map=%p '%s' insert key=%p '%s' bval=%p\n", map,
 	    bv_name(bv), bkey, hash, bval);
@@ -980,7 +1060,7 @@ void
 stmt_store(struct bt_stmt *bs, struct dt_evt *dtev)
 {
 	struct bt_arg *ba = SLIST_FIRST(&bs->bs_args);
-	struct bt_var *bv = bs->bs_var;
+	struct bt_var *bvar, *bv = bs->bs_var;
 
 	assert(SLIST_NEXT(ba, ba_next) == NULL);
 
@@ -993,25 +1073,33 @@ stmt_store(struct bt_stmt *bs, struct dt_evt *dtev)
 		bv->bv_value = ba;
 		bv->bv_type = B_VT_LONG;
 		break;
-	case B_AT_BI_NSECS:
-		bv->bv_value = ba_new(builtin_nsecs(dtev), B_AT_LONG);
-		bv->bv_type = B_VT_LONG;
+	case B_AT_VAR:
+		bvar = ba->ba_value;
+		bv->bv_type = bvar->bv_type;
+		bv->bv_value = bvar->bv_value;
 		break;
+	case B_AT_TUPLE:
+		bv->bv_value = baeval(ba, dtev);
+		bv->bv_type = B_VT_TUPLE;
+		break;
+	case B_AT_BI_PID:
+	case B_AT_BI_TID:
+	case B_AT_BI_NSECS:
 	case B_AT_BI_ARG0 ... B_AT_BI_ARG9:
-	/* FALLTHROUGH */
 	case B_AT_OP_PLUS ... B_AT_OP_LOR:
-		bv->bv_value = ba_new(ba2long(ba, dtev), B_AT_LONG);
+		bv->bv_value = baeval(ba, dtev);
 		bv->bv_type = B_VT_LONG;
 		break;
 	case B_AT_FN_STR:
-		bv->bv_value = ba_new(ba2str(ba, dtev), B_AT_STR);
+		bv->bv_value = baeval(ba, dtev);
 		bv->bv_type = B_VT_STR;
 		break;
 	default:
 		xabort("store not implemented for type %d", ba->ba_type);
 	}
 
-	debug("bv=%p var '%s' store (%p)\n", bv, bv_name(bv), bv->bv_value);
+	debug("bv=%p var '%s' store (%p)='%s'\n", bv, bv_name(bv), bv->bv_value,
+	    ba2str(bv->bv_value, dtev));
 }
 
 /*
@@ -1114,7 +1202,6 @@ ba_read(struct bt_arg *ba)
 	struct bt_var *bv = ba->ba_value;
 
 	assert(ba->ba_type == B_AT_VAR);
-
 	debug("bv=%p read '%s' (%p)\n", bv, bv_name(bv), bv->bv_value);
 
 	/* Handle map/hist access after clear(). */
@@ -1124,6 +1211,57 @@ ba_read(struct bt_arg *ba)
 	return bv->bv_value;
 }
 
+// XXX
+extern struct bt_arg	*ba_append(struct bt_arg *, struct bt_arg *);
+
+/*
+ * Return a new argument that doesn't depend on `dtev'.  This is used
+ * when storing values in variables, maps, etc.
+ */
+struct bt_arg *
+baeval(struct bt_arg *bval, struct dt_evt *dtev)
+{
+	struct bt_arg *ba, *bh = NULL;
+
+	switch (bval->ba_type) {
+	case B_AT_VAR:
+		ba = baeval(ba_read(bval), NULL);
+		break;
+	case B_AT_LONG:
+	case B_AT_BI_PID:
+	case B_AT_BI_TID:
+	case B_AT_BI_CPU:
+	case B_AT_BI_NSECS:
+	case B_AT_BI_ARG0 ... B_AT_BI_ARG9:
+	case B_AT_BI_RETVAL:
+	case B_AT_OP_PLUS ... B_AT_OP_LOR:
+		ba = ba_new(ba2long(bval, dtev), B_AT_LONG);
+		break;
+	case B_AT_STR:
+	case B_AT_BI_COMM:
+	case B_AT_BI_KSTACK:
+	case B_AT_BI_USTACK:
+	case B_AT_BI_PROBE:
+	case B_AT_FN_STR:
+		ba = ba_new(ba2str(bval, dtev), B_AT_STR);
+		break;
+	case B_AT_TUPLE:
+		ba = bval->ba_value;
+		do {
+			bh = ba_append(bh, baeval(ba, dtev));
+		} while ((ba = SLIST_NEXT(ba, ba_next)) != NULL);
+		ba = ba_new(bh, B_AT_TUPLE);
+		break;
+	default:
+		xabort("no eval support for type %d", bval->ba_type);
+	}
+
+	return ba;
+}
+
+/*
+ * Return a string of coma-separated values
+ */
 const char *
 ba2hash(struct bt_arg *ba, struct dt_evt *dtev)
 {
@@ -1510,6 +1648,7 @@ ba2str(struct bt_arg *ba, struct dt_evt *dtev)
 	static char buf[STRLEN];
 	struct bt_var *bv;
 	struct dtioc_probe_info *dtpi;
+	unsigned long idx;
 	const char *str;
 
 	buf[0] = '\0';
@@ -1521,14 +1660,34 @@ ba2str(struct bt_arg *ba, struct dt_evt *dtev)
 		snprintf(buf, sizeof(buf), "%ld",(long)ba->ba_value);
 		str = buf;
 		break;
+	case B_AT_TUPLE:
+		snprintf(buf, sizeof(buf), "(%s)", ba2hash(ba->ba_value, dtev));
+		str = buf;
+		break;
+	case B_AT_TMEMBER:
+		idx = (unsigned long)ba->ba_key;
+		bv = ba->ba_value;
+		/* Uninitialized tuple */
+		if (bv->bv_value == NULL) {
+			str = buf;
+			break;
+		}
+		ba = bv->bv_value;
+		assert(ba->ba_type == B_AT_TUPLE);
+		ba = ba->ba_value;
+		while (ba != NULL && idx-- > 0) {
+			ba = SLIST_NEXT(ba, ba_next);
+		}
+		str = ba2str(ba, dtev);
+		break;
 	case B_AT_NIL:
 		str = "";
 		break;
 	case B_AT_BI_KSTACK:
-		str = builtin_stack(dtev, 1);
+		str = builtin_stack(dtev, 1, 0);
 		break;
 	case B_AT_BI_USTACK:
-		str = builtin_stack(dtev, 0);
+		str = builtin_stack(dtev, 0, dt_get_offset(dtev->dtev_pid));
 		break;
 	case B_AT_BI_COMM:
 		str = dtev->dtev_comm;
@@ -1557,6 +1716,13 @@ ba2str(struct bt_arg *ba, struct dt_evt *dtev)
 		str = buf;
 		break;
 	case B_AT_BI_PROBE:
+		if (dtev->dtev_pbn == EVENT_BEGIN) {
+			str = "BEGIN";
+			break;
+		} else if (dtev->dtev_pbn == EVENT_END) {
+			str = "END";
+			break;
+		}
 		dtpi = &dt_dtpis[dtev->dtev_pbn - 1];
 		if (dtpi != NULL)
 			snprintf(buf, sizeof(buf), "%s:%s:%s",
@@ -1621,6 +1787,8 @@ ba2dtflags(struct bt_arg *ba)
 		switch (bval->ba_type) {
 		case B_AT_STR:
 		case B_AT_LONG:
+		case B_AT_TUPLE:
+		case B_AT_TMEMBER:
 		case B_AT_VAR:
 	    	case B_AT_HIST:
 		case B_AT_NIL:
@@ -1667,10 +1835,35 @@ ba2dtflags(struct bt_arg *ba)
 long
 bacmp(struct bt_arg *a, struct bt_arg *b)
 {
-	assert(a->ba_type == b->ba_type);
-	assert(a->ba_type == B_AT_LONG);
+	long val;
 
-	return ba2long(a, NULL) - ba2long(b, NULL);
+	if (a->ba_type != b->ba_type)
+		return a->ba_type - b->ba_type;
+
+	switch (a->ba_type) {
+	case B_AT_LONG:
+		return ba2long(a, NULL) - ba2long(b, NULL);
+	case B_AT_STR:
+		return strcmp(ba2str(a, NULL), ba2str(b, NULL));
+	case B_AT_TUPLE:
+		/* Compare two lists of arguments one by one. */
+		do {
+			val = bacmp(a, b);
+			if (val != 0)
+				break;
+
+			a = SLIST_NEXT(a, ba_next);
+			b = SLIST_NEXT(b, ba_next);
+			if (a == NULL && b != NULL)
+				val = -1;
+			else if (a != NULL && b == NULL)
+				val = 1;
+		} while (a != NULL && b != NULL);
+
+		return val;
+	default:
+		xabort("no compare support for type %d", a->ba_type);
+	}
 }
 
 __dead void
@@ -1795,4 +1988,31 @@ debug_probe_name(struct bt_probe *bp)
 	}
 
 	return buf;
+}
+
+unsigned long
+dt_get_offset(pid_t pid)
+{
+	static struct dtioc_getaux	cache[32];
+	static int			next;
+	struct dtioc_getaux		*aux = NULL;
+	int				 i;
+
+	for (i = 0; i < 32; i++) {
+		if (cache[i].dtga_pid != pid)
+			continue;
+		aux = cache + i;
+		break;
+	}
+
+	if (aux == NULL) {
+		aux = &cache[next++];
+		next %= 32;
+
+		aux->dtga_pid = pid;
+		if (ioctl(dtfd, DTIOCGETAUXBASE, aux))
+			aux->dtga_auxbase = 0;
+	}
+
+	return aux->dtga_auxbase;
 }

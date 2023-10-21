@@ -1,7 +1,11 @@
-/*	$OpenBSD: kern_compat.h,v 1.13 2022/06/28 10:01:13 bluhm Exp $	*/
+/*	$OpenBSD: kern_compat.h,v 1.15 2023/07/07 20:38:17 bluhm Exp $	*/
 
 #ifndef _KERN_COMPAT_H_
 #define _KERN_COMPAT_H_
+
+#define _KERNEL
+#include <sys/refcnt.h>
+#undef _KERNEL
 
 #include <sys/socket.h>
 #include <sys/domain.h>
@@ -32,6 +36,10 @@
 #define KERNEL_ASSERT_LOCKED()	/* nothing */
 #define KERNEL_LOCK()		/* nothing */
 #define KERNEL_UNLOCK()		/* nothing */
+
+#define NET_ASSERT_UNLOCKED()		/* nothing */
+#define NET_ASSERT_LOCKED()		/* nothing */
+#define NET_ASSERT_LOCKED_EXCLUSIVE()	/* nothing */
 
 #define panic(x...) errx(1, x)
 
@@ -73,8 +81,6 @@ extern struct domain *domains[];
 #define rw_enter_write(rwl)
 #define rw_exit_write(rwl)
 #define rw_assert_wrlock(rwl)
-
-#define refcnt_read(cnt)	1
 
 #define SET(t, f)	((t) |= (f))
 #define CLR(t, f)	((t) &= ~(f))

@@ -1,4 +1,4 @@
-/*	$OpenBSD: resolve.c,v 1.97 2022/01/08 06:49:41 guenther Exp $ */
+/*	$OpenBSD: resolve.c,v 1.100 2023/07/08 14:09:43 jasper Exp $ */
 
 /*
  * Copyright (c) 1998 Per Fogelstrom, Opsycon AB
@@ -227,14 +227,17 @@ _dl_origin_subst_path(elf_object_t *object, const char *origin_path,
 static int
 _dl_origin_path(elf_object_t *object, char *origin_path)
 {
-	const char *dirname_path = _dl_dirname(object->load_name);
+	const char *dirname_path;
 
+	/* syscall in ld.so returns 0/-errno, where libc returns char* */
+	if (_dl___realpath(object->load_name, origin_path) < 0)
+		return -1;
+
+	dirname_path = _dl_dirname(origin_path);
 	if (dirname_path == NULL)
 		return -1;
 
-	/* syscall in ld.so returns 0/-errno, where libc returns char* */
-	if (_dl___realpath(dirname_path, origin_path) < 0)
-		return -1;
+	_dl_strlcpy(origin_path, dirname_path, PATH_MAX);
 
 	return 0;
 }
@@ -272,10 +275,9 @@ _dl_finalize_object(const char *objname, Elf_Dyn *dynp, Elf_Phdr *phdrp,
 	elf_object_t *object;
 	Elf_Addr gnu_hash = 0;
 
-#if 0
-	_dl_printf("objname [%s], dynp %p, objtype %x lbase %lx, obase %lx\n",
-	    objname, dynp, objtype, lbase, obase);
-#endif
+	DL_DEB(("objname [%s], dynp %p, objtype %x lbase %lx, obase %lx\n",
+	    objname, dynp, objtype, lbase, obase));
+
 	object = _dl_calloc(1, sizeof(elf_object_t));
 	if (object == NULL)
 		_dl_oom();
@@ -609,7 +611,7 @@ _dl_find_symbol_obj(elf_object_t *obj, struct symlookup *sl)
 			if (((*hashval ^ hash) >> 1) == 0) {
 				const Elf_Sym *sym = symt +
 				    (hashval - obj->chains_gnu);
-				
+
 				int r = matched_symbol(obj, sym, sl);
 				if (r)
 					return r > 0;
@@ -647,13 +649,11 @@ _dl_find_symbol(const char *name, int flags, const Elf_Sym *ref_sym,
 
 	/* Calculate both hashes in one pass */
 	for (p = (const unsigned char *)name; (c = *p) != '\0'; p++) {
-		unsigned long g;
 		sl.sl_elf_hash = (sl.sl_elf_hash << 4) + c;
-		if ((g = sl.sl_elf_hash & 0xf0000000))
-			sl.sl_elf_hash ^= g >> 24;
-		sl.sl_elf_hash &= ~g;
+		sl.sl_elf_hash ^= (sl.sl_elf_hash >> 24) & 0xf0;
 		sl.sl_gnu_hash = sl.sl_gnu_hash * 33 + c;
 	}
+	sl.sl_elf_hash &= 0x0fffffff;
 
 	if (req_obj->dyn.symbolic)
 		if (_dl_find_symbol_obj(req_obj, &sl))

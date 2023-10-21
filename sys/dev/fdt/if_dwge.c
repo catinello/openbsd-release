@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_dwge.c,v 1.15 2023/02/26 13:28:12 kettenis Exp $	*/
+/*	$OpenBSD: if_dwge.c,v 1.19 2023/08/15 08:27:30 miod Exp $	*/
 /*
  * Copyright (c) 2008, 2019 Mark Kettenis <kettenis@openbsd.org>
  * Copyright (c) 2017 Patrick Wildt <patrick@blueri.se>
@@ -21,6 +21,7 @@
  */
 
 #include "bpfilter.h"
+#include "kstat.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -52,6 +53,10 @@
 
 #if NBPFILTER > 0
 #include <net/bpf.h>
+#endif
+
+#if NKSTAT > 0
+#include <sys/kstat.h>
 #endif
 
 #include <netinet/in.h>
@@ -97,8 +102,24 @@
 #define  GMAC_INT_MASK_RIM		(1 << 0)
 #define GMAC_MAC_ADDR0_HI	0x0040
 #define GMAC_MAC_ADDR0_LO	0x0044
+#define GMAC_MAC_MMC_CTRL	0x0100
+#define  GMAC_MAC_MMC_CTRL_ROR	(1 << 2)
+#define  GMAC_MAC_MMC_CTRL_CR	(1 << 0)
 #define GMAC_MMC_RX_INT_MSK	0x010c
 #define GMAC_MMC_TX_INT_MSK	0x0110
+#define GMAC_MMC_TXOCTETCNT_GB	0x0114
+#define GMAC_MMC_TXFRMCNT_GB	0x0118
+#define GMAC_MMC_TXUNDFLWERR	0x0148
+#define GMAC_MMC_TXCARERR	0x0160
+#define GMAC_MMC_TXOCTETCNT_G	0x0164
+#define GMAC_MMC_TXFRMCNT_G	0x0168
+#define GMAC_MMC_RXFRMCNT_GB	0x0180
+#define GMAC_MMC_RXOCTETCNT_GB	0x0184
+#define GMAC_MMC_RXOCTETCNT_G	0x0188
+#define GMAC_MMC_RXMCFRMCNT_G	0x0190
+#define GMAC_MMC_RXCRCERR	0x0194
+#define GMAC_MMC_RXLENERR	0x01c8
+#define GMAC_MMC_RXFIFOOVRFLW	0x01d4
 #define GMAC_MMC_IPC_INT_MSK	0x0200
 #define GMAC_BUS_MODE		0x1000
 #define  GMAC_BUS_MODE_8XPBL		(1 << 24)
@@ -113,6 +134,7 @@
 #define GMAC_RX_DESC_LIST_ADDR	0x100c
 #define GMAC_TX_DESC_LIST_ADDR	0x1010
 #define GMAC_STATUS		0x1014
+#define  GMAC_STATUS_MMC		(1 << 27)
 #define  GMAC_STATUS_RI			(1 << 6)
 #define  GMAC_STATUS_TU			(1 << 2)
 #define  GMAC_STATUS_TI			(1 << 0)
@@ -172,7 +194,7 @@ struct dwge_desc {
 #define TDES0_PCE		(1 << 12)
 #define TDES0_JT		(1 << 14)
 #define TDES0_IHE		(1 << 16)
-#define TDES0_OWN		(1 << 31)
+#define TDES0_OWN		(1U << 31)
 
 #define ETDES0_TCH		(1 << 20)
 #define ETDES0_FS		(1 << 28)
@@ -195,7 +217,7 @@ struct dwge_desc {
 #define RDES0_FL_MASK		0x3fff
 #define RDES0_FL_SHIFT		16
 #define RDES0_AFM		(1 << 30)
-#define RDES0_OWN		(1 << 31)
+#define RDES0_OWN		(1U << 31)
 
 /* Tx size bits */
 #define TDES1_TBS1		(0xfff << 0)
@@ -207,12 +229,12 @@ struct dwge_desc {
 #define TDES1_CIC_FULL		(3 << 27)
 #define TDES1_FS		(1 << 29)
 #define TDES1_LS		(1 << 30)
-#define TDES1_IC		(1 << 31)
+#define TDES1_IC		(1U << 31)
 
 /* Rx size bits */
 #define RDES1_RBS1		(0xfff << 0)
 #define RDES1_RCH		(1 << 24)
-#define RDES1_DIC		(1 << 31)
+#define RDES1_DIC		(1U << 31)
 
 #define ERDES1_RCH		(1 << 14)
 
@@ -245,10 +267,13 @@ struct dwge_softc {
 	bus_dma_tag_t		sc_dmat;
 	void			*sc_ih;
 
+	struct if_device	sc_ifd;
+
 	struct arpcom		sc_ac;
 #define sc_lladdr	sc_ac.ac_enaddr
 	struct mii_data		sc_mii;
 #define sc_media	sc_mii.mii_media
+	uint64_t		sc_fixed_media;
 	int			sc_link;
 	int			sc_phyloc;
 	int			sc_force_thresh_dma_mode;
@@ -277,6 +302,11 @@ struct dwge_softc {
 	uint32_t		sc_clk_sel_125;
 	uint32_t		sc_clk_sel_25;
 	uint32_t		sc_clk_sel_2_5;
+
+#if NKSTAT > 0
+	struct mutex		sc_kstat_mtx;
+	struct kstat		*sc_kstat;
+#endif
 };
 
 #define DEVNAME(_s)	((_s)->sc_dev.dv_xname)
@@ -334,6 +364,11 @@ void	dwge_dmamem_free(struct dwge_softc *, struct dwge_dmamem *);
 struct mbuf *dwge_alloc_mbuf(struct dwge_softc *, bus_dmamap_t);
 void	dwge_fill_rx_ring(struct dwge_softc *);
 
+#if NKSTAT > 0
+int	dwge_kstat_read(struct kstat *);
+void	dwge_kstat_attach(struct dwge_softc *);
+#endif
+
 int
 dwge_match(struct device *parent, void *cfdata, void *aux)
 {
@@ -354,7 +389,7 @@ dwge_attach(struct device *parent, struct device *self, void *aux)
 {
 	struct dwge_softc *sc = (void *)self;
 	struct fdt_attach_args *faa = aux;
-	struct ifnet *ifp;
+	struct ifnet *ifp = &sc->sc_ac.ac_if;
 	uint32_t phy, phy_supply;
 	uint32_t axi_config;
 	uint32_t mode, pbl;
@@ -425,6 +460,30 @@ dwge_attach(struct device *parent, struct device *self, void *aux)
 	/* Reset PHY */
 	dwge_reset_phy(sc);
 
+	node = OF_getnodebyname(faa->fa_node, "fixed-link");
+	if (node) {
+		ifp->if_baudrate = IF_Mbps(OF_getpropint(node, "speed", 0));
+
+		switch (OF_getpropint(node, "speed", 0)) {
+		case 1000:
+			sc->sc_fixed_media = IFM_ETHER | IFM_1000_T;
+			break;
+		case 100:
+			sc->sc_fixed_media = IFM_ETHER | IFM_100_TX;
+			break;
+		default:
+			sc->sc_fixed_media = IFM_ETHER | IFM_AUTO;
+			break;
+		}
+		
+		if (OF_getpropbool(node, "full-duplex")) {
+			ifp->if_link_state = LINK_STATE_FULL_DUPLEX;
+			sc->sc_fixed_media |= IFM_FDX;
+		} else {
+			ifp->if_link_state = LINK_STATE_UP;
+		}
+	}
+
 	sc->sc_clk = clock_get_frequency(faa->fa_node, "stmmaceth");
 	if (sc->sc_clk > 250000000)
 		sc->sc_clk = GMAC_GMII_ADDR_CR_DIV_124;
@@ -447,7 +506,6 @@ dwge_attach(struct device *parent, struct device *self, void *aux)
 	timeout_set(&sc->sc_tick, dwge_tick, sc);
 	timeout_set(&sc->sc_rxto, dwge_rxtick, sc);
 
-	ifp = &sc->sc_ac.ac_if;
 	ifp->if_softc = sc;
 	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
 	ifp->if_xflags = IFXF_MPSAFE;
@@ -544,30 +602,44 @@ dwge_attach(struct device *parent, struct device *self, void *aux)
 		dwge_write(sc, GMAC_AXI_BUS_MODE, mode);
 	}
 
-	mii_attach(self, &sc->sc_mii, 0xffffffff, sc->sc_phyloc,
-	    (sc->sc_phyloc == MII_PHY_ANY) ? 0 : MII_OFFSET_ANY, 0);
-	if (LIST_FIRST(&sc->sc_mii.mii_phys) == NULL) {
-		printf("%s: no PHY found!\n", sc->sc_dev.dv_xname);
-		ifmedia_add(&sc->sc_media, IFM_ETHER|IFM_MANUAL, 0, NULL);
-		ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_MANUAL);
-	} else
-		ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_AUTO);
+	if (sc->sc_fixed_media == 0) {
+		mii_attach(self, &sc->sc_mii, 0xffffffff, sc->sc_phyloc,
+		    (sc->sc_phyloc == MII_PHY_ANY) ? 0 : MII_OFFSET_ANY, 0);
+		if (LIST_FIRST(&sc->sc_mii.mii_phys) == NULL) {
+			printf("%s: no PHY found!\n", sc->sc_dev.dv_xname);
+			ifmedia_add(&sc->sc_media, IFM_ETHER|IFM_MANUAL, 0,
+			    NULL);
+			ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_MANUAL);
+		} else
+			ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_AUTO);
+	} else {
+		ifmedia_add(&sc->sc_media, sc->sc_fixed_media, 0, NULL);
+		ifmedia_set(&sc->sc_media, sc->sc_fixed_media);
+
+		/* force a configuration of the clocks/mac */
+		sc->sc_mii.mii_statchg(self);
+	}
 
 	if_attach(ifp);
 	ether_ifattach(ifp);
+#if NKSTAT > 0
+	dwge_kstat_attach(sc);
+#endif
 
 	/* Disable interrupts. */
 	dwge_write(sc, GMAC_INT_ENA, 0);
 	dwge_write(sc, GMAC_INT_MASK,
 	    GMAC_INT_MASK_LPIIM | GMAC_INT_MASK_PIM | GMAC_INT_MASK_RIM);
-	dwge_write(sc, GMAC_MMC_RX_INT_MSK, 0xffffffff);
-	dwge_write(sc, GMAC_MMC_TX_INT_MSK, 0xffffffff);
 	dwge_write(sc, GMAC_MMC_IPC_INT_MSK, 0xffffffff);
 
 	sc->sc_ih = fdt_intr_establish(faa->fa_node, IPL_NET | IPL_MPSAFE,
 	    dwge_intr, sc, sc->sc_dev.dv_xname);
 	if (sc->sc_ih == NULL)
 		printf("%s: can't establish interrupt\n", sc->sc_dev.dv_xname);
+
+	sc->sc_ifd.if_node = faa->fa_node;
+	sc->sc_ifd.if_ifp = ifp;
+	if_register(&sc->sc_ifd);
 }
 
 void
@@ -726,7 +798,10 @@ dwge_ioctl(struct ifnet *ifp, u_long cmd, caddr_t addr)
 
 	case SIOCGIFMEDIA:
 	case SIOCSIFMEDIA:
-		error = ifmedia_ioctl(ifp, ifr, &sc->sc_media, cmd);
+		if (sc->sc_fixed_media != 0)
+			error = ENOTTY;
+		else
+			error = ifmedia_ioctl(ifp, ifr, &sc->sc_media, cmd);
 		break;
 
 	case SIOCGIFRXR:
@@ -825,11 +900,16 @@ dwge_mii_statchg(struct device *self)
 {
 	struct dwge_softc *sc = (void *)self;
 	uint32_t conf;
+	uint64_t media_active;
 
 	conf = dwge_read(sc, GMAC_MAC_CONF);
 	conf &= ~(GMAC_MAC_CONF_PS | GMAC_MAC_CONF_FES);
 
-	switch (IFM_SUBTYPE(sc->sc_mii.mii_media_active)) {
+	media_active = sc->sc_fixed_media;
+	if (media_active == 0)
+		media_active = sc->sc_mii.mii_media_active;
+
+	switch (IFM_SUBTYPE(media_active)) {
 	case IFM_1000_SX:
 	case IFM_1000_LX:
 	case IFM_1000_CX:
@@ -853,7 +933,7 @@ dwge_mii_statchg(struct device *self)
 		return;
 
 	conf &= ~GMAC_MAC_CONF_DM;
-	if ((sc->sc_mii.mii_media_active & IFM_GMASK) == IFM_FDX)
+	if ((media_active & IFM_GMASK) == IFM_FDX)
 		conf |= GMAC_MAC_CONF_DM;
 
 	/* XXX: RX/TX flow control? */
@@ -920,6 +1000,14 @@ dwge_intr(void *arg)
 	if (reg & GMAC_STATUS_TI ||
 	    reg & GMAC_STATUS_TU)
 		dwge_tx_proc(sc);
+
+#if NKSTAT > 0
+	if (reg & GMAC_STATUS_MMC) {
+		mtx_enter(&sc->sc_kstat_mtx);
+		dwge_kstat_read(sc->sc_kstat);
+		mtx_leave(&sc->sc_kstat_mtx);
+	}
+#endif
 
 	return (1);
 }
@@ -1137,7 +1225,8 @@ dwge_up(struct dwge_softc *sc)
 	dwge_write(sc, GMAC_MAC_CONF, dwge_read(sc, GMAC_MAC_CONF) |
 	    GMAC_MAC_CONF_TE | GMAC_MAC_CONF_RE);
 
-	timeout_add_sec(&sc->sc_tick, 1);
+	if (sc->sc_fixed_media == 0)
+		timeout_add_sec(&sc->sc_tick, 1);
 }
 
 void
@@ -1149,7 +1238,8 @@ dwge_down(struct dwge_softc *sc)
 	int i;
 
 	timeout_del(&sc->sc_rxto);
-	timeout_del(&sc->sc_tick);
+	if (sc->sc_fixed_media == 0)
+		timeout_del(&sc->sc_tick);
 
 	ifp->if_flags &= ~IFF_RUNNING;
 	ifq_clr_oactive(&ifp->if_snd);
@@ -1638,6 +1728,7 @@ dwge_mii_statchg_rockchip(struct device *self)
 	struct regmap *rm;
 	uint32_t grf;
 	uint32_t gmac_clk_sel = 0;
+	uint64_t media_active;
 
 	dwge_mii_statchg(self);
 
@@ -1646,7 +1737,11 @@ dwge_mii_statchg_rockchip(struct device *self)
 	if (rm == NULL)
 		return;
 
-	switch (IFM_SUBTYPE(sc->sc_mii.mii_media_active)) {
+	media_active = sc->sc_fixed_media;
+	if (media_active == 0)
+		media_active = sc->sc_mii.mii_media_active;
+
+	switch (IFM_SUBTYPE(media_active)) {
 	case IFM_10_T:
 		gmac_clk_sel = sc->sc_clk_sel_2_5;
 		break;
@@ -1660,3 +1755,77 @@ dwge_mii_statchg_rockchip(struct device *self)
 
 	regmap_write_4(rm, sc->sc_clk_sel, gmac_clk_sel);
 }
+
+#if NKSTAT > 0
+
+struct dwge_counter {
+	const char		*c_name;
+	enum kstat_kv_unit	c_unit;
+	uint32_t		c_reg;
+};
+
+const struct dwge_counter dwge_counters[] = {
+	{ "tx octets total", KSTAT_KV_U_BYTES, GMAC_MMC_TXOCTETCNT_GB },
+	{ "tx frames total", KSTAT_KV_U_PACKETS, GMAC_MMC_TXFRMCNT_GB },
+	{ "tx underflow", KSTAT_KV_U_PACKETS, GMAC_MMC_TXUNDFLWERR },
+	{ "tx carrier err", KSTAT_KV_U_PACKETS, GMAC_MMC_TXCARERR },
+	{ "tx good octets", KSTAT_KV_U_BYTES, GMAC_MMC_TXOCTETCNT_G },
+	{ "tx good frames", KSTAT_KV_U_PACKETS, GMAC_MMC_TXFRMCNT_G },
+	{ "rx frames total", KSTAT_KV_U_PACKETS, GMAC_MMC_RXFRMCNT_GB },
+	{ "rx octets total", KSTAT_KV_U_BYTES, GMAC_MMC_RXOCTETCNT_GB },
+	{ "rx good octets", KSTAT_KV_U_BYTES, GMAC_MMC_RXOCTETCNT_G },
+	{ "rx good mcast", KSTAT_KV_U_PACKETS, GMAC_MMC_RXMCFRMCNT_G },
+	{ "rx crc errors", KSTAT_KV_U_PACKETS, GMAC_MMC_RXCRCERR },
+	{ "rx len errors", KSTAT_KV_U_PACKETS, GMAC_MMC_RXLENERR },
+	{ "rx fifo err", KSTAT_KV_U_PACKETS, GMAC_MMC_RXFIFOOVRFLW },
+};
+
+void
+dwge_kstat_attach(struct dwge_softc *sc)
+{
+	struct kstat *ks;
+	struct kstat_kv *kvs;
+	int i;
+
+	mtx_init(&sc->sc_kstat_mtx, IPL_NET);
+
+	/* clear counters, enable reset-on-read */
+	dwge_write(sc, GMAC_MAC_MMC_CTRL, GMAC_MAC_MMC_CTRL_ROR |
+	    GMAC_MAC_MMC_CTRL_CR);
+
+	ks = kstat_create(DEVNAME(sc), 0, "dwge-stats", 0,
+	    KSTAT_T_KV, 0);
+	if (ks == NULL)
+		return;
+
+	kvs = mallocarray(nitems(dwge_counters), sizeof(*kvs), M_DEVBUF,
+	    M_WAITOK | M_ZERO);
+	for (i = 0; i < nitems(dwge_counters); i++) {
+		kstat_kv_unit_init(&kvs[i], dwge_counters[i].c_name,
+		    KSTAT_KV_T_COUNTER64, dwge_counters[i].c_unit);
+	}
+
+	kstat_set_mutex(ks, &sc->sc_kstat_mtx);
+	ks->ks_softc = sc;
+	ks->ks_data = kvs;
+	ks->ks_datalen = nitems(dwge_counters) * sizeof(*kvs);
+	ks->ks_read = dwge_kstat_read;
+	sc->sc_kstat = ks;
+	kstat_install(ks);
+}
+
+int
+dwge_kstat_read(struct kstat *ks)
+{
+	struct kstat_kv *kvs = ks->ks_data;
+	struct dwge_softc *sc = ks->ks_softc;
+	int i;
+
+	for (i = 0; i < nitems(dwge_counters); i++)
+		kstat_kv_u64(&kvs[i]) += dwge_read(sc, dwge_counters[i].c_reg);
+
+	getnanouptime(&ks->ks_updated);
+	return 0;
+}
+
+#endif

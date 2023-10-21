@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_ethersubr.c,v 1.287 2023/02/06 20:27:45 jan Exp $	*/
+/*	$OpenBSD: if_ethersubr.c,v 1.291 2023/07/27 20:21:25 jan Exp $	*/
 /*	$NetBSD: if_ethersubr.c,v 1.19 1996/05/07 02:40:30 thorpej Exp $	*/
 
 /*
@@ -248,10 +248,7 @@ ether_resolve(struct ifnet *ifp, struct mbuf *m, struct sockaddr *dst,
 		break;
 #ifdef INET6
 	case AF_INET6:
-		KERNEL_LOCK();
-		/* XXXSMP there is a MP race in nd6_resolve() */
 		error = nd6_resolve(ifp, rt, m, dst, eh->ether_dhost);
-		KERNEL_UNLOCK();
 		if (error)
 			return (error);
 		eh->ether_type = htons(ETHERTYPE_IPV6);
@@ -277,10 +274,7 @@ ether_resolve(struct ifnet *ifp, struct mbuf *m, struct sockaddr *dst,
 			break;
 #ifdef INET6
 		case AF_INET6:
-			KERNEL_LOCK();
-			/* XXXSMP there is a MP race in nd6_resolve() */
 			error = nd6_resolve(ifp, rt, m, dst, eh->ether_dhost);
-			KERNEL_UNLOCK();
 			if (error)
 				return (error);
 			break;
@@ -715,9 +709,8 @@ ether_ifdetach(struct ifnet *ifp)
 	/* Undo pseudo-driver changes. */
 	if_deactivate(ifp);
 
-	for (enm = LIST_FIRST(&ac->ac_multiaddrs);
-	    enm != NULL;
-	    enm = LIST_FIRST(&ac->ac_multiaddrs)) {
+	while (!LIST_EMPTY(&ac->ac_multiaddrs)) {
+		enm = LIST_FIRST(&ac->ac_multiaddrs);
 		LIST_REMOVE(enm, enm_list);
 		free(enm, M_IFMADDR, sizeof *enm);
 	}
@@ -938,7 +931,7 @@ ether_addmulti(struct ifreq *ifr, struct arpcom *ac)
 		/*
 		 * Found it; just increment the reference count.
 		 */
-		++enm->enm_refcount;
+		refcnt_take(&enm->enm_refcnt);
 		splx(s);
 		return (0);
 	}
@@ -953,7 +946,7 @@ ether_addmulti(struct ifreq *ifr, struct arpcom *ac)
 	}
 	memcpy(enm->enm_addrlo, addrlo, ETHER_ADDR_LEN);
 	memcpy(enm->enm_addrhi, addrhi, ETHER_ADDR_LEN);
-	enm->enm_refcount = 1;
+	refcnt_init_trace(&enm->enm_refcnt, DT_REFCNT_IDX_ETHMULTI);
 	LIST_INSERT_HEAD(&ac->ac_multiaddrs, enm, enm_list);
 	ac->ac_multicnt++;
 	if (memcmp(addrlo, addrhi, ETHER_ADDR_LEN) != 0)
@@ -991,7 +984,7 @@ ether_delmulti(struct ifreq *ifr, struct arpcom *ac)
 		splx(s);
 		return (ENXIO);
 	}
-	if (--enm->enm_refcount != 0) {
+	if (refcnt_rele(&enm->enm_refcnt) == 0) {
 		/*
 		 * Still some claims to this record.
 		 */
@@ -1047,6 +1040,7 @@ ether_extract_headers(struct mbuf *mp, struct ether_extracted *ext)
 	uint64_t	 hlen;
 	int		 hoff;
 	uint8_t		 ipproto;
+	uint16_t	 ether_type;
 
 	/* Return NULL if header was not recognized. */
 	memset(ext, 0, sizeof(*ext));
@@ -1055,9 +1049,20 @@ ether_extract_headers(struct mbuf *mp, struct ether_extracted *ext)
 		return;
 
 	ext->eh = mtod(mp, struct ether_header *);
-	switch (ntohs(ext->eh->ether_type)) {
+	ether_type = ntohs(ext->eh->ether_type);
+	hlen = sizeof(*ext->eh);
+
+#if NVLAN > 0
+	if (ether_type == ETHERTYPE_VLAN) {
+		ext->evh = mtod(mp, struct ether_vlan_header *);
+		ether_type = ntohs(ext->evh->evl_proto);
+		hlen = sizeof(*ext->evh);
+	}
+#endif
+
+	switch (ether_type) {
 	case ETHERTYPE_IP:
-		m = m_getptr(mp, sizeof(*ext->eh), &hoff);
+		m = m_getptr(mp, hlen, &hoff);
 		if (m == NULL || m->m_len - hoff < sizeof(*ext->ip4))
 			return;
 		ext->ip4 = (struct ip *)(mtod(m, caddr_t) + hoff);
@@ -1071,7 +1076,7 @@ ether_extract_headers(struct mbuf *mp, struct ether_extracted *ext)
 		break;
 #ifdef INET6
 	case ETHERTYPE_IPV6:
-		m = m_getptr(mp, sizeof(*ext->eh), &hoff);
+		m = m_getptr(mp, hlen, &hoff);
 		if (m == NULL || m->m_len - hoff < sizeof(*ext->ip6))
 			return;
 		ext->ip6 = (struct ip6_hdr *)(mtod(m, caddr_t) + hoff);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.141 2023/01/11 03:19:52 visa Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.144 2023/08/23 01:55:47 cheloha Exp $	*/
 
 /*-
  * Copyright (c) 1992, 1993
@@ -200,6 +200,7 @@ struct cpu_info {
 #endif
 #ifdef GPROF
 	struct gmonparam *ci_gmon;
+	struct clockintr *ci_gmonclock;
 #endif
 	char		ci_panicbuf[512];
 };
@@ -216,6 +217,8 @@ extern struct cpu_info *cpu_info_list;
 
 #define CPU_INFO_UNIT(ci)               ((ci)->ci_dev ? (ci)->ci_dev->dv_unit : 0)
 
+#define	cpu_idle_enter()	do { /* nothing */ } while (0)
+#define	cpu_idle_leave()	do { /* nothing */ } while (0)
 extern void (*cpu_idle_cycle_func)(void);
 #define cpu_idle_cycle()		(*cpu_idle_cycle_func)()
 
@@ -257,6 +260,7 @@ void	smp_rendezvous_cpus(unsigned long, void (*)(void *), void *arg);
 
 #define CPU_BUSY_CYCLE()	do {} while (0)
 
+extern void (*md_initclock)(void);
 extern void (*md_startclock)(struct cpu_info *);
 extern void (*md_triggerclock)(void);
 void	cp0_calibrate(struct cpu_info *);

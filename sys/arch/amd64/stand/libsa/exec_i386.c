@@ -1,4 +1,4 @@
-/*	$OpenBSD: exec_i386.c,v 1.37 2022/07/11 19:45:02 kettenis Exp $	*/
+/*	$OpenBSD: exec_i386.c,v 1.38 2023/07/22 10:11:19 jsg Exp $	*/
 
 /*
  * Copyright (c) 1997-1998 Michael Shalayeff

@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_vio.c,v 1.22 2022/03/07 18:52:16 dv Exp $	*/
+/*	$OpenBSD: if_vio.c,v 1.25 2023/07/28 16:54:48 dv Exp $	*/
 
 /*
  * Copyright (c) 2012 Stefan Fritsch, Alexander Fiveg.
@@ -265,8 +265,8 @@ int	vio_init(struct ifnet *);
 void	vio_stop(struct ifnet *, int);
 void	vio_start(struct ifnet *);
 int	vio_ioctl(struct ifnet *, u_long, caddr_t);
-void	vio_get_lladr(struct arpcom *ac, struct virtio_softc *vsc);
-void	vio_put_lladr(struct arpcom *ac, struct virtio_softc *vsc);
+void	vio_get_lladdr(struct arpcom *ac, struct virtio_softc *vsc);
+void	vio_put_lladdr(struct arpcom *ac, struct virtio_softc *vsc);
 
 /* rx */
 int	vio_add_rx_mbuf(struct vio_softc *, int);
@@ -491,7 +491,7 @@ err_hdr:
 }
 
 void
-vio_get_lladr(struct arpcom *ac, struct virtio_softc *vsc)
+vio_get_lladdr(struct arpcom *ac, struct virtio_softc *vsc)
 {
 	int i;
 	for (i = 0; i < ETHER_ADDR_LEN; i++) {
@@ -501,7 +501,7 @@ vio_get_lladr(struct arpcom *ac, struct virtio_softc *vsc)
 }
 
 void
-vio_put_lladr(struct arpcom *ac, struct virtio_softc *vsc)
+vio_put_lladdr(struct arpcom *ac, struct virtio_softc *vsc)
 {
 	int i;
 	for (i = 0; i < ETHER_ADDR_LEN; i++) {
@@ -529,7 +529,7 @@ vio_attach(struct device *parent, struct device *self, void *aux)
 	vsc->sc_child = self;
 	vsc->sc_ipl = IPL_NET;
 	vsc->sc_vqs = &sc->sc_vq[0];
-	vsc->sc_config_change = 0;
+	vsc->sc_config_change = NULL;
 	vsc->sc_driver_features = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS |
 	    VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_CTRL_RX |
 	    VIRTIO_NET_F_MRG_RXBUF | VIRTIO_NET_F_CSUM |
@@ -537,10 +537,10 @@ vio_attach(struct device *parent, struct device *self, void *aux)
 
 	virtio_negotiate_features(vsc, virtio_net_feature_names);
 	if (virtio_has_feature(vsc, VIRTIO_NET_F_MAC)) {
-		vio_get_lladr(&sc->sc_ac, vsc);
+		vio_get_lladdr(&sc->sc_ac, vsc);
 	} else {
 		ether_fakeaddr(ifp);
-		vio_put_lladr(&sc->sc_ac, vsc);
+		vio_put_lladdr(&sc->sc_ac, vsc);
 	}
 	printf(": address %s\n", ether_sprintf(sc->sc_ac.ac_enaddr));
 
@@ -600,6 +600,7 @@ vio_attach(struct device *parent, struct device *self, void *aux)
 	timeout_set(&sc->sc_txtick, vio_txtick, &sc->sc_vq[VQTX]);
 	timeout_set(&sc->sc_rxtick, vio_rxtick, &sc->sc_vq[VQRX]);
 
+	virtio_set_status(vsc, VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK);
 	if_attach(ifp);
 	ether_ifattach(ifp);
 

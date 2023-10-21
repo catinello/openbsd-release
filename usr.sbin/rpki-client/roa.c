@@ -1,4 +1,4 @@
-/*	$OpenBSD: roa.c,v 1.65 2023/03/12 11:54:56 job Exp $ */
+/*	$OpenBSD: roa.c,v 1.70 2023/09/25 11:08:45 tb Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -107,19 +107,19 @@ roa_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
 	int				 addrsz;
 	enum afi			 afi;
 	const ROAIPAddress		*addr;
-	long				 maxlen;
+	uint64_t			 maxlen;
 	struct ip_addr			 ipaddr;
 	struct roa_ip			*res;
 	int				 ipaddrblocksz;
 	int				 i, j, rc = 0;
 
 	if ((roa = d2i_RouteOriginAttestation(NULL, &d, dsz)) == NULL) {
-		cryptowarnx("%s: RFC 6482 section 3: failed to parse "
+		warnx("%s: RFC 6482 section 3: failed to parse "
 		    "RouteOriginAttestation", p->fn);
 		goto out;
 	}
 
-	if (!valid_econtent_version(p->fn, roa->version))
+	if (!valid_econtent_version(p->fn, roa->version, 0))
 		goto out;
 
 	if (!as_id_parse(roa->asid, &p->res->asid)) {
@@ -168,21 +168,23 @@ roa_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
 			maxlen = ipaddr.prefixlen;
 
 			if (addr->maxLength != NULL) {
-				maxlen = ASN1_INTEGER_get(addr->maxLength);
-				if (maxlen < 0) {
+				if (!ASN1_INTEGER_get_uint64(&maxlen,
+				    addr->maxLength)) {
 					warnx("%s: RFC 6482 section 3.2: "
-					    "ASN1_INTEGER_get failed", p->fn);
+					    "ASN1_INTEGER_get_uint64 failed",
+					    p->fn);
 					goto out;
 				}
 				if (ipaddr.prefixlen > maxlen) {
 					warnx("%s: prefixlen (%d) larger than "
-					    "maxLength (%ld)", p->fn,
-					    ipaddr.prefixlen, maxlen);
+					    "maxLength (%llu)", p->fn,
+					    ipaddr.prefixlen,
+					    (unsigned long long)maxlen);
 					goto out;
 				}
 				if (maxlen > ((afi == AFI_IPV4) ? 32 : 128)) {
-					warnx("%s: maxLength (%ld) too large",
-					    p->fn, maxlen);
+					warnx("%s: maxLength (%llu) too large",
+					    p->fn, (unsigned long long)maxlen);
 					goto out;
 				}
 			}
@@ -206,7 +208,8 @@ roa_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
  * Returns the ROA or NULL if the document was malformed.
  */
 struct roa *
-roa_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
+roa_parse(X509 **x509, const char *fn, int talid, const unsigned char *der,
+    size_t len)
 {
 	struct parse	 p;
 	size_t		 cmsz;
@@ -384,19 +387,20 @@ roa_insert_vrps(struct vrp_tree *tree, struct roa *roa, struct repo *rp)
 			/* already exists */
 			if (found->expires < v->expires) {
 				/* update found with preferred data */
-				found->talid = v->talid;
-				found->expires = v->expires;
 				/* adjust unique count */
 				repo_stat_inc(repo_byid(found->repoid),
-				    RTYPE_ROA, STYPE_DEC_UNIQUE);
+				    found->talid, RTYPE_ROA, STYPE_DEC_UNIQUE);
+				found->expires = v->expires;
+				found->talid = v->talid;
 				found->repoid = v->repoid;
-				repo_stat_inc(rp, RTYPE_ROA, STYPE_UNIQUE);
+				repo_stat_inc(rp, v->talid, RTYPE_ROA,
+				    STYPE_UNIQUE);
 			}
 			free(v);
 		} else
-			repo_stat_inc(rp, RTYPE_ROA, STYPE_UNIQUE);
+			repo_stat_inc(rp, v->talid, RTYPE_ROA, STYPE_UNIQUE);
 
-		repo_stat_inc(rp, RTYPE_ROA, STYPE_TOTAL);
+		repo_stat_inc(rp, roa->talid, RTYPE_ROA, STYPE_TOTAL);
 	}
 }
 

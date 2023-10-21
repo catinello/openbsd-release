@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.674 2022/02/18 16:57:36 millert Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.678 2023/09/29 18:30:14 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -25,6 +25,7 @@
 #include <sys/queue.h>
 #include <sys/tree.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 #include <event.h>
 #include <imsg.h>
@@ -45,9 +46,6 @@
 
 #define CONF_FILE		 "/etc/mail/smtpd.conf"
 #define MAILNAME_FILE		 "/etc/mail/mailname"
-#define CA_FILE			 "/etc/ssl/cert.pem"
-
-#define PROC_COUNT		 7
 
 #define MAX_HOPS_COUNT		 100
 #define	DEFAULT_MAX_BODY_SIZE	(35*1024*1024)
@@ -57,7 +55,7 @@
 #define SMTPD_QUEUE_EXPIRY	 (4 * 24 * 60 * 60)
 #define SMTPD_SOCKET		 "/var/run/smtpd.sock"
 #define	SMTPD_NAME		 "OpenSMTPD"
-#define	SMTPD_VERSION		 "7.0.0"
+#define	SMTPD_VERSION		 "7.4.0"
 #define SMTPD_SESSION_TIMEOUT	 300
 #define SMTPD_BACKLOG		 5
 

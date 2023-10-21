@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtr.c,v 1.12 2023/03/09 17:21:21 claudio Exp $ */
+/*	$OpenBSD: rtr.c,v 1.16 2023/08/16 08:26:35 claudio Exp $ */
 
 /*
  * Copyright (c) 2020 Claudio Jeker <claudio@openbsd.org>
@@ -40,6 +40,7 @@ static struct imsgbuf		*ibuf_main;
 static struct imsgbuf		*ibuf_rde;
 static struct bgpd_config	*conf, *nconf;
 static struct timer_head	 expire_timer;
+static int			 rtr_recalc_semaphore;
 
 static void
 rtr_sighdlr(int sig)
@@ -57,6 +58,20 @@ rtr_sighdlr(int sig)
 #define PFD_PIPE_COUNT	2
 
 #define EXPIRE_TIMEOUT	300
+
+void
+rtr_sem_acquire(int cnt)
+{
+	rtr_recalc_semaphore += cnt;
+}
+
+void
+rtr_sem_release(int cnt)
+{
+	rtr_recalc_semaphore -= cnt;
+	if (rtr_recalc_semaphore < 0)
+		fatalx("rtr recalc semaphore underflow");
+}
 
 /*
  * Every EXPIRE_TIMEOUT seconds traverse the static roa-set table and expire
@@ -114,45 +129,32 @@ rtr_roa_insert(struct roa_tree *rt, struct roa *in)
 
 /*
  * Add an asnum to the aspa_set. The aspa_set is sorted by asnum.
- * The aid is altered to AID_UNSPEC (match for both v4 and v6) if
- * the current aid and the one passed do not match.
  */
 static void
-aspa_set_entry(struct aspa_set *aspa, uint32_t asnum, uint8_t aid)
+aspa_set_entry(struct aspa_set *aspa, uint32_t asnum)
 {
 	uint32_t i, num, *newtas;
-	uint8_t *newtasaid;
-
-	if (aid != AID_UNSPEC && aid != AID_INET && aid != AID_INET6)
-		fatalx("aspa set with invalid AFI %s", aid2str(aid));
 
 	for (i = 0; i < aspa->num; i++) {
 		if (asnum < aspa->tas[i])
 			break;
-		if (asnum == aspa->tas[i]) {
-			if (aspa->tas_aid[i] != aid)
-				aspa->tas_aid[i] = AID_UNSPEC;
+		if (asnum == aspa->tas[i])
 			return;
-		}
 	}
 
 	num = aspa->num + 1;
 	newtas = recallocarray(aspa->tas, aspa->num, num, sizeof(uint32_t));
-	newtasaid = recallocarray(aspa->tas_aid, aspa->num, num, 1);
-	if (newtas == NULL || newtasaid == NULL)
+	if (newtas == NULL)
 		fatal("aspa_set merge");
 
 	if (i < aspa->num) {
 		memmove(newtas + i + 1, newtas + i,
 		    (aspa->num - i) * sizeof(uint32_t));
-		memmove(newtasaid + i + 1, newtasaid + i, (aspa->num - i));
 	}
 	newtas[i] = asnum;
-	newtasaid[i] = aid;
 
 	aspa->num = num;
 	aspa->tas = newtas;
-	aspa->tas_aid = newtasaid;
 }
 
 /*
@@ -173,7 +175,7 @@ rtr_aspa_insert(struct aspa_tree *at, struct aspa_set *mergeset)
 	}
 
 	for (i = 0; i < mergeset->num; i++)
-		aspa_set_entry(aspa, mergeset->tas[i], mergeset->tas_aid[i]);
+		aspa_set_entry(aspa, mergeset->tas[i]);
 }
 
 void
@@ -383,16 +385,6 @@ rtr_dispatch_imsg_parent(struct imsgbuf *ibuf)
 			memcpy(aspa->tas, imsg.data,
 			    aspa->num * sizeof(*aspa->tas));
 			break;
-		case IMSG_RECONF_ASPA_TAS_AID:
-			if (aspa == NULL)
-				fatalx("unexpected IMSG_RECONF_ASPA_TAS_ID");
-			if (imsg.hdr.len - IMSG_HEADER_SIZE != aspa->num)
-				fatalx("IMSG_RECONF_ASPA_TAS_AID bad len");
-			aspa->tas_aid = malloc(aspa->num);
-			if (aspa->tas_aid == NULL)
-				fatal("aspa tas aid alloc");
-			memcpy(aspa->tas_aid, imsg.data, aspa->num);
-			break;
 		case IMSG_RECONF_ASPA_DONE:
 			if (aspa == NULL)
 				fatalx("unexpected IMSG_RECONF_ASPA_DONE");
@@ -488,53 +480,9 @@ rtr_imsg_compose(int type, uint32_t id, pid_t pid, void *data, size_t datalen)
  * if no extra aid masks are needed.
  */
 static size_t
-rtr_aspa_set_prep(struct aspa_set *aspa)
+rtr_aspa_set_size(struct aspa_set *aspa)
 {
-	uint32_t i, mask = 0;
-	uint8_t *tas_aid;
-	int needafi = 0;
-	size_t s;
-
-	s = aspa->num * sizeof(uint32_t);
-
-	if ((tas_aid = malloc(TAS_AID_SIZE(aspa->num))) == NULL)
-		fatal("tas_aid alloc");
-
-	for (i = 0; i < aspa->num; i++) {
-		switch (aspa->tas_aid[i]) {
-		case AID_INET:
-			needafi = 1;
-			mask |= 0x1 << ((i % 16) * 2);
-			break;
-		case AID_INET6:
-			needafi = 1;
-			mask |= 0x2 << ((i % 16) * 2);
-			break;
-		default:
-			mask |= 0x3 << ((i % 16) * 2);
-			break;
-		}
-		if (i % 16 == 15) {
-			memcpy(tas_aid + (i / 16) * sizeof(mask), &mask,
-			    sizeof(mask));
-			mask = 0;
-		}
-	}
-
-	free(aspa->tas_aid);
-	aspa->tas_aid = NULL;
-
-	if (!needafi) {
-		free(tas_aid);
-	} else {
-		if (aspa->num % 16 != 0)
-			memcpy(tas_aid + (aspa->num / 16) * sizeof(mask),
-			    &mask, sizeof(mask));
-		aspa->tas_aid = tas_aid;
-		s += TAS_AID_SIZE(aspa->num);
-	}
-
-	return s;
+	return aspa->num * sizeof(uint32_t);
 }
 
 /*
@@ -550,6 +498,9 @@ rtr_recalc(void)
 	struct roa *roa, *nr;
 	struct aspa_set *aspa;
 	struct aspa_prep ap = { 0 };
+
+	if (rtr_recalc_semaphore > 0)
+		return;
 
 	RB_INIT(&rt);
 	RB_INIT(&at);
@@ -570,7 +521,7 @@ rtr_recalc(void)
 	rtr_aspa_merge(&at);
 
 	RB_FOREACH(aspa, aspa_tree, &at) {
-		ap.datasize += rtr_aspa_set_prep(aspa);
+		ap.datasize += rtr_aspa_set_size(aspa);
 		ap.entries++;
 	}
 
@@ -587,9 +538,6 @@ rtr_recalc(void)
 		    &as, sizeof(as));
 		imsg_compose(ibuf_rde, IMSG_RECONF_ASPA_TAS, 0, 0, -1,
 		    aspa->tas, aspa->num * sizeof(*aspa->tas));
-		if (aspa->tas_aid)
-			imsg_compose(ibuf_rde, IMSG_RECONF_ASPA_TAS_AID, 0, 0,
-			    -1, aspa->tas_aid, TAS_AID_SIZE(aspa->num));
 		imsg_compose(ibuf_rde, IMSG_RECONF_ASPA_DONE, 0, 0, -1,
 		    NULL, 0);
 	}

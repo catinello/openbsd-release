@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore.s,v 1.199 2023/01/31 15:18:55 deraadt Exp $	*/
+/*	$OpenBSD: locore.s,v 1.201 2023/04/28 18:27:55 cheloha Exp $	*/
 /*	$NetBSD: locore.s,v 1.137 2001/08/13 06:10:10 jdolecek Exp $	*/
 
 /*
@@ -65,7 +65,6 @@
 #include "ksyms.h"
 #include <machine/param.h>
 #include <sparc64/sparc64/intreg.h>
-#include <sparc64/sparc64/timerreg.h>
 #include <machine/ctlreg.h>
 #include <machine/psl.h>
 #include <machine/signal.h>
@@ -6819,7 +6818,7 @@ Lbzero_done:
 END(memset)
 
 /*
- * kcopy() is exactly like bcopy except that it set pcb_onfault such that
+ * kcopy() is exactly like bcopy except that it sets pcb_onfault such that
  * when a fault occurs, it is able to return EFAULT to indicate this to the
  * caller.
  */

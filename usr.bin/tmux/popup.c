@@ -1,4 +1,4 @@
-/* $OpenBSD: popup.c,v 1.48 2023/03/15 19:23:22 nicm Exp $ */
+/* $OpenBSD: popup.c,v 1.52 2023/08/15 07:01:47 nicm Exp $ */
 
 /*
  * Copyright (c) 2020 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -575,8 +575,8 @@ menu:
 		x = m->x - (pd->menu->width + 4) / 2;
 	else
 		x = 0;
-	pd->md = menu_prepare(pd->menu, 0, 0, NULL, x, m->y, c, NULL,
-	    popup_menu_done, pd);
+	pd->md = menu_prepare(pd->menu, 0, 0, NULL, x, m->y, c,
+	    BOX_LINES_DEFAULT, NULL, NULL, NULL, NULL, popup_menu_done, pd);
 	c->flags |= CLIENT_REDRAWOVERLAY;
 
 out:
@@ -637,7 +637,7 @@ int
 popup_display(int flags, enum box_lines lines, struct cmdq_item *item, u_int px,
     u_int py, u_int sx, u_int sy, struct environ *env, const char *shellcmd,
     int argc, char **argv, const char *cwd, const char *title, struct client *c,
-    struct session *s, const char* style, const char* border_style,
+    struct session *s, const char *style, const char *border_style,
     popup_close_cb cb, void *arg)
 {
 	struct popup_data	*pd;
@@ -788,6 +788,8 @@ popup_editor(struct client *c, const char *buf, size_t len,
 	if (fd == -1)
 		return (-1);
 	f = fdopen(fd, "w");
+	if (f == NULL)
+		return (-1);
 	if (fwrite(buf, len, 1, f) != 1) {
 		fclose(f);
 		return (-1);

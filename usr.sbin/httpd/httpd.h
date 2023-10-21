@@ -1,4 +1,4 @@
-/*	$OpenBSD: httpd.h,v 1.162 2022/10/24 15:02:01 jmc Exp $	*/
+/*	$OpenBSD: httpd.h,v 1.163 2023/07/12 12:37:27 tb Exp $	*/
 
 /*
  * Copyright (c) 2006 - 2015 Reyk Floeter <reyk@openbsd.org>

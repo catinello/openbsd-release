@@ -5875,6 +5875,7 @@ pod/perl5320delta.pod		Perl changes in version 5.32.0
 pod/perl5321delta.pod		Perl changes in version 5.32.1
 pod/perl5340delta.pod		Perl changes in version 5.34.0
 pod/perl5341delta.pod		Perl changes in version 5.34.1
+pod/perl5360delta.pod		Perl changes in version 5.36.0
 pod/perl561delta.pod		Perl changes in version 5.6.1
 pod/perl56delta.pod		Perl changes in version 5.6
 pod/perl581delta.pod		Perl changes in version 5.8.1
@@ -6604,6 +6605,7 @@ t/op/svleak.pl			Test file for svleak.t
 t/op/svleak.t			See if stuff leaks SVs
 t/op/switch.t			See if switches (given/when) work
 t/op/symbolcache.t		See if undef/delete works on stashes with functions
+t/op/syscall_emulator.t		Tests that syscall works via the emulator
 t/op/sysio.t			See if sysread and syswrite work
 t/op/taint.t			See if tainting works
 t/op/threads.t			Misc. tests for perl features with threads

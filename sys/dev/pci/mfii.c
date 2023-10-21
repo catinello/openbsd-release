@@ -1,4 +1,4 @@
-/* $OpenBSD: mfii.c,v 1.87 2022/09/25 08:15:43 stsp Exp $ */
+/* $OpenBSD: mfii.c,v 1.89 2023/07/06 10:17:43 visa Exp $ */
 
 /*
  * Copyright (c) 2012 David Gwynne <dlg@openbsd.org>
@@ -1764,7 +1764,9 @@ mfii_poll_done(struct mfii_softc *sc, struct mfii_ccb *ccb)
 int
 mfii_exec(struct mfii_softc *sc, struct mfii_ccb *ccb)
 {
-	struct mutex m = MUTEX_INITIALIZER(IPL_BIO);
+	struct mutex m;
+
+	mtx_init(&m, IPL_BIO);
 
 #ifdef DIAGNOSTIC
 	if (ccb->ccb_cookie != NULL || ccb->ccb_done != NULL)

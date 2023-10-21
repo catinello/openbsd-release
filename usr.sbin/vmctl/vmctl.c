@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmctl.c,v 1.84 2023/01/28 14:40:53 dv Exp $	*/
+/*	$OpenBSD: vmctl.c,v 1.88 2023/05/02 13:02:51 jsg Exp $	*/
 
 /*
  * Copyright (c) 2014 Mike Larkin <mlarkin@openbsd.org>
@@ -21,8 +21,6 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-
-#include <machine/vmmvar.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -83,6 +81,15 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 	int i;
 	const char *s;
 
+	if (kernel) {
+		if (unveil(kernel, "r") == -1)
+			err(1, "unveil boot kernel");
+	} else {
+		/* We can drop sendfd promise. */
+		if (pledge("stdio rpath exec unix getpw unveil", NULL) == -1)
+			err(1, "pledge");
+	}
+
 	if (memsize)
 		flags |= VMOP_CREATE_MEMORY;
 	if (nnics)
@@ -100,7 +107,7 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 			memsize = VM_DEFAULT_MEMORY;
 		if (ndisks > VM_MAX_DISKS_PER_VM)
 			errx(1, "too many disks");
-		else if (ndisks == 0)
+		else if (kernel == NULL && ndisks == 0)
 			warnx("starting without disks");
 		if (kernel == NULL && ndisks == 0 && !iso)
 			errx(1, "no kernel or disk/cdrom specified");
@@ -108,13 +115,13 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 			nnics = 0;
 		if (nnics > VM_MAX_NICS_PER_VM)
 			errx(1, "too many network interfaces");
-		if (nnics == 0)
+		if (kernel == NULL && nnics == 0)
 			warnx("starting without network interfaces");
 	}
 
 	if ((vmc = calloc(1, sizeof(struct vmop_create_params))) == NULL)
 		return (ENOMEM);
-
+	vmc->vmc_kernel = -1;
 	vmc->vmc_flags = flags;
 
 	/* vcp includes configuration that is shared with the kernel */
@@ -128,14 +135,15 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 	vcp->vcp_memranges[0].vmr_size = memsize;
 
 	vcp->vcp_ncpus = 1;
-	vcp->vcp_ndisks = ndisks;
-	vcp->vcp_nnics = nnics;
 	vcp->vcp_id = start_id;
 
+	vmc->vmc_ndisks = ndisks;
+	vmc->vmc_nnics = nnics;
+
 	for (i = 0 ; i < ndisks; i++) {
-		if (strlcpy(vcp->vcp_disks[i], disks[i],
-		    sizeof(vcp->vcp_disks[i])) >=
-		    sizeof(vcp->vcp_disks[i]))
+		if (strlcpy(vmc->vmc_disks[i], disks[i],
+		    sizeof(vmc->vmc_disks[i])) >=
+		    sizeof(vmc->vmc_disks[i]))
 			errx(1, "disk path too long");
 		vmc->vmc_disktypes[i] = disktypes[i];
 	}
@@ -174,13 +182,16 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 		    sizeof(vcp->vcp_name)) >= sizeof(vcp->vcp_name))
 			errx(1, "vm name too long");
 	}
-	if (kernel != NULL)
-		if (strlcpy(vcp->vcp_kernel, kernel,
-		    sizeof(vcp->vcp_kernel)) >= sizeof(vcp->vcp_kernel))
+	if (kernel != NULL) {
+		if (strnlen(kernel, PATH_MAX) == PATH_MAX)
 			errx(1, "kernel name too long");
+		vmc->vmc_kernel = open(kernel, O_RDONLY);
+		if (vmc->vmc_kernel == -1)
+			err(1, "cannot open kernel '%s'", kernel);
+	}
 	if (iso != NULL)
-		if (strlcpy(vcp->vcp_cdrom, iso,
-		    sizeof(vcp->vcp_cdrom)) >= sizeof(vcp->vcp_cdrom))
+		if (strlcpy(vmc->vmc_cdrom, iso,
+		    sizeof(vmc->vmc_cdrom)) >= sizeof(vmc->vmc_cdrom))
 			errx(1, "cdrom name too long");
 	if (instance != NULL)
 		if (strlcpy(vmc->vmc_instance, instance,
@@ -188,10 +199,10 @@ vm_start(uint32_t start_id, const char *name, size_t memsize, int nnics,
 			errx(1, "instance vm name too long");
 	vmc->vmc_bootdevice = bootdevice;
 
-	imsg_compose(ibuf, IMSG_VMDOP_START_VM_REQUEST, 0, 0, -1,
+	imsg_compose(ibuf, IMSG_VMDOP_START_VM_REQUEST, 0, 0, vmc->vmc_kernel,
 	    vmc, sizeof(struct vmop_create_params));
 
-	free(vcp);
+	free(vmc);
 	return (0);
 }
 

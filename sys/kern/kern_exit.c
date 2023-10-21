@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_exit.c,v 1.210 2022/12/29 01:36:36 guenther Exp $	*/
+/*	$OpenBSD: kern_exit.c,v 1.217 2023/09/29 12:47:34 claudio Exp $	*/
 /*	$NetBSD: kern_exit.c,v 1.39 1996/04/22 01:38:25 christos Exp $	*/
 
 /*
@@ -118,6 +118,7 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 {
 	struct process *pr, *qr, *nqr;
 	struct rusage *rup;
+	struct timespec ts;
 	int s;
 
 	atomic_setbits_int(&p->p_flag, P_WEXIT);
@@ -130,7 +131,7 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	} else {
 		/* nope, multi-threaded */
 		if (flags == EXIT_NORMAL)
-			single_thread_set(p, SINGLE_EXIT, 1);
+			single_thread_set(p, SINGLE_EXIT);
 		else if (flags == EXIT_THREAD)
 			single_thread_check(p, 0);
 	}
@@ -159,12 +160,11 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	SCHED_LOCK(s);
 	TAILQ_REMOVE(&pr->ps_threads, p, p_thr_link);
 	SCHED_UNLOCK(s);
+
 	if ((p->p_flag & P_THREAD) == 0) {
 		/* main thread gotta wait because it has the pid, et al */
-		while (pr->ps_refcnt > 1)
+		while (pr->ps_threadcnt > 1)
 			tsleep_nsec(&pr->ps_threads, PWAIT, "thrdeath", INFSLP);
-		if (pr->ps_flags & PS_PROFIL)
-			stopprofclock(pr);
 	}
 
 	rup = pr->ps_ru;
@@ -188,6 +188,9 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 #endif
 
 	if ((p->p_flag & P_THREAD) == 0) {
+		if (pr->ps_flags & PS_PROFIL)
+			stopprofclock(pr);
+
 		sigio_freelist(&pr->ps_sigiolst);
 
 		/* close open files and release open-file table */
@@ -221,6 +224,15 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	}
 
 	p->p_fd = NULL;		/* zap the thread's copy */
+
+	/* Release the thread's read reference of resource limit structure. */
+	if (p->p_limit != NULL) {
+		struct plimit *limit;
+
+		limit = p->p_limit;
+		p->p_limit = NULL;
+		lim_free(limit);
+	}
 
         /*
 	 * Remove proc from pidhash chain and allproc so looking
@@ -297,7 +309,14 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 
 	/* add thread's accumulated rusage into the process's total */
 	ruadd(rup, &p->p_ru);
-	tuagg(pr, p);
+	nanouptime(&ts);
+	if (timespeccmp(&ts, &curcpu()->ci_schedstate.spc_runtime, <))
+		timespecclear(&ts);
+	else
+		timespecsub(&ts, &curcpu()->ci_schedstate.spc_runtime, &ts);
+	SCHED_LOCK(s);
+	tuagg_locked(pr, p, &ts);
+	SCHED_UNLOCK(s);
 
 	/*
 	 * clear %cpu usage during swap
@@ -328,18 +347,9 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	/* just a thread? detach it from its process */
 	if (p->p_flag & P_THREAD) {
 		/* scheduler_wait_hook(pr->ps_mainproc, p); XXX */
-		if (--pr->ps_refcnt == 1)
+		if (--pr->ps_threadcnt == 1)
 			wakeup(&pr->ps_threads);
-		KASSERT(pr->ps_refcnt > 0);
-	}
-
-	/* Release the thread's read reference of resource limit structure. */
-	if (p->p_limit != NULL) {
-		struct plimit *limit;
-
-		limit = p->p_limit;
-		p->p_limit = NULL;
-		lim_free(limit);
+		KASSERT(pr->ps_threadcnt > 0);
 	}
 
 	/*
@@ -814,7 +824,7 @@ process_zap(struct process *pr)
 	if (otvp)
 		vrele(otvp);
 
-	KASSERT(pr->ps_refcnt == 1);
+	KASSERT(pr->ps_threadcnt == 1);
 	if (pr->ps_ptstat != NULL)
 		free(pr->ps_ptstat, M_SUBPROC, sizeof(*pr->ps_ptstat));
 	pool_put(&rusage_pool, pr->ps_ru);

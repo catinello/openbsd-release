@@ -1,4 +1,4 @@
-/* $OpenBSD: tmux.h,v 1.1194 2023/02/05 21:15:33 nicm Exp $ */
+/* $OpenBSD: tmux.h,v 1.1211 2023/09/15 15:49:05 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <termios.h>
+#include <wchar.h>
 
 #include "tmux-protocol.h"
 #include "xmalloc.h"
@@ -157,7 +158,9 @@ struct winlink;
 #define KEYC_IS_UNICODE(key) \
 	(((key) & KEYC_MASK_KEY) > 0x7f && \
 	 (((key) & KEYC_MASK_KEY) < KEYC_BASE || \
-	  ((key) & KEYC_MASK_KEY) >= KEYC_BASE_END))
+	  ((key) & KEYC_MASK_KEY) >= KEYC_BASE_END) && \
+	 (((key) & KEYC_MASK_KEY) < KEYC_USER || \
+	  ((key) & KEYC_MASK_KEY) >= KEYC_USER + KEYC_NUSER))
 
 /* Multiple click timeout. */
 #define KEYC_CLICK_TIMEOUT 300
@@ -534,6 +537,7 @@ enum tty_code_code {
 	TTYC_SETRGBB,
 	TTYC_SETRGBF,
 	TTYC_SETULC,
+	TTYC_SETULC1,
 	TTYC_SGR0,
 	TTYC_SITM,
 	TTYC_SMACS,
@@ -669,6 +673,8 @@ struct colour_palette {
 #define GRID_LINE_WRAPPED 0x1
 #define GRID_LINE_EXTENDED 0x2
 #define GRID_LINE_DEAD 0x4
+#define GRID_LINE_START_PROMPT 0x8
+#define GRID_LINE_START_OUTPUT 0x10
 
 /* Grid string flags. */
 #define GRID_STRING_WITH_SEQUENCES 0x1
@@ -721,7 +727,6 @@ struct grid_extd_entry {
 
 /* Grid cell entry. */
 struct grid_cell_entry {
-	u_char			flags;
 	union {
 		u_int		offset;
 		struct {
@@ -731,6 +736,7 @@ struct grid_cell_entry {
 			u_char	data;
 		} data;
 	};
+	u_char			flags;
 } __packed;
 
 /* Grid line. */
@@ -791,11 +797,15 @@ enum style_range_type {
 	STYLE_RANGE_NONE,
 	STYLE_RANGE_LEFT,
 	STYLE_RANGE_RIGHT,
-	STYLE_RANGE_WINDOW
+	STYLE_RANGE_PANE,
+	STYLE_RANGE_WINDOW,
+	STYLE_RANGE_SESSION,
+	STYLE_RANGE_USER
 };
 struct style_range {
 	enum style_range_type	 type;
 	u_int			 argument;
+	char			 string[16];
 
 	u_int			 start;
 	u_int			 end; /* not included */
@@ -822,6 +832,7 @@ struct style {
 
 	enum style_range_type	range_type;
 	u_int			range_argument;
+	char			range_string[16];
 
 	enum style_default_type	default_type;
 };
@@ -881,7 +892,6 @@ struct screen_write_ctx {
 
 	int				 flags;
 #define SCREEN_WRITE_SYNC 0x1
-#define SCREEN_WRITE_ZWJ 0x2
 
 	screen_write_init_ctx_cb	 init_ctx_cb;
 	void				*arg;
@@ -1035,7 +1045,7 @@ struct window_pane {
 #define PANE_REDRAW 0x1
 #define PANE_DROP 0x2
 #define PANE_FOCUSED 0x4
-/* 0x8 unused */
+#define PANE_VISITED 0x8
 /* 0x10 unused */
 /* 0x20 unused */
 #define PANE_INPUTOFF 0x40
@@ -1045,6 +1055,7 @@ struct window_pane {
 #define PANE_STATUSDRAWN 0x400
 #define PANE_EMPTY 0x800
 #define PANE_STYLECHANGED 0x1000
+#define PANE_UNSEENCHANGES 0x2000
 
 	int		 argc;
 	char	       **argv;
@@ -1089,7 +1100,8 @@ struct window_pane {
 	int		 border_gc_set;
 	struct grid_cell border_gc;
 
-	TAILQ_ENTRY(window_pane) entry;
+	TAILQ_ENTRY(window_pane) entry;  /* link in list of all panes */
+	TAILQ_ENTRY(window_pane) sentry; /* link in list of last visited */
 	RB_ENTRY(window_pane) tree_entry;
 };
 TAILQ_HEAD(window_panes, window_pane);
@@ -1110,7 +1122,7 @@ struct window {
 	struct timeval		 activity_time;
 
 	struct window_pane	*active;
-	struct window_pane	*last;
+	struct window_panes 	 last_panes;
 	struct window_panes	 panes;
 
 	int			 lastlayout;
@@ -1163,6 +1175,7 @@ struct winlink {
 #define WINLINK_ACTIVITY 0x2
 #define WINLINK_SILENCE 0x4
 #define WINLINK_ALERTFLAGS (WINLINK_BELL|WINLINK_ACTIVITY|WINLINK_SILENCE)
+#define WINLINK_VISITED 0x8
 
 	RB_ENTRY(winlink) entry;
 	TAILQ_ENTRY(winlink) wentry;
@@ -1363,6 +1376,7 @@ struct tty {
 	struct client	*client;
 	struct event	 start_timer;
 	struct event	 clipboard_timer;
+	time_t		 last_requests;
 
 	u_int		 sx;
 	u_int		 sy;
@@ -1414,10 +1428,8 @@ struct tty {
 #define TTY_HAVEXDA 0x200
 #define TTY_SYNCING 0x400
 #define TTY_HAVEDA2 0x800 /* Secondary DA. */
-#define TTY_HAVEFG 0x1000
-#define TTY_HAVEBG 0x2000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVEFG|TTY_HAVEBG)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA)
 	int		 flags;
 
 	struct tty_term	*term;
@@ -2080,10 +2092,11 @@ extern char **cfg_files;
 extern u_int cfg_nfiles;
 extern int cfg_quiet;
 void	start_cfg(void);
-int	load_cfg(const char *, struct client *, struct cmdq_item *, int,
-	    struct cmdq_item **);
+int	load_cfg(const char *, struct client *, struct cmdq_item *,
+            struct cmd_find_state *, int, struct cmdq_item **);
 int	load_cfg_from_buffer(const void *, size_t, const char *,
-	    struct client *, struct cmdq_item *, int, struct cmdq_item **);
+  	    struct client *, struct cmdq_item *, struct cmd_find_state *,
+	    int, struct cmdq_item **);
 void printflike(1, 2) cfg_add_cause(const char *, ...);
 void	cfg_print_causes(struct cmdq_item *);
 void	cfg_show_causes(struct session *);
@@ -2293,12 +2306,12 @@ void	tty_margin_off(struct tty *);
 void	tty_cursor(struct tty *, u_int, u_int);
 void	tty_clipboard_query(struct tty *);
 void	tty_putcode(struct tty *, enum tty_code_code);
-void	tty_putcode1(struct tty *, enum tty_code_code, int);
-void	tty_putcode2(struct tty *, enum tty_code_code, int, int);
-void	tty_putcode3(struct tty *, enum tty_code_code, int, int, int);
-void	tty_putcode_ptr1(struct tty *, enum tty_code_code, const void *);
-void	tty_putcode_ptr2(struct tty *, enum tty_code_code, const void *,
-	    const void *);
+void	tty_putcode_i(struct tty *, enum tty_code_code, int);
+void	tty_putcode_ii(struct tty *, enum tty_code_code, int, int);
+void	tty_putcode_iii(struct tty *, enum tty_code_code, int, int, int);
+void	tty_putcode_s(struct tty *, enum tty_code_code, const char *);
+void	tty_putcode_ss(struct tty *, enum tty_code_code, const char *,
+	    const char *);
 void	tty_puts(struct tty *, const char *);
 void	tty_putc(struct tty *, u_char);
 void	tty_putn(struct tty *, const void *, size_t, u_int);
@@ -2310,6 +2323,7 @@ void	tty_resize(struct tty *);
 void	tty_set_size(struct tty *, u_int, u_int, u_int, u_int);
 void	tty_start_tty(struct tty *);
 void	tty_send_requests(struct tty *);
+void	tty_repeat_requests(struct tty *);
 void	tty_stop_tty(struct tty *);
 void	tty_set_title(struct tty *, const char *);
 void	tty_set_path(struct tty *, const char *);
@@ -2362,15 +2376,15 @@ int		 tty_term_read_list(const char *, int, char ***, u_int *,
 void		 tty_term_free_list(char **, u_int);
 int		 tty_term_has(struct tty_term *, enum tty_code_code);
 const char	*tty_term_string(struct tty_term *, enum tty_code_code);
-const char	*tty_term_string1(struct tty_term *, enum tty_code_code, int);
-const char	*tty_term_string2(struct tty_term *, enum tty_code_code, int,
+const char	*tty_term_string_i(struct tty_term *, enum tty_code_code, int);
+const char	*tty_term_string_ii(struct tty_term *, enum tty_code_code, int,
 		     int);
-const char	*tty_term_string3(struct tty_term *, enum tty_code_code, int,
+const char	*tty_term_string_iii(struct tty_term *, enum tty_code_code, int,
 		     int, int);
-const char	*tty_term_ptr1(struct tty_term *, enum tty_code_code,
-		     const void *);
-const char	*tty_term_ptr2(struct tty_term *, enum tty_code_code,
-		     const void *, const void *);
+const char	*tty_term_string_s(struct tty_term *, enum tty_code_code,
+		     const char *);
+const char	*tty_term_string_ss(struct tty_term *, enum tty_code_code,
+		     const char *, const char *);
 int		 tty_term_number(struct tty_term *, enum tty_code_code);
 int		 tty_term_flag(struct tty_term *, enum tty_code_code);
 const char	*tty_term_describe(struct tty_term *, enum tty_code_code);
@@ -2528,7 +2542,8 @@ struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
 struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
 		     int);
 struct cmdq_state *cmdq_link_state(struct cmdq_state *);
-struct cmdq_state *cmdq_copy_state(struct cmdq_state *);
+struct cmdq_state *cmdq_copy_state(struct cmdq_state *,
+		     struct cmd_find_state *);
 void		  cmdq_free_state(struct cmdq_state *);
 void printflike(3, 4) cmdq_add_format(struct cmdq_state *, const char *,
 		     const char *, ...);
@@ -2883,12 +2898,14 @@ void	 screen_write_putc(struct screen_write_ctx *, const struct grid_cell *,
 	     u_char);
 void	 screen_write_fast_copy(struct screen_write_ctx *, struct screen *,
 	     u_int, u_int, u_int, u_int);
-void	 screen_write_hline(struct screen_write_ctx *, u_int, int, int);
+void	 screen_write_hline(struct screen_write_ctx *, u_int, int, int,
+	     enum box_lines, const struct grid_cell *);
 void	 screen_write_vline(struct screen_write_ctx *, u_int, int, int);
 void	 screen_write_menu(struct screen_write_ctx *, struct menu *, int,
+	     enum box_lines, const struct grid_cell *, const struct grid_cell *,
 	     const struct grid_cell *);
-void	 screen_write_box(struct screen_write_ctx *, u_int, u_int, int,
-	     const struct grid_cell *, const char *);
+void	 screen_write_box(struct screen_write_ctx *, u_int, u_int,
+             enum box_lines, const struct grid_cell *, const char *);
 void	 screen_write_preview(struct screen_write_ctx *, struct screen *, u_int,
 	     u_int);
 void	 screen_write_backspace(struct screen_write_ctx *);
@@ -3037,6 +3054,10 @@ struct window_pane *window_pane_find_up(struct window_pane *);
 struct window_pane *window_pane_find_down(struct window_pane *);
 struct window_pane *window_pane_find_left(struct window_pane *);
 struct window_pane *window_pane_find_right(struct window_pane *);
+void		 window_pane_stack_push(struct window_panes *,
+		     struct window_pane *);
+void		 window_pane_stack_remove(struct window_panes *,
+		     struct window_pane *);
 void		 window_set_name(struct window *, const char *);
 void		 window_add_ref(struct window *, const char *);
 void		 window_remove_ref(struct window *, const char *);
@@ -3246,6 +3267,8 @@ u_int		 session_group_attached_count(struct session_group *);
 void		 session_renumber_windows(struct session *);
 
 /* utf8.c */
+enum utf8_state	 utf8_towc (const struct utf8_data *, wchar_t *);
+int		 utf8_in_table(wchar_t, const wchar_t *, u_int);
 utf8_char	 utf8_build_one(u_char);
 enum utf8_state	 utf8_from_data(const struct utf8_data *, utf8_char *);
 void		 utf8_to_data(utf8_char, struct utf8_data *);
@@ -3266,6 +3289,12 @@ u_int		 utf8_cstrwidth(const char *);
 char		*utf8_padcstr(const char *, u_int);
 char		*utf8_rpadcstr(const char *, u_int);
 int		 utf8_cstrhas(const char *, const struct utf8_data *);
+
+/* utf8-combined.c */
+int		 utf8_has_zwj(const struct utf8_data *);
+int		 utf8_is_zwj(const struct utf8_data *);
+int		 utf8_is_vs(const struct utf8_data *);
+int		 utf8_is_modifier(const struct utf8_data *);
 
 /* procname.c */
 char   *get_proc_name(int, char *);
@@ -3294,10 +3323,12 @@ void		 menu_add_item(struct menu *, const struct menu_item *,
 		    struct cmd_find_state *);
 void		 menu_free(struct menu *);
 struct menu_data *menu_prepare(struct menu *, int, int, struct cmdq_item *,
-		    u_int, u_int, struct client *, struct cmd_find_state *,
+		    u_int, u_int, struct client *, enum box_lines, const char *,
+		    const char *, const char *, struct cmd_find_state *,
 		    menu_choice_cb, void *);
 int		 menu_display(struct menu *, int, int, struct cmdq_item *,
-		    u_int, u_int, struct client *, struct cmd_find_state *,
+		    u_int, u_int, struct client *, enum box_lines, const char *,
+		    const char *, const char *, struct cmd_find_state *,
 		    menu_choice_cb, void *);
 struct screen	*menu_mode_cb(struct client *, void *, u_int *, u_int *);
 void		 menu_check_cb(struct client *, void *, u_int, u_int, u_int,
@@ -3313,11 +3344,11 @@ int		 menu_key_cb(struct client *, void *, struct key_event *);
 #define POPUP_INTERNAL 0x4
 typedef void (*popup_close_cb)(int, void *);
 typedef void (*popup_finish_edit_cb)(char *, size_t, void *);
-int		 popup_display(int, int, struct cmdq_item *, u_int, u_int,
-		    u_int, u_int, struct environ *, const char *, int, char **,
-		    const char *, const char *, struct client *,
-		    struct session *, const char *, const char *,
-		    popup_close_cb, void *);
+int		 popup_display(int, enum box_lines, struct cmdq_item *, u_int,
+                    u_int, u_int, u_int, struct environ *, const char *, int,
+                    char **, const char *, const char *, struct client *,
+                    struct session *, const char *, const char *,
+                    popup_close_cb, void *);
 int		 popup_editor(struct client *, const char *, size_t,
 		    popup_finish_edit_cb, void *);
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: cert.c,v 1.106 2023/03/10 12:44:56 job Exp $ */
+/*	$OpenBSD: cert.c,v 1.117 2023/09/25 15:33:08 tb Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2021 Job Snijders <job@openbsd.org>
@@ -153,68 +153,58 @@ sbgp_as_inherit(const char *fn, struct cert_as *ases, size_t *asz)
 	return append_as(fn, ases, asz, &as);
 }
 
-/*
- * Parse RFC 6487 4.8.11 X509v3 extension, with syntax documented in RFC
- * 3779 starting in section 3.2.
- * Returns zero on failure, non-zero on success.
- */
-static int
-sbgp_assysnum(struct parse *p, X509_EXTENSION *ext)
+int
+sbgp_parse_assysnum(const char *fn, const ASIdentifiers *asidentifiers,
+    struct cert_as **out_as, size_t *out_asz)
 {
-	ASIdentifiers		*asidentifiers = NULL;
 	const ASIdOrRanges	*aors = NULL;
-	size_t			 asz;
-	int			 i, rc = 0;
+	struct cert_as		*as = NULL;
+	size_t			 asz = 0, sz;
+	int			 i;
 
-	if (!X509_EXTENSION_get_critical(ext)) {
-		cryptowarnx("%s: RFC 6487 section 4.8.11: autonomousSysNum: "
-		    "extension not critical", p->fn);
-		goto out;
-	}
-
-	if ((asidentifiers = X509V3_EXT_d2i(ext)) == NULL) {
-		cryptowarnx("%s: RFC 6487 section 4.8.11: autonomousSysNum: "
-		    "failed extension parse", p->fn);
-		goto out;
-	}
+	assert(*out_as == NULL && *out_asz == 0);
 
 	if (asidentifiers->rdi != NULL) {
 		warnx("%s: RFC 6487 section 4.8.11: autonomousSysNum: "
-		    "should not have RDI values", p->fn);
+		    "should not have RDI values", fn);
 		goto out;
 	}
 
 	if (asidentifiers->asnum == NULL) {
 		warnx("%s: RFC 6487 section 4.8.11: autonomousSysNum: "
-		    "no AS number resource set", p->fn);
+		    "no AS number resource set", fn);
 		goto out;
 	}
 
 	switch (asidentifiers->asnum->type) {
 	case ASIdentifierChoice_inherit:
-		asz = 1;
+		sz = 1;
 		break;
 	case ASIdentifierChoice_asIdsOrRanges:
 		aors = asidentifiers->asnum->u.asIdsOrRanges;
-		asz = sk_ASIdOrRange_num(aors);
+		sz = sk_ASIdOrRange_num(aors);
 		break;
 	default:
 		warnx("%s: RFC 3779 section 3.2.3.2: ASIdentifierChoice: "
-		    "unknown type %d", p->fn, asidentifiers->asnum->type);
+		    "unknown type %d", fn, asidentifiers->asnum->type);
 		goto out;
 	}
 
-	if (asz >= MAX_AS_SIZE) {
-		warnx("%s: too many AS number entries: limit %d",
-		    p->fn, MAX_AS_SIZE);
+	if (sz == 0) {
+		warnx("%s: RFC 6487 section 4.8.11: empty asIdsOrRanges", fn);
 		goto out;
 	}
-	p->res->as = calloc(asz, sizeof(struct cert_as));
-	if (p->res->as == NULL)
+	if (sz >= MAX_AS_SIZE) {
+		warnx("%s: too many AS number entries: limit %d",
+		    fn, MAX_AS_SIZE);
+		goto out;
+	}
+	as = calloc(sz, sizeof(struct cert_as));
+	if (as == NULL)
 		err(1, NULL);
 
 	if (aors == NULL) {
-		if (!sbgp_as_inherit(p->fn, p->res->as, &p->res->asz))
+		if (!sbgp_as_inherit(fn, as, &asz))
 			goto out;
 	}
 
@@ -224,21 +214,57 @@ sbgp_assysnum(struct parse *p, X509_EXTENSION *ext)
 		aor = sk_ASIdOrRange_value(aors, i);
 		switch (aor->type) {
 		case ASIdOrRange_id:
-			if (!sbgp_as_id(p->fn, p->res->as, &p->res->asz,
-			    aor->u.id))
+			if (!sbgp_as_id(fn, as, &asz, aor->u.id))
 				goto out;
 			break;
 		case ASIdOrRange_range:
-			if (!sbgp_as_range(p->fn, p->res->as, &p->res->asz,
-			    aor->u.range))
+			if (!sbgp_as_range(fn, as, &asz, aor->u.range))
 				goto out;
 			break;
 		default:
 			warnx("%s: RFC 3779 section 3.2.3.5: ASIdOrRange: "
-			    "unknown type %d", p->fn, aor->type);
+			    "unknown type %d", fn, aor->type);
 			goto out;
 		}
 	}
+
+	*out_as = as;
+	*out_asz = asz;
+
+	return 1;
+
+ out:
+	free(as);
+
+	return 0;
+}
+
+/*
+ * Parse RFC 6487 4.8.11 X509v3 extension, with syntax documented in RFC
+ * 3779 starting in section 3.2.
+ * Returns zero on failure, non-zero on success.
+ */
+static int
+sbgp_assysnum(struct parse *p, X509_EXTENSION *ext)
+{
+	ASIdentifiers		*asidentifiers = NULL;
+	int			 rc = 0;
+
+	if (!X509_EXTENSION_get_critical(ext)) {
+		warnx("%s: RFC 6487 section 4.8.11: autonomousSysNum: "
+		    "extension not critical", p->fn);
+		goto out;
+	}
+
+	if ((asidentifiers = X509V3_EXT_d2i(ext)) == NULL) {
+		warnx("%s: RFC 6487 section 4.8.11: autonomousSysNum: "
+		    "failed extension parse", p->fn);
+		goto out;
+	}
+
+	if (!sbgp_parse_assysnum(p->fn, asidentifiers,
+	    &p->res->as, &p->res->asz))
+		goto out;
 
 	rc = 1;
  out:
@@ -326,6 +352,92 @@ sbgp_addr_inherit(const char *fn, struct cert_ip *ips, size_t *ipsz,
 	return append_ip(fn, ips, ipsz, &ip);
 }
 
+int
+sbgp_parse_ipaddrblk(const char *fn, const IPAddrBlocks *addrblk,
+    struct cert_ip **out_ips, size_t *out_ipsz)
+{
+	const IPAddressFamily	*af;
+	const IPAddressOrRanges	*aors;
+	const IPAddressOrRange	*aor;
+	enum afi		 afi;
+	struct cert_ip		*ips = NULL;
+	size_t			 ipsz = 0, sz;
+	int			 i, j;
+
+	assert(*out_ips == NULL && *out_ipsz == 0);
+
+	for (i = 0; i < sk_IPAddressFamily_num(addrblk); i++) {
+		af = sk_IPAddressFamily_value(addrblk, i);
+
+		switch (af->ipAddressChoice->type) {
+		case IPAddressChoice_inherit:
+			aors = NULL;
+			sz = ipsz + 1;
+			break;
+		case IPAddressChoice_addressesOrRanges:
+			aors = af->ipAddressChoice->u.addressesOrRanges;
+			sz = ipsz + sk_IPAddressOrRange_num(aors);
+			break;
+		default:
+			warnx("%s: RFC 3779: IPAddressChoice: unknown type %d",
+			    fn, af->ipAddressChoice->type);
+			goto out;
+		}
+		if (sz == ipsz) {
+			warnx("%s: RFC 6487 section 4.8.10: "
+			    "empty ipAddressesOrRanges", fn);
+			goto out;
+		}
+
+		if (sz >= MAX_IP_SIZE)
+			goto out;
+		ips = recallocarray(ips, ipsz, sz, sizeof(struct cert_ip));
+		if (ips == NULL)
+			err(1, NULL);
+
+		if (!ip_addr_afi_parse(fn, af->addressFamily, &afi)) {
+			warnx("%s: RFC 3779: invalid AFI", fn);
+			goto out;
+		}
+
+		if (aors == NULL) {
+			if (!sbgp_addr_inherit(fn, ips, &ipsz, afi))
+				goto out;
+			continue;
+		}
+
+		for (j = 0; j < sk_IPAddressOrRange_num(aors); j++) {
+			aor = sk_IPAddressOrRange_value(aors, j);
+			switch (aor->type) {
+			case IPAddressOrRange_addressPrefix:
+				if (!sbgp_addr(fn, ips, &ipsz, afi,
+				    aor->u.addressPrefix))
+					goto out;
+				break;
+			case IPAddressOrRange_addressRange:
+				if (!sbgp_addr_range(fn, ips, &ipsz, afi,
+				    aor->u.addressRange))
+					goto out;
+				break;
+			default:
+				warnx("%s: RFC 3779: IPAddressOrRange: "
+				    "unknown type %d", fn, aor->type);
+				goto out;
+			}
+		}
+	}
+
+	*out_ips = ips;
+	*out_ipsz = ipsz;
+
+	return 1;
+
+ out:
+	free(ips);
+
+	return 0;
+}
+
 /*
  * Parse an sbgp-ipAddrBlock X509 extension, RFC 6487 4.8.10, with
  * syntax documented in RFC 3779 starting in section 2.2.
@@ -335,81 +447,26 @@ static int
 sbgp_ipaddrblk(struct parse *p, X509_EXTENSION *ext)
 {
 	STACK_OF(IPAddressFamily)	*addrblk = NULL;
-	const IPAddressFamily		*af;
-	const IPAddressOrRanges		*aors;
-	const IPAddressOrRange		*aor;
-	enum afi			 afi;
-	size_t				 ipsz;
-	int				 i, j, rc = 0;
+	int				 rc = 0;
 
 	if (!X509_EXTENSION_get_critical(ext)) {
-		cryptowarnx("%s: RFC 6487 section 4.8.10: sbgp-ipAddrBlock: "
+		warnx("%s: RFC 6487 section 4.8.10: sbgp-ipAddrBlock: "
 		    "extension not critical", p->fn);
 		goto out;
 	}
 
 	if ((addrblk = X509V3_EXT_d2i(ext)) == NULL) {
-		cryptowarnx("%s: RFC 6487 section 4.8.10: sbgp-ipAddrBlock: "
+		warnx("%s: RFC 6487 section 4.8.10: sbgp-ipAddrBlock: "
 		    "failed extension parse", p->fn);
 		goto out;
 	}
 
-	for (i = 0; i < sk_IPAddressFamily_num(addrblk); i++) {
-		af = sk_IPAddressFamily_value(addrblk, i);
+	if (!sbgp_parse_ipaddrblk(p->fn, addrblk, &p->res->ips, &p->res->ipsz))
+		goto out;
 
-		switch (af->ipAddressChoice->type) {
-		case IPAddressChoice_inherit:
-			aors = NULL;
-			ipsz = p->res->ipsz + 1;
-			break;
-		case IPAddressChoice_addressesOrRanges:
-			aors = af->ipAddressChoice->u.addressesOrRanges;
-			ipsz = p->res->ipsz + sk_IPAddressOrRange_num(aors);
-			break;
-		default:
-			warnx("%s: RFC 3779: IPAddressChoice: unknown type %d",
-			    p->fn, af->ipAddressChoice->type);
-			goto out;
-		}
-
-		if (ipsz >= MAX_IP_SIZE)
-			goto out;
-		p->res->ips = recallocarray(p->res->ips, p->res->ipsz, ipsz,
-		    sizeof(struct cert_ip));
-		if (p->res->ips == NULL)
-			err(1, NULL);
-
-		if (!ip_addr_afi_parse(p->fn, af->addressFamily, &afi)) {
-			warnx("%s: RFC 3779: invalid AFI", p->fn);
-			goto out;
-		}
-
-		if (aors == NULL) {
-			if (!sbgp_addr_inherit(p->fn, p->res->ips,
-			    &p->res->ipsz, afi))
-				goto out;
-			continue;
-		}
-
-		for (j = 0; j < sk_IPAddressOrRange_num(aors); j++) {
-			aor = sk_IPAddressOrRange_value(aors, j);
-			switch (aor->type) {
-			case IPAddressOrRange_addressPrefix:
-				if (!sbgp_addr(p->fn, p->res->ips,
-				    &p->res->ipsz, afi, aor->u.addressPrefix))
-					goto out;
-				break;
-			case IPAddressOrRange_addressRange:
-				if (!sbgp_addr_range(p->fn, p->res->ips,
-				    &p->res->ipsz, afi, aor->u.addressRange))
-					goto out;
-				break;
-			default:
-				warnx("%s: RFC 3779: IPAddressOrRange: "
-				    "unknown type %d", p->fn, aor->type);
-				goto out;
-			}
-		}
+	if (p->res->ipsz == 0) {
+		warnx("%s: RFC 6487 section 4.8.10: empty ipAddrBlock", p->fn);
+		goto out;
 	}
 
 	rc = 1;
@@ -438,8 +495,8 @@ sbgp_sia(struct parse *p, X509_EXTENSION *ext)
 	}
 
 	if ((sia = X509V3_EXT_d2i(ext)) == NULL) {
-		cryptowarnx("%s: RFC 6487 section 4.8.8: SIA: "
-		    "failed extension parse", p->fn);
+		warnx("%s: RFC 6487 section 4.8.8: SIA: failed extension parse",
+		    p->fn);
 		goto out;
 	}
 
@@ -515,13 +572,13 @@ certificate_policies(struct parse *p, X509_EXTENSION *ext)
 	int				 rc = 0;
 
 	if (!X509_EXTENSION_get_critical(ext)) {
-		cryptowarnx("%s: RFC 6487 section 4.8.9: certificatePolicies: "
+		warnx("%s: RFC 6487 section 4.8.9: certificatePolicies: "
 		    "extension not critical", p->fn);
 		goto out;
 	}
 
 	if ((policies = X509V3_EXT_d2i(ext)) == NULL) {
-		cryptowarnx("%s: RFC 6487 section 4.8.9: certificatePolicies: "
+		warnx("%s: RFC 6487 section 4.8.9: certificatePolicies: "
 		    "failed extension parse", p->fn);
 		goto out;
 	}
@@ -579,9 +636,8 @@ certificate_policies(struct parse *p, X509_EXTENSION *ext)
 }
 
 /*
- * Lightweight version of cert_parse_pre() for ASPA, ROA, and RSC EE certs.
- * This only parses the RFC 3779 extensions since these are necessary for
- * validation.
+ * Lightweight version of cert_parse_pre() for EE certs.
+ * Parses the two RFC 3779 extensions, and performs some sanity checks.
  * Returns cert on success and NULL on failure.
  */
 struct cert *
@@ -595,6 +651,14 @@ cert_parse_ee_cert(const char *fn, X509 *x)
 	p.fn = fn;
 	if ((p.res = calloc(1, sizeof(struct cert))) == NULL)
 		err(1, NULL);
+
+	if (X509_get_version(x) != 2) {
+		warnx("%s: RFC 6487 4.1: X.509 version must be v3", fn);
+		goto out;
+	}
+
+	if (!x509_valid_subject(fn, x))
+		goto out;
 
 	if (X509_get_key_usage(x) != KU_DIGITAL_SIGNATURE) {
 		warnx("%s: RFC 6487 section 4.8.4: KU must be digitalSignature",
@@ -621,7 +685,7 @@ cert_parse_ee_cert(const char *fn, X509 *x)
 	}
 
 	if (!X509_up_ref(x)) {
-		cryptowarnx("%s: X509_up_ref failed", fn);
+		warnx("%s: X509_up_ref failed", fn);
 		goto out;
 	}
 
@@ -643,16 +707,19 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 {
 	const unsigned char	*oder;
 	int			 extsz;
-	int			 sia_present = 0;
 	size_t			 i;
 	X509			*x = NULL;
 	X509_EXTENSION		*ext = NULL;
 	const X509_ALGOR	*palg;
+	const ASN1_BIT_STRING	*piuid = NULL, *psuid = NULL;
 	const ASN1_OBJECT	*cobj;
 	ASN1_OBJECT		*obj;
 	EVP_PKEY		*pkey;
 	struct parse		 p;
-	int			 nid;
+	int			 nid, ip, as, sia, cp, crldp, aia, aki, ski,
+				 eku, bc, ku;
+
+	nid = ip = as = sia = cp = crldp = aia = aki = ski = eku = bc = ku = 0;
 
 	/* just fail for empty buffers, the warning was printed elsewhere */
 	if (der == NULL)
@@ -665,7 +732,7 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 
 	oder = der;
 	if ((x = d2i_X509(NULL, &der, len)) == NULL) {
-		cryptowarnx("%s: d2i_X509", p.fn);
+		warnx("%s: d2i_X509", p.fn);
 		goto out;
 	}
 	if (der != oder + len) {
@@ -675,13 +742,18 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 
 	/* Cache X509v3 extensions, see X509_check_ca(3). */
 	if (X509_check_purpose(x, -1, -1) <= 0) {
-		cryptowarnx("%s: could not cache X509v3 extensions", p.fn);
+		warnx("%s: could not cache X509v3 extensions", p.fn);
+		goto out;
+	}
+
+	if (X509_get_version(x) != 2) {
+		warnx("%s: RFC 6487 4.1: X.509 version must be v3", fn);
 		goto out;
 	}
 
 	X509_get0_signature(NULL, &palg, x);
 	if (palg == NULL) {
-		cryptowarnx("%s: X509_get0_signature", p.fn);
+		warnx("%s: X509_get0_signature", p.fn);
 		goto out;
 	}
 	X509_ALGOR_get0(&cobj, NULL, NULL, palg);
@@ -692,10 +764,20 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	}
 
+	X509_get0_uids(x, &piuid, &psuid);
+	if (piuid != NULL || psuid != NULL) {
+		warnx("%s: issuer or subject unique identifiers not allowed",
+		    fn);
+		goto out;
+	}
+
+	if (!x509_valid_subject(p.fn, x))
+		goto out;
+
 	/* Look for X509v3 extensions. */
 
 	if ((extsz = X509_get_ext_count(x)) < 0)
-		cryptoerrx("X509_get_ext_count");
+		errx(1, "X509_get_ext_count");
 
 	for (i = 0; i < (size_t)extsz; i++) {
 		ext = X509_get_ext(x, i);
@@ -703,38 +785,58 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 		obj = X509_EXTENSION_get_object(ext);
 		assert(obj != NULL);
 
-		switch (OBJ_obj2nid(obj)) {
+		switch (nid = OBJ_obj2nid(obj)) {
 		case NID_sbgp_ipAddrBlock:
+			if (ip++ > 0)
+				goto dup;
 			if (!sbgp_ipaddrblk(&p, ext))
 				goto out;
 			break;
 		case NID_sbgp_autonomousSysNum:
+			if (as++ > 0)
+				goto dup;
 			if (!sbgp_assysnum(&p, ext))
 				goto out;
 			break;
 		case NID_sinfo_access:
-			sia_present = 1;
+			if (sia++ > 0)
+				goto dup;
 			if (!sbgp_sia(&p, ext))
 				goto out;
 			break;
 		case NID_certificate_policies:
+			if (cp++ > 0)
+				goto dup;
 			if (!certificate_policies(&p, ext))
 				goto out;
 			break;
 		case NID_crl_distribution_points:
-			/* ignored here, handled later */
+			if (crldp++ > 0)
+				goto dup;
 			break;
 		case NID_info_access:
+			if (aia++ > 0)
+				goto dup;
 			break;
 		case NID_authority_key_identifier:
+			if (aki++ > 0)
+				goto dup;
 			break;
 		case NID_subject_key_identifier:
+			if (ski++ > 0)
+				goto dup;
 			break;
 		case NID_ext_key_usage:
+			if (eku++ > 0)
+				goto dup;
 			break;
 		case NID_basic_constraints:
+			if (bc++ > 0)
+				goto dup;
 			break;
 		case NID_key_usage:
+			if (ku++ > 0)
+				goto dup;
 			break;
 		default:
 			/* unexpected extensions warrant investigation */
@@ -813,7 +915,7 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 				goto out;
 			}
 		}
-		if (sia_present) {
+		if (sia) {
 			warnx("%s: unexpected SIA extension in BGPsec cert",
 			    p.fn);
 			goto out;
@@ -832,7 +934,10 @@ cert_parse_pre(const char *fn, const unsigned char *der, size_t len)
 	p.res->x509 = x;
 	return p.res;
 
-out:
+ dup:
+	warnx("%s: RFC 5280 section 4.2: duplicate %s extension", fn,
+	    OBJ_nid2sn(nid));
+ out:
 	cert_free(p.res);
 	X509_free(x);
 	return NULL;
@@ -883,15 +988,15 @@ ta_parse(const char *fn, struct cert *p, const unsigned char *pkey,
 	/* first check pubkey against the one from the TAL */
 	pk = d2i_PUBKEY(NULL, &pkey, pkeysz);
 	if (pk == NULL) {
-		cryptowarnx("%s: RFC 6487 (trust anchor): bad TAL pubkey", fn);
+		warnx("%s: RFC 6487 (trust anchor): bad TAL pubkey", fn);
 		goto badcert;
 	}
 	if ((opk = X509_get0_pubkey(p->x509)) == NULL) {
-		cryptowarnx("%s: RFC 6487 (trust anchor): missing pubkey", fn);
+		warnx("%s: RFC 6487 (trust anchor): missing pubkey", fn);
 		goto badcert;
 	}
 	if (EVP_PKEY_cmp(pk, opk) != 1) {
-		cryptowarnx("%s: RFC 6487 (trust anchor): "
+		warnx("%s: RFC 6487 (trust anchor): "
 		    "pubkey does not match TAL pubkey", fn);
 		goto badcert;
 	}
@@ -1084,6 +1189,7 @@ auth_insert(struct auth_tree *auths, struct cert *cert, struct auth *parent)
 
 	na->parent = parent;
 	na->cert = cert;
+	na->any_inherits = x509_any_inherits(cert->x509);
 
 	if (RB_INSERT(auth_tree, auths, na) != NULL)
 		err(1, "auth tree corrupted");

@@ -1,4 +1,4 @@
-/*	$OpenBSD: clock.c,v 1.13 2023/03/12 22:18:58 cheloha Exp $	*/
+/*	$OpenBSD: clock.c,v 1.17 2023/09/17 14:50:51 cheloha Exp $	*/
 /*	$NetBSD: clock.c,v 1.32 2006/09/05 11:09:36 uwe Exp $	*/
 
 /*-
@@ -56,7 +56,7 @@
  *  + default 64Hz
  *  + use TMU channel 0 as clock interrupt source.
  *  + use TMU channel 1 as emulated software interrupt source.
- *  + use TMU channel 2 as freeruuning counter for timecounter.
+ *  + use TMU channel 2 as freerunning counter for timecounter.
  *  + If RTC module is active, TMU channel 0 input source is RTC output.
  *    (1.6384kHz)
  */
@@ -203,7 +203,6 @@ sh_clock_get_pclock(void)
 void
 setstatclockrate(int newhz)
 {
-	clockintr_setstatclockrate(newhz);
 }
 
 u_int
@@ -260,8 +259,11 @@ cpu_initclocks(void)
 
 	stathz = hz;
 	profhz = stathz;
-	clockintr_init(0);
+}
 
+void
+cpu_startclock(void)
+{
 	clockintr_cpu_init(NULL);
 
 	/*

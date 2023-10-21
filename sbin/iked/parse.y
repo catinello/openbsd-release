@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.141 2022/07/22 15:53:33 tobhe Exp $	*/
+/*	$OpenBSD: parse.y,v 1.144 2023/08/11 11:24:55 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2019 Tobias Heider <tobias.heider@stusta.de>
@@ -46,7 +46,6 @@
 #include <string.h>
 #include <syslog.h>
 #include <unistd.h>
-#include <netdb.h>
 #include <event.h>
 
 #include "iked.h"
@@ -2520,6 +2519,10 @@ create_ike(char *name, int af, struct ipsec_addr_wrap *ipproto,
 	}
 
 	if (iface != NULL) {
+		/* sec(4) */
+		if (strncmp("sec", iface, strlen("sec")) == 0)
+			pol.pol_flags |= IKED_POLICY_ROUTING;
+
 		pol.pol_iface = if_nametoindex(iface);
 		if (pol.pol_iface == 0) {
 			yyerror("invalid iface");
@@ -2881,8 +2884,7 @@ create_ike(char *name, int af, struct ipsec_addr_wrap *ipproto,
 	if (dstid)
 		strlcpy(idstr, dstid, sizeof(idstr));
 	else if (!pol.pol_peer.addr_net)
-		print_host((struct sockaddr *)&pol.pol_peer.addr, idstr,
-		    sizeof(idstr));
+		strlcpy(idstr, print_addr(&pol.pol_peer.addr), sizeof(idstr));
 
 	ikeauth = &pol.pol_auth;
 	switch (ikeauth->auth_method) {

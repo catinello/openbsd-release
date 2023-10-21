@@ -1,4 +1,4 @@
-/* $OpenBSD: wsemul_sun.c,v 1.36 2023/03/06 20:34:35 miod Exp $ */
+/* $OpenBSD: wsemul_sun.c,v 1.37 2023/07/24 17:03:32 miod Exp $ */
 /* $NetBSD: wsemul_sun.c,v 1.11 2000/01/05 11:19:36 drochner Exp $ */
 
 /*

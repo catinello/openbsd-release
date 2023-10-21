@@ -1,4 +1,4 @@
-/*	$OpenBSD: tar.c,v 1.70 2022/03/01 21:19:11 sthen Exp $	*/
+/*	$OpenBSD: tar.c,v 1.73 2023/09/04 17:05:34 jca Exp $	*/
 /*	$NetBSD: tar.c,v 1.5 1995/03/21 09:07:49 cgd Exp $	*/
 
 /*-
@@ -59,9 +59,7 @@ static u_long tar_chksm(char *, int);
 static char *name_split(char *, int);
 static int ul_oct(u_long, char *, int, int);
 static int ull_oct(unsigned long long, char *, int, int);
-#ifndef SMALL
 static int rd_xheader(ARCHD *arcn, int, off_t);
-#endif
 
 static uid_t uid_nobody;
 static uid_t uid_warn;
@@ -411,11 +409,10 @@ tar_rd(ARCHD *arcn, char *buf)
 	arcn->sb.st_size = (off_t)asc_ull(hd->size, sizeof(hd->size), OCT);
 	val = asc_ull(hd->mtime, sizeof(hd->mtime), OCT);
 	if (val > MAX_TIME_T)
-		arcn->sb.st_mtime = INT_MAX;                    /* XXX 2038 */
+		arcn->sb.st_mtime = MAX_TIME_T;
 	else
 		arcn->sb.st_mtime = val;
-	arcn->sb.st_ctime = arcn->sb.st_atime = arcn->sb.st_mtime;
-	arcn->sb.st_ctimensec = arcn->sb.st_atimensec = arcn->sb.st_mtimensec;
+	arcn->sb.st_ctim = arcn->sb.st_atim = arcn->sb.st_mtim;
 
 	/*
 	 * have to look at the last character, it may be a '/' and that is used
@@ -722,14 +719,11 @@ ustar_rd(ARCHD *arcn, char *buf)
 	if (ustar_id(buf, BLKMULT) < 0)
 		return(-1);
 
-#ifndef SMALL
 reset:
-#endif
 	memset(arcn, 0, sizeof(*arcn));
 	arcn->org_name = arcn->name;
 	arcn->sb.st_nlink = 1;
 
-#ifndef SMALL
 	/* Process Extended headers. */
 	if (hd->typeflag == XHDRTYPE || hd->typeflag == GHDRTYPE) {
 		if (rd_xheader(arcn, hd->typeflag == GHDRTYPE,
@@ -746,7 +740,6 @@ reset:
 		if (hd->typeflag == XHDRTYPE || hd->typeflag == GHDRTYPE)
 			goto reset;
 	}
-#endif
 
 	if (!arcn->nlen) {
 		/*
@@ -788,17 +781,15 @@ reset:
 	if (arcn->sb.st_mtime == 0) {
 		val = asc_ull(hd->mtime, sizeof(hd->mtime), OCT);
 		if (val > MAX_TIME_T)
-			arcn->sb.st_mtime = INT_MAX;		/* XXX 2038 */
+			arcn->sb.st_mtime = MAX_TIME_T;
 		else
 			arcn->sb.st_mtime = val;
 	}
 	if (arcn->sb.st_ctime == 0) {
-		arcn->sb.st_ctime = arcn->sb.st_mtime;
-		arcn->sb.st_ctimensec = arcn->sb.st_mtimensec;
+		arcn->sb.st_ctim = arcn->sb.st_mtim;
 	}
 	if (arcn->sb.st_atime == 0) {
-		arcn->sb.st_atime = arcn->sb.st_mtime;
-		arcn->sb.st_atimensec = arcn->sb.st_mtimensec;
+		arcn->sb.st_atim = arcn->sb.st_mtim;
 	}
 
 	/*
@@ -1193,8 +1184,6 @@ expandname(char *buf, size_t len, char **gnu_name, const char *name,
 	return(nlen);
 }
 
-#ifndef SMALL
-
 /* shortest possible extended record: "5 a=\n" */
 #define MINXHDRSZ	5
 
@@ -1334,4 +1323,3 @@ rd_xheader(ARCHD *arcn, int global, off_t size)
 		return (-1);
 	return (ret);
 }
-#endif

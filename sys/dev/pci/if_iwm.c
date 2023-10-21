@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_iwm.c,v 1.405 2022/12/16 13:49:35 stsp Exp $	*/
+/*	$OpenBSD: if_iwm.c,v 1.410 2023/09/02 09:02:18 stsp Exp $	*/
 
 /*
  * Copyright (c) 2014, 2016 genua gmbh <info@genua.de>
@@ -6746,7 +6746,12 @@ iwm_tx(struct iwm_softc *sc, struct mbuf *m, struct ieee80211_node *ni, int ac)
 	 * client mode; the firmware's station table contains only one entry
 	 * which represents our access point.
 	 */
-	if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT))
+	if (ic->ic_opmode == IEEE80211_M_MONITOR) {
+		if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT))
+			qid = IWM_DQA_INJECT_MONITOR_QUEUE;
+		else
+			qid = IWM_AUX_QUEUE;
+	} else if (isset(sc->sc_enabled_capa, IWM_UCODE_TLV_CAPA_DQA_SUPPORT))
 		qid = IWM_DQA_MIN_MGMT_QUEUE + ac;
 	else
 		qid = ac;
@@ -6818,7 +6823,8 @@ iwm_tx(struct iwm_softc *sc, struct mbuf *m, struct ieee80211_node *ni, int ac)
 #endif
 	totlen = m->m_pkthdr.len;
 
-	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
+	if (ic->ic_opmode != IEEE80211_M_MONITOR &&
+	    (wh->i_fc[1] & IEEE80211_FC1_PROTECTED)) {
 		k = ieee80211_get_txkey(ic, wh, ni);
 		if ((k->k_flags & IEEE80211_KEY_GROUP) ||
 		    (k->k_cipher != IEEE80211_CIPHER_CCMP)) {
@@ -6845,7 +6851,10 @@ iwm_tx(struct iwm_softc *sc, struct mbuf *m, struct ieee80211_node *ni, int ac)
 	    (ic->ic_flags & IEEE80211_F_USEPROT)))
 		flags |= IWM_TX_CMD_FLG_PROT_REQUIRE;
 
-	tx->sta_id = IWM_STATION_ID;
+	if (ic->ic_opmode == IEEE80211_M_MONITOR)
+		tx->sta_id = IWM_MONITOR_STA_ID;
+	else
+		tx->sta_id = IWM_STATION_ID;
 
 	if (type == IEEE80211_FC0_TYPE_MGT) {
 		if (subtype == IEEE80211_FC0_SUBTYPE_ASSOC_REQ ||
@@ -8574,7 +8583,7 @@ iwm_bgscan_done(struct ieee80211com *ic,
 	free(sc->bgscan_unref_arg, M_DEVBUF, sc->bgscan_unref_arg_size);
 	sc->bgscan_unref_arg = arg;
 	sc->bgscan_unref_arg_size = arg_size;
-	iwm_add_task(sc, sc->sc_nswq, &sc->bgscan_done_task);
+	iwm_add_task(sc, systq, &sc->bgscan_done_task);
 }
 
 void
@@ -9196,6 +9205,9 @@ iwm_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
                 ieee80211_delete_key(ic, ni, k);
 		return;
 	}
+
+	if ((sc->sc_flags & IWM_FLAG_STA_ACTIVE) == 0)
+		return;
 
 	if (!isset(sc->sc_ucode_api, IWM_UCODE_TLV_API_TKIP_MIC_KEYS))
 		return iwm_delete_key_v1(ic, ni, k);
@@ -10121,7 +10133,7 @@ iwm_send_paging_cmd(struct iwm_softc *sc, const struct iwm_fw_sects *fw)
 		.block_num = htole32(sc->num_of_paging_blk),
 	};
 
-	/* loop for for all paging blocks + CSS block */
+	/* loop for all paging blocks + CSS block */
 	for (blk_idx = 0; blk_idx < sc->num_of_paging_blk + 1; blk_idx++) {
 		dev_phy_addr = htole32(
 		    sc->fw_paging_db[blk_idx].fw_paging_block.paddr >>
@@ -12009,6 +12021,7 @@ iwm_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_updateprot = iwm_updateprot;
 	ic->ic_updateslot = iwm_updateslot;
 	ic->ic_updateedca = iwm_updateedca;
+	ic->ic_updatechan = iwm_updatechan;
 	ic->ic_updatedtim = iwm_updatedtim;
 	ic->ic_ampdu_rx_start = iwm_ampdu_rx_start;
 	ic->ic_ampdu_rx_stop = iwm_ampdu_rx_stop;

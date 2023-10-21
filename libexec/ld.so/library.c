@@ -1,4 +1,4 @@
-/*	$OpenBSD: library.c,v 1.90 2023/01/29 20:30:56 gnezdo Exp $ */
+/*	$OpenBSD: library.c,v 1.92 2023/08/15 06:23:31 guenther Exp $ */
 
 /*
  * Copyright (c) 2002 Dale Rahn
@@ -113,6 +113,7 @@ _dl_tryload_shlib(const char *libname, int type, int flags, int nodelete)
 	Elf_Phdr *ptls = NULL;
 	struct stat sb;
 
+#define powerof2(x) ((((x) - 1) & (x)) == 0)
 #define ROUND_PG(x) (((x) + align) & ~(align))
 #define TRUNC_PG(x) ((x) & ~(align))
 
@@ -160,6 +161,14 @@ _dl_tryload_shlib(const char *libname, int type, int flags, int nodelete)
 	 */
 	phdp = (Elf_Phdr *)(hbuf + ehdr->e_phoff);
 	for (i = 0; i < ehdr->e_phnum; i++, phdp++) {
+		if (phdp->p_align > 1 && !powerof2(phdp->p_align)) {
+			_dl_printf("%s: ld.so invalid ELF input %s.\n",
+			    __progname, libname);
+			_dl_close(libfile);
+			_dl_errno = DL_CANT_MMAP;
+			return(0);
+		}
+
 		switch (phdp->p_type) {
 		case PT_LOAD:
 			if (phdp->p_vaddr < minva)
@@ -336,7 +345,7 @@ _dl_tryload_shlib(const char *libname, int type, int flags, int nodelete)
 			_dl_set_tls(object, ptls, libaddr, libname);
 
 		/* Request permission for system calls in libc.so's text segment */
-		if (soname != NULL &&
+		if (soname != NULL && !_dl_traceld &&
 		    _dl_strncmp(soname, "libc.so.", 8) == 0) {
 			if (_dl_msyscall(exec_start, exec_size) == -1)
 				_dl_printf("msyscall %lx %lx error\n",

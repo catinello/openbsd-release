@@ -1,4 +1,4 @@
-/*	$OpenBSD: pf_norm.c,v 1.226 2022/11/06 18:05:05 dlg Exp $ */
+/*	$OpenBSD: pf_norm.c,v 1.228 2023/07/06 04:55:05 dlg Exp $ */
 
 /*
  * Copyright 2001 Niels Provos <provos@citi.umich.edu>
@@ -954,7 +954,7 @@ pf_refragment6(struct mbuf **m0, struct m_tag *mtag, struct sockaddr_in6 *dst,
     struct ifnet *ifp, struct rtentry *rt)
 {
 	struct mbuf		*m = *m0;
-	struct mbuf_list	 fml;
+	struct mbuf_list	 ml;
 	struct pf_fragment_tag	*ftag = (struct pf_fragment_tag *)(mtag + 1);
 	u_int32_t		 mtu;
 	u_int16_t		 hdrlen, extoff, maxlen;
@@ -997,14 +997,14 @@ pf_refragment6(struct mbuf **m0, struct m_tag *mtag, struct sockaddr_in6 *dst,
 	 * we drop the packet.
 	 */
 	mtu = hdrlen + sizeof(struct ip6_frag) + maxlen;
-	error = ip6_fragment(m, &fml, hdrlen, proto, mtu);
+	error = ip6_fragment(m, &ml, hdrlen, proto, mtu);
 	*m0 = NULL;	/* ip6_fragment() has consumed original packet. */
 	if (error) {
 		DPFPRINTF(LOG_NOTICE, "refragment error %d", error);
 		return (PF_DROP);
 	}
 
-	while ((m = ml_dequeue(&fml)) != NULL) {
+	while ((m = ml_dequeue(&ml)) != NULL) {
 		m->m_pkthdr.pf.flags |= PF_TAG_REFRAGMENTED;
 		if (ifp == NULL) {
 			ip6_forward(m, NULL, 0);
@@ -1098,10 +1098,22 @@ no_fragment:
 }
 #endif /* INET6 */
 
+struct pf_state_scrub *
+pf_state_scrub_get(void)
+{
+	return (pool_get(&pf_state_scrub_pl, PR_NOWAIT | PR_ZERO));
+}
+
+void
+pf_state_scrub_put(struct pf_state_scrub *scrub)
+{
+	pool_put(&pf_state_scrub_pl, scrub);
+}
+
 int
 pf_normalize_tcp_alloc(struct pf_state_peer *src)
 {
-	src->scrub = pool_get(&pf_state_scrub_pl, PR_NOWAIT | PR_ZERO);
+	src->scrub = pf_state_scrub_get();
 	if (src->scrub == NULL)
 		return (ENOMEM);
 

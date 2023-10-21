@@ -1,4 +1,4 @@
-/*	$OpenBSD: frontend.c,v 1.77 2023/02/08 08:01:25 tb Exp $	*/
+/*	$OpenBSD: frontend.c,v 1.79 2023/09/05 15:44:39 florian Exp $	*/
 
 /*
  * Copyright (c) 2018 Florian Obser <florian@openbsd.org>
@@ -773,7 +773,7 @@ handle_query(struct pending_query *pq)
 	}
 
 	rcode = parse_edns_from_query_pkt(pq->qbuf, &pq->edns, NULL, NULL,
-	    pq->region);
+	    NULL, 0, pq->region);
 	if (rcode != LDNS_RCODE_NOERROR) {
 		error_answer(pq, rcode);
 		goto send_answer;
@@ -927,7 +927,7 @@ synthesize_dns64_answer(struct pending_query *pq)
 	    rinfo->qdcount, rinfo->ttl, rinfo->prefetch_ttl,
 	    rinfo->serve_expired_ttl, rinfo->an_numrrsets,
 	    rinfo->ns_numrrsets, rinfo->ar_numrrsets, rinfo->rrset_count,
-	    rinfo->security);
+	    rinfo->security, rinfo->reason_bogus);
 
 	if (!synth_rinfo)
 		goto srvfail;
@@ -1059,7 +1059,7 @@ resend_dns64_query(struct pending_query *opq)
 	}
 
 	rcode = parse_edns_from_query_pkt(pq->qbuf, &pq->edns, NULL, NULL,
-	    pq->region);
+	    NULL, 0, pq->region);
 	if (rcode != LDNS_RCODE_NOERROR) {
 		error_answer(pq, rcode);
 		goto send_answer;
@@ -1747,6 +1747,7 @@ tcp_response(int fd, short events, void *arg)
 		if (errno == EAGAIN || errno == EINTR)
 			return;
 		free_pending_query(pq);
+		return;
 	}
 	sldns_buffer_skip(pq->abuf, n);
 	if (sldns_buffer_remaining(pq->abuf) == 0)

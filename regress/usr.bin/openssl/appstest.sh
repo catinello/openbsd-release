@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# $OpenBSD: appstest.sh,v 1.55 2022/07/14 08:33:31 tb Exp $
+# $OpenBSD: appstest.sh,v 1.58 2023/07/24 05:54:12 tb Exp $
 #
 # Copyright (c) 2016 Kinichiro Inoguchi <inoguchi@openbsd.org>
 #
@@ -117,8 +117,6 @@ __EOF__
 
 	start_message "errstr"
 	$openssl_bin errstr 2606A074
-	check_exit_status $?
-	$openssl_bin errstr -stats 2606A074 > $user1_dir/errstr-stats.out
 	check_exit_status $?
 
 	#---------#---------#---------#---------#---------#---------#---------
@@ -963,12 +961,6 @@ __EOF__
 	$openssl_bin x509 -in $spkaccert -inform DER -out $spkacpem -outform PEM
 	check_exit_status $?
 
-	# server-admin cert verify
-
-	start_message "nseq"
-	$openssl_bin nseq -in $spkacpem -toseq -out $spkacpem.nseq
-	check_exit_status $?
-
 	#---------#---------#---------#---------#---------#---------#---------
 
 	# --- user1 operations (generate user1 key and csr) ---
@@ -1766,10 +1758,6 @@ function test_server_client {
 	sleep 1
 
 	# test by protocol version
-	if [ "$other_openssl_version" = "OpenSSL 1." ] ; then
-	test_sc_by_protocol_version $sc tls1   'Protocol  : TLSv1$'    $c_id
-	test_sc_by_protocol_version $sc tls1_1 'Protocol  : TLSv1\.1$' $c_id
-	fi
 	test_sc_by_protocol_version $sc tls1_2 'Protocol  : TLSv1\.2$' $c_id
 	test_sc_by_protocol_version $sc tls1_3 'Protocol  : TLSv1\.3$' $c_id
 

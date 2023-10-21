@@ -1,4 +1,4 @@
-/* $OpenBSD: options-table.c,v 1.165 2022/09/09 11:02:23 nicm Exp $ */
+/* $OpenBSD: options-table.c,v 1.168 2023/09/01 13:48:54 nicm Exp $ */
 
 /*
  * Copyright (c) 2011 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -86,7 +86,7 @@ static const char *options_table_remain_on_exit_list[] = {
 	"off", "on", "failed", NULL
 };
 static const char *options_table_detach_on_destroy_list[] = {
-	"off", "on", "no-detached", NULL
+	"off", "on", "no-detached", "previous", "next", NULL
 };
 static const char *options_table_extended_keys_list[] = {
 	"off", "on", "always", NULL
@@ -325,6 +325,42 @@ const struct options_table_entry options_table[] = {
 	  .default_str = "",
 	  .text = "Location of the command prompt history file. "
 		  "Empty does not write a history file."
+	},
+
+	{ .name = "menu-style",
+	  .type = OPTIONS_TABLE_STRING,
+	  .scope = OPTIONS_TABLE_WINDOW,
+	  .flags = OPTIONS_TABLE_IS_STYLE,
+	  .default_str = "default",
+	  .separator = ",",
+	  .text = "Default style of menu."
+	},
+
+	{ .name = "menu-selected-style",
+	  .type = OPTIONS_TABLE_STRING,
+	  .scope = OPTIONS_TABLE_WINDOW,
+	  .flags = OPTIONS_TABLE_IS_STYLE,
+	  .default_str = "bg=yellow,fg=black",
+	  .separator = ",",
+	  .text = "Default style of selected menu item."
+	},
+
+	{ .name = "menu-border-style",
+	  .type = OPTIONS_TABLE_STRING,
+	  .scope = OPTIONS_TABLE_WINDOW,
+	  .default_str = "default",
+	  .flags = OPTIONS_TABLE_IS_STYLE,
+	  .separator = ",",
+	  .text = "Default style of menu borders."
+	},
+
+	{ .name = "menu-border-lines",
+	  .type = OPTIONS_TABLE_CHOICE,
+	  .scope = OPTIONS_TABLE_WINDOW,
+	  .choices = options_table_popup_border_lines_list,
+	  .default_num = BOX_LINES_SINGLE,
+	  .text = "Type of characters used to draw menu border lines. Some of "
+	          "these are only supported on terminals with UTF-8 support."
 	},
 
 	{ .name = "message-limit",
@@ -935,8 +971,8 @@ const struct options_table_entry options_table[] = {
 	{ .name = "mode-style",
 	  .type = OPTIONS_TABLE_STRING,
 	  .scope = OPTIONS_TABLE_WINDOW,
-	  .default_str = "bg=yellow,fg=black",
 	  .flags = OPTIONS_TABLE_IS_STYLE,
+	  .default_str = "bg=yellow,fg=black",
 	  .separator = ",",
 	  .text = "Style of indicators and highlighting in modes."
 	},

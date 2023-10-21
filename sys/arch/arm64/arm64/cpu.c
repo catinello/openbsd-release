@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.86 2023/02/20 00:01:16 patrick Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.98 2023/08/10 19:29:32 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2016 Dale Rahn <drahn@dalerahn.com>
@@ -37,7 +37,6 @@
 #include <dev/ofw/fdt.h>
 
 #include <machine/cpufunc.h>
-#include <machine/fdt.h>
 
 #include "psci.h"
 #if NPSCI > 0
@@ -80,6 +79,9 @@
 #define CPU_PART_CORTEX_A715	0xd4d
 #define CPU_PART_CORTEX_X3	0xd4e
 #define CPU_PART_NEOVERSE_V2	0xd4f
+#define CPU_PART_CORTEX_A520	0xd80
+#define CPU_PART_CORTEX_A720	0xd81
+#define CPU_PART_CORTEX_X4	0xd82
 
 /* Cavium */
 #define CPU_PART_THUNDERX_T88	0x0a1
@@ -140,12 +142,15 @@ struct cpu_cores cpu_cores_arm[] = {
 	{ CPU_PART_CORTEX_A78AE, "Cortex-A78AE" },
 	{ CPU_PART_CORTEX_A78C, "Cortex-A78C" },
 	{ CPU_PART_CORTEX_A510, "Cortex-A510" },
+	{ CPU_PART_CORTEX_A520, "Cortex-A520" },
 	{ CPU_PART_CORTEX_A710, "Cortex-A710" },
 	{ CPU_PART_CORTEX_A715, "Cortex-A715" },
+	{ CPU_PART_CORTEX_A720, "Cortex-A720" },
 	{ CPU_PART_CORTEX_X1, "Cortex-X1" },
 	{ CPU_PART_CORTEX_X1C, "Cortex-X1C" },
 	{ CPU_PART_CORTEX_X2, "Cortex-X2" },
 	{ CPU_PART_CORTEX_X3, "Cortex-X3" },
+	{ CPU_PART_CORTEX_X4, "Cortex-X4" },
 	{ CPU_PART_NEOVERSE_E1, "Neoverse E1" },
 	{ CPU_PART_NEOVERSE_N1, "Neoverse N1" },
 	{ CPU_PART_NEOVERSE_N2, "Neoverse N2" },
@@ -478,7 +483,16 @@ cpu_identify(struct cpu_info *ci)
 		printf("\n%s: mismatched ID_AA64ISAR2_EL1",
 		    ci->ci_dev->dv_xname);
 	}
-	if (READ_SPECIALREG(id_aa64pfr0_el1) != cpu_id_aa64pfr0) {
+	id = READ_SPECIALREG(id_aa64pfr0_el1);
+	/* Allow CSV2/CVS3 to be different. */
+	id &= ~ID_AA64PFR0_CSV2_MASK;
+	id &= ~ID_AA64PFR0_CSV3_MASK;
+	/* Ignore 32-bit support in all exception levels. */
+	id &= ~ID_AA64PFR0_EL0_MASK;
+	id &= ~ID_AA64PFR0_EL1_MASK;
+	id &= ~ID_AA64PFR0_EL2_MASK;
+	id &= ~ID_AA64PFR0_EL3_MASK;
+	if (id != cpu_id_aa64pfr0) {
 		printf("\n%s: mismatched ID_AA64PFR0_EL1",
 		    ci->ci_dev->dv_xname);
 	}
@@ -667,8 +681,7 @@ cpu_identify(struct cpu_info *ci)
 	/*
 	 * ID_AA64MMFR1
 	 *
-	 * We omit printing virtualization related fields like XNX, VH
-	 * and VMIDBits as they are not really relevant for us.
+	 * We omit printing most virtualization related fields for now.
 	 */
 	id = READ_SPECIALREG(id_aa64mmfr1_el1);
 
@@ -693,6 +706,11 @@ cpu_identify(struct cpu_info *ci)
 
 	if (ID_AA64MMFR1_HPDS(id) >= ID_AA64MMFR1_HPDS_IMPL) {
 		printf("%sHPDS", sep);
+		sep = ",";
+	}
+
+	if (ID_AA64MMFR1_VH(id) >= ID_AA64MMFR1_VH_IMPL) {
+		printf("%sVH", sep);
 		sep = ",";
 	}
 
@@ -731,6 +749,23 @@ cpu_identify(struct cpu_info *ci)
 		printf("%sDIT", sep);
 		sep = ",";
 	}
+
+	/*
+	 * ID_AA64PFR0
+	 */
+	id = READ_SPECIALREG(id_aa64pfr1_el1);
+
+	if (ID_AA64PFR1_BT(id) >= ID_AA64PFR1_BT_IMPL) {
+		printf("%sBT", sep);
+		sep = ",";
+	}
+
+	if (ID_AA64PFR1_SBSS(id) >= ID_AA64PFR1_SBSS_PSTATE) {
+		printf("%sSBSS", sep);
+		sep = ",";
+	}
+	if (ID_AA64PFR1_SBSS(id) >= ID_AA64PFR1_SBSS_PSTATE_MSR)
+		printf("+MSR");
 
 #ifdef CPU_DEBUG
 	id = READ_SPECIALREG(id_aa64afr0_el1);
@@ -840,6 +875,7 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 			    "cpu-release-addr", 0);
 		}
 
+		clockqueue_init(&ci->ci_queue);
 		sched_init_cpu(ci);
 		if (cpu_start_secondary(ci, spinup_method, spinup_data)) {
 			atomic_setbits_int(&ci->ci_flags, CPUF_IDENTIFY);
@@ -863,6 +899,35 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 		cpu_id_aa64isar2 = READ_SPECIALREG(id_aa64isar2_el1);
 		cpu_id_aa64pfr0 = READ_SPECIALREG(id_aa64pfr0_el1);
 		cpu_id_aa64pfr1 = READ_SPECIALREG(id_aa64pfr1_el1);
+
+		/*
+		 * The CSV2/CSV3 "features" are handled on a
+		 * per-processor basis.  So it is fine if these fields
+		 * differ between CPU cores.  Mask off these fields to
+		 * prevent exporting these to userland.
+		 */
+		cpu_id_aa64pfr0 &= ~ID_AA64PFR0_CSV2_MASK;
+		cpu_id_aa64pfr0 &= ~ID_AA64PFR0_CSV3_MASK;
+
+		/*
+		 * We only support 64-bit mode, so we don't care about
+		 * differences in support for 32-bit mode between
+		 * cores.  Mask off these fields as well.
+		 */
+		cpu_id_aa64pfr0 &= ~ID_AA64PFR0_EL0_MASK;
+		cpu_id_aa64pfr0 &= ~ID_AA64PFR0_EL1_MASK;
+		cpu_id_aa64pfr0 &= ~ID_AA64PFR0_EL2_MASK;
+		cpu_id_aa64pfr0 &= ~ID_AA64PFR0_EL3_MASK;
+
+		/*
+		 * Lenovo X13s ships with broken EL2 firmware that
+		 * hangs the machine if we enable PAuth.
+		 */
+		if (hw_vendor && strcmp(hw_vendor, "LENOVO") == 0 &&
+		    hw_prod && strncmp(hw_prod, "21BX", 4) == 0) {
+			cpu_id_aa64isar1 &= ~ID_AA64ISAR1_APA_MASK;
+			cpu_id_aa64isar1 &= ~ID_AA64ISAR1_GPA_MASK;
+		}
 
 		cpu_identify(ci);
 
@@ -914,6 +979,15 @@ cpu_init(void)
 	if (ID_AA64PFR0_DIT(id_aa64pfr0) >= ID_AA64PFR0_DIT_IMPL)
 		__asm volatile (".arch armv8.4-a; msr dit, #1");
 
+	/* Enable PAuth. */
+	if (ID_AA64ISAR1_APA(cpu_id_aa64isar1) >= ID_AA64ISAR1_APA_BASE ||
+	    ID_AA64ISAR1_API(cpu_id_aa64isar1) >= ID_AA64ISAR1_API_BASE) {
+		sctlr = READ_SPECIALREG(sctlr_el1);
+		sctlr |= SCTLR_EnIA | SCTLR_EnDA;
+		sctlr |= SCTLR_EnIB | SCTLR_EnDB;
+		WRITE_SPECIALREG(sctlr_el1, sctlr);
+	}
+
 	/* Initialize debug registers. */
 	WRITE_SPECIALREG(mdscr_el1, DBG_MDSCR_TDCC);
 	WRITE_SPECIALREG(oslar_el1, 0);
@@ -944,6 +1018,8 @@ cpu_clockspeed(int *freq)
 void cpu_boot_secondary(struct cpu_info *ci);
 void cpu_hatch_secondary(void);
 void cpu_hatch_secondary_spin(void);
+
+void cpu_suspend_cycle(void);
 
 void
 cpu_boot_secondary_processors(void)
@@ -1159,7 +1235,7 @@ cpu_halt(void)
 				ci->ci_psci_suspend_param = 0;
 		} else
 #endif
-			__asm volatile("wfi");
+			cpu_suspend_cycle();
 		count++;
 	}
 
@@ -1171,8 +1247,6 @@ cpu_halt(void)
 	/* Unmask clock interrupts. */
 	WRITE_SPECIALREG(cntv_ctl_el0,
 	    READ_SPECIALREG(cntv_ctl_el0) & ~CNTV_CTL_IMASK);
-
-	printf("%s: %d wakeup events\n", ci->ci_dev->dv_xname, count);
 }
 
 void
@@ -1201,8 +1275,15 @@ cpu_unidle(struct cpu_info *ci)
 
 void cpu_hatch_primary(void);
 
+void (*cpu_suspend_cycle_fcn)(void) = cpu_wfi;
 label_t cpu_suspend_jmpbuf;
 int cpu_suspended;
+
+void
+cpu_suspend_cycle(void)
+{
+	cpu_suspend_cycle_fcn();
+}
 
 void
 cpu_init_primary(void)
@@ -1277,7 +1358,7 @@ cpu_suspend_primary(void)
 				ci->ci_psci_suspend_param = 0;
 		} else
 #endif
-			__asm volatile("wfi");
+			cpu_suspend_cycle();
 		count++;
 	}
 
@@ -1287,8 +1368,6 @@ resume:
 	/* Unmask clock interrupts. */
 	WRITE_SPECIALREG(cntv_ctl_el0,
 	    READ_SPECIALREG(cntv_ctl_el0) & ~CNTV_CTL_IMASK);
-
-	printf("%s: %d wakeup events\n", ci->ci_dev->dv_xname, count);
 
 	return 0;
 }
@@ -1646,7 +1725,7 @@ cpu_psci_init(struct cpu_info *ci)
 	int idx, len, node;
 
 	/*
-	 * Hunt for the deppest idle state for this CPU.  This is
+	 * Hunt for the deepest idle state for this CPU.  This is
 	 * fairly complicated as it requires traversing quite a few
 	 * nodes in the device tree.  The first step is to look up the
 	 * "psci" power domain for this CPU.

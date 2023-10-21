@@ -1,4 +1,4 @@
-/*      $OpenBSD: ip_divert.c,v 1.89 2022/10/17 14:49:02 mvs Exp $ */
+/*      $OpenBSD: ip_divert.c,v 1.92 2023/09/16 09:33:27 mpi Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -157,8 +157,7 @@ divert_output(struct inpcb *inp, struct mbuf *m, struct mbuf *nam,
 		 * since the userspace application may have modified the packet
 		 * prior to reinjection.
 		 */
-		ip->ip_sum = 0;
-		ip->ip_sum = in_cksum(m, off);
+		in_hdr_cksum_out(m, NULL);
 		in_proto_cksum_out(m, NULL);
 
 		ifp = if_get(m->m_pkthdr.ph_ifidx);
@@ -232,6 +231,13 @@ divert_packet(struct mbuf *m, int dir, u_int16_t divert_port)
 			break;
 		}
 		if_put(ifp);
+	} else {
+		/*
+		 * Calculate IP and protocol checksums for outbound packet 
+		 * diverted to userland.  pf rule diverts before cksum offload.
+		 */
+		in_hdr_cksum_out(m, NULL);
+		in_proto_cksum_out(m, NULL);
 	}
 
 	mtx_enter(&inp->inp_mtx);
@@ -344,7 +350,7 @@ divert_sysctl_divstat(void *oldp, size_t *oldlenp, void *newp)
 
 	CTASSERT(sizeof(divstat) == (nitems(counters) * sizeof(u_long)));
 	memset(&divstat, 0, sizeof divstat);
-	counters_read(divcounters, counters, nitems(counters));
+	counters_read(divcounters, counters, nitems(counters), NULL);
 
 	for (i = 0; i < nitems(counters); i++)
 		words[i] = (u_long)counters[i];

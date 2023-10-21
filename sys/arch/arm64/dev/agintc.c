@@ -1,4 +1,4 @@
-/* $OpenBSD: agintc.c,v 1.47 2023/01/27 23:11:59 kettenis Exp $ */
+/* $OpenBSD: agintc.c,v 1.54 2023/09/22 01:10:43 jsg Exp $ */
 /*
  * Copyright (c) 2007, 2009, 2011, 2017 Dale Rahn <drahn@dalerahn.com>
  * Copyright (c) 2018 Mark Kettenis <kettenis@openbsd.org>
@@ -35,7 +35,7 @@
 #include <dev/ofw/fdt.h>
 #include <dev/ofw/openfirm.h>
 
-#include <arm64/dev/simplebusvar.h>
+#include <machine/simplebusvar.h>
 
 #define ICC_PMR		s3_0_c4_c6_0
 #define ICC_IAR0	s3_0_c12_c8_0
@@ -148,10 +148,18 @@ struct agintc_mbi_range {
 	void			**mr_mbi;
 };
 
+struct agintc_lpi_info {
+	struct agintc_msi_softc	*li_msic;
+	struct cpu_info		*li_ci;
+	uint32_t		 li_deviceid;
+	uint32_t		 li_eventid;
+	struct intrhand		*li_ih;
+};
+
 struct agintc_softc {
 	struct simplebus_softc	 sc_sbus;
 	struct intrq		*sc_handler;
-	struct intrhand		**sc_lpi_handler;
+	struct agintc_lpi_info	**sc_lpi;
 	bus_space_tag_t		 sc_iot;
 	bus_space_handle_t	 sc_d_ioh;
 	bus_space_handle_t	*sc_r_ioh;
@@ -257,6 +265,9 @@ int		agintc_ipi_nop(void *v);
 int		agintc_ipi_combined(void *);
 void		agintc_send_ipi(struct cpu_info *, int);
 
+void		agintc_msi_discard(struct agintc_lpi_info *);
+void		agintc_msi_inv(struct agintc_lpi_info *);
+
 const struct cfattach	agintc_ca = {
 	sizeof (struct agintc_softc), agintc_match, agintc_attach
 };
@@ -337,7 +348,7 @@ agintc_attach(struct device *parent, struct device *self, void *aux)
 		}
 		sc->sc_pend = agintc_dmamem_alloc(sc->sc_dmat,
 		    GICR_PEND_SIZE, GICR_PEND_SIZE);
-		if (sc->sc_prop == NULL) {
+		if (sc->sc_pend == NULL) {
 			printf(": can't alloc LPI pending table\n");
 			goto unmap;
 		}
@@ -534,8 +545,8 @@ agintc_attach(struct device *parent, struct device *self, void *aux)
 	    sizeof(*sc->sc_handler), M_DEVBUF, M_ZERO | M_WAITOK);
 	for (i = 0; i < nintr; i++)
 		TAILQ_INIT(&sc->sc_handler[i].iq_list);
-	sc->sc_lpi_handler = mallocarray(sc->sc_nlpi,
-	    sizeof(*sc->sc_lpi_handler), M_DEVBUF, M_ZERO | M_WAITOK);
+	sc->sc_lpi = mallocarray(sc->sc_nlpi,
+	    sizeof(*sc->sc_lpi), M_DEVBUF, M_ZERO | M_WAITOK);
 
 	/* set priority to IPL_HIGH until configure lowers to desired IPL */
 	agintc_setipl(IPL_HIGH);
@@ -832,8 +843,11 @@ agintc_enable_wakeup(void)
 	}
 
 	for (irq = 0; irq < sc->sc_nlpi; irq++) {
-		ih = sc->sc_lpi_handler[irq];
-		if (ih == NULL || (ih->ih_flags & IPL_WAKEUP))
+		if (sc->sc_lpi[irq] == NULL)
+			continue;
+		ih = sc->sc_lpi[irq]->li_ih;
+		KASSERT(ih != NULL);
+		if (ih->ih_flags & IPL_WAKEUP)
 			continue;
 		prop = AGINTC_DMA_KVA(sc->sc_prop);
 		prop[irq] &= ~GICR_PROP_ENABLE;
@@ -841,6 +855,8 @@ agintc_enable_wakeup(void)
 		cpu_dcache_wb_range((vaddr_t)&prop[irq],
 		    sizeof(*prop));
 		__asm volatile("dsb sy");
+		/* Invalidate cache */
+		agintc_msi_inv(sc->sc_lpi[irq]);
 	}
 }
 
@@ -869,8 +885,11 @@ agintc_disable_wakeup(void)
 	}
 
 	for (irq = 0; irq < sc->sc_nlpi; irq++) {
-		ih = sc->sc_lpi_handler[irq];
-		if (ih == NULL || (ih->ih_flags & IPL_WAKEUP))
+		if (sc->sc_lpi[irq] == NULL)
+			continue;
+		ih = sc->sc_lpi[irq]->li_ih;
+		KASSERT(ih != NULL);
+		if (ih->ih_flags & IPL_WAKEUP)
 			continue;
 		prop = AGINTC_DMA_KVA(sc->sc_prop);
 		prop[irq] |= GICR_PROP_ENABLE;
@@ -878,6 +897,8 @@ agintc_disable_wakeup(void)
 		cpu_dcache_wb_range((vaddr_t)&prop[irq],
 		    sizeof(*prop));
 		__asm volatile("dsb sy");
+		/* Invalidate cache */
+		agintc_msi_inv(sc->sc_lpi[irq]);
 	}
 }
 
@@ -1136,10 +1157,11 @@ agintc_irq_handler(void *frame)
 	}
 
 	if (irq >= LPI_BASE) {
-		ih = sc->sc_lpi_handler[irq - LPI_BASE];
-		if (ih == NULL)
+		if (sc->sc_lpi[irq - LPI_BASE] == NULL)
 			return;
-		
+		ih = sc->sc_lpi[irq - LPI_BASE]->li_ih;
+		KASSERT(ih != NULL);
+
 		s = agintc_splraise(ih->ih_ipl);
 		intr_enable();
 		agintc_run_handler(ih, frame, s);
@@ -1226,8 +1248,7 @@ agintc_intr_establish(int irqno, int type, int level, struct cpu_info *ci,
 		}
 		TAILQ_INSERT_TAIL(&sc->sc_handler[irqno].iq_list, ih, ih_list);
 		sc->sc_handler[irqno].iq_ci = ci;
-	} else
-		sc->sc_lpi_handler[irqno - LPI_BASE] = ih;
+	}
 
 	if (name != NULL)
 		evcount_attach(&ih->ih_count, name, &ih->ih_irq);
@@ -1284,7 +1305,6 @@ agintc_intr_disestablish(void *cookie)
 	} else {
 		uint8_t *prop = AGINTC_DMA_KVA(sc->sc_prop);
 
-		sc->sc_lpi_handler[irqno - LPI_BASE] = NULL;
 		prop[irqno - LPI_BASE] = 0;
 
 		/* Make globally visible. */
@@ -1509,6 +1529,9 @@ struct gits_cmd {
 #define MAPD	0x08
 #define MAPC	0x09
 #define MAPTI	0x0a
+#define INV	0x0c
+#define INVALL	0x0d
+#define DISCARD 0x0f
 
 #define GITS_CMDQ_SIZE		(64 * 1024)
 #define GITS_CMDQ_NENTRIES	(GITS_CMDQ_SIZE / sizeof(struct gits_cmd))
@@ -1536,9 +1559,6 @@ struct agintc_msi_softc {
 
 	bus_addr_t			sc_msi_addr;
 	int				sc_msi_delta;
-
-	int				sc_nlpi;
-	void				**sc_lpi;
 
 	struct agintc_dmamem		*sc_cmdq;
 	uint16_t			sc_cmdidx;
@@ -1618,10 +1638,6 @@ agintc_msi_attach(struct device *parent, struct device *self, void *aux)
 		sc->sc_cidbits = GITS_TYPER_CIDBITS(typer) + 1;
 	else
 		sc->sc_cidbits = 16;
-
-	sc->sc_nlpi = agintc_sc->sc_nlpi;
-	sc->sc_lpi = mallocarray(sc->sc_nlpi, sizeof(void *), M_DEVBUF,
-	    M_WAITOK|M_ZERO);
 
 	/* Set up command queue. */
 	sc->sc_cmdq = agintc_dmamem_alloc(sc->sc_dmat,
@@ -1781,6 +1797,8 @@ agintc_msi_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_ic.ic_establish_msi = agintc_intr_establish_msi;
 	sc->sc_ic.ic_disestablish = agintc_intr_disestablish_msi;
 	sc->sc_ic.ic_barrier = agintc_intr_barrier_msi;
+	sc->sc_ic.ic_gic_its_id = OF_getpropint(faa->fa_node,
+	    "openbsd,gic-its-id", 0);
 	arm_intr_register_fdt(&sc->sc_ic);
 	return;
 
@@ -1789,9 +1807,6 @@ unmap:
 		agintc_dmamem_free(sc->sc_dmat, sc->sc_dtt);
 	if (sc->sc_cmdq)
 		agintc_dmamem_free(sc->sc_dmat, sc->sc_cmdq);
-
-	if (sc->sc_lpi)
-		free(sc->sc_lpi, M_DEVBUF, sc->sc_nlpi * sizeof(void *));
 
 	bus_space_unmap(sc->sc_iot, sc->sc_ioh, faa->fa_reg[0].size);
 }
@@ -1865,6 +1880,56 @@ agintc_msi_find_device(struct agintc_msi_softc *sc, uint32_t deviceid)
 	return agintc_msi_create_device(sc, deviceid);
 }
 
+void
+agintc_msi_discard(struct agintc_lpi_info *li)
+{
+	struct agintc_msi_softc *sc;
+	struct cpu_info *ci;
+	struct gits_cmd cmd;
+	int hwcpu;
+
+	sc = li->li_msic;
+	ci = li->li_ci;
+	hwcpu = agintc_sc->sc_cpuremap[ci->ci_cpuid];
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.cmd = DISCARD;
+	cmd.deviceid = li->li_deviceid;
+	cmd.eventid = li->li_eventid;
+	agintc_msi_send_cmd(sc, &cmd);
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.cmd = SYNC;
+	cmd.dw2 = agintc_sc->sc_processor[hwcpu] << 16;
+	agintc_msi_send_cmd(sc, &cmd);
+	agintc_msi_wait_cmd(sc);
+}
+
+void
+agintc_msi_inv(struct agintc_lpi_info *li)
+{
+	struct agintc_msi_softc *sc;
+	struct cpu_info *ci;
+	struct gits_cmd cmd;
+	int hwcpu;
+
+	sc = li->li_msic;
+	ci = li->li_ci;
+	hwcpu = agintc_sc->sc_cpuremap[ci->ci_cpuid];
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.cmd = INV;
+	cmd.deviceid = li->li_deviceid;
+	cmd.eventid = li->li_eventid;
+	agintc_msi_send_cmd(sc, &cmd);
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.cmd = SYNC;
+	cmd.dw2 = agintc_sc->sc_processor[hwcpu] << 16;
+	agintc_msi_send_cmd(sc, &cmd);
+	agintc_msi_wait_cmd(sc);
+}
+
 void *
 agintc_intr_establish_msi(void *self, uint64_t *addr, uint64_t *data,
     int level, struct cpu_info *ci, int (*func)(void *), void *arg, char *name)
@@ -1874,7 +1939,6 @@ agintc_intr_establish_msi(void *self, uint64_t *addr, uint64_t *data,
 	struct gits_cmd cmd;
 	uint32_t deviceid = *data;
 	uint32_t eventid;
-	void *cookie;
 	int i, hwcpu;
 
 	if (ci == NULL)
@@ -1889,14 +1953,25 @@ agintc_intr_establish_msi(void *self, uint64_t *addr, uint64_t *data,
 	if (eventid >= 32)
 		return NULL;
 
-	for (i = 0; i < sc->sc_nlpi; i++) {
-		if (sc->sc_lpi[i] != NULL)
+	for (i = 0; i < agintc_sc->sc_nlpi; i++) {
+		if (agintc_sc->sc_lpi[i] != NULL)
 			continue;
 
-		cookie = agintc_intr_establish(LPI_BASE + i,
+		agintc_sc->sc_lpi[i] = malloc(sizeof(struct agintc_lpi_info),
+		    M_DEVBUF, M_WAITOK | M_ZERO);
+		agintc_sc->sc_lpi[i]->li_msic = sc;
+		agintc_sc->sc_lpi[i]->li_ci = ci;
+		agintc_sc->sc_lpi[i]->li_deviceid = deviceid;
+		agintc_sc->sc_lpi[i]->li_eventid = eventid;
+		agintc_sc->sc_lpi[i]->li_ih =
+		    agintc_intr_establish(LPI_BASE + i,
 		    IST_EDGE_RISING, level, ci, func, arg, name);
-		if (cookie == NULL)
+		if (agintc_sc->sc_lpi[i]->li_ih == NULL) {
+			free(agintc_sc->sc_lpi[i], M_DEVBUF,
+			    sizeof(struct agintc_lpi_info));
+			agintc_sc->sc_lpi[i] = NULL;
 			return NULL;
+		}
 
 		memset(&cmd, 0, sizeof(cmd));
 		cmd.cmd = MAPTI;
@@ -1914,8 +1989,7 @@ agintc_intr_establish_msi(void *self, uint64_t *addr, uint64_t *data,
 
 		*addr = sc->sc_msi_addr + deviceid * sc->sc_msi_delta;
 		*data = eventid;
-		sc->sc_lpi[i] = cookie;
-		return &sc->sc_lpi[i];
+		return &agintc_sc->sc_lpi[i];
 	}
 
 	return NULL;
@@ -1924,14 +1998,22 @@ agintc_intr_establish_msi(void *self, uint64_t *addr, uint64_t *data,
 void
 agintc_intr_disestablish_msi(void *cookie)
 {
-	agintc_intr_disestablish(*(void **)cookie);
+	struct agintc_lpi_info *li = *(void **)cookie;
+
+	agintc_intr_disestablish(li->li_ih);
+	agintc_msi_discard(li);
+	agintc_msi_inv(li);
+
+	free(li, M_DEVBUF, sizeof(*li));
 	*(void **)cookie = NULL;
 }
 
 void
 agintc_intr_barrier_msi(void *cookie)
 {
-	agintc_intr_barrier(*(void **)cookie);
+	struct agintc_lpi_info *li = *(void **)cookie;
+
+	agintc_intr_barrier(li->li_ih);
 }
 
 struct agintc_dmamem *

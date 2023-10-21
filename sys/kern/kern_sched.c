@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_sched.c,v 1.76 2022/12/05 23:18:37 deraadt Exp $	*/
+/*	$OpenBSD: kern_sched.c,v 1.92 2023/09/19 11:31:51 claudio Exp $	*/
 /*
  * Copyright (c) 2007, 2008 Artur Grabowski <art@openbsd.org>
  *
@@ -21,7 +21,10 @@
 #include <sys/proc.h>
 #include <sys/kthread.h>
 #include <sys/systm.h>
+#include <sys/clockintr.h>
+#include <sys/resourcevar.h>
 #include <sys/task.h>
+#include <sys/time.h>
 #include <sys/smr.h>
 #include <sys/tracepoint.h>
 
@@ -84,6 +87,19 @@ sched_init_cpu(struct cpu_info *ci)
 		TAILQ_INIT(&spc->spc_qs[i]);
 
 	spc->spc_idleproc = NULL;
+
+	spc->spc_itimer = clockintr_establish(ci, itimer_update, NULL);
+	if (spc->spc_itimer == NULL)
+		panic("%s: clockintr_establish itimer_update", __func__);
+	spc->spc_profclock = clockintr_establish(ci, profclock, NULL);
+	if (spc->spc_profclock == NULL)
+		panic("%s: clockintr_establish profclock", __func__);
+	spc->spc_roundrobin = clockintr_establish(ci, roundrobin, NULL);
+	if (spc->spc_roundrobin == NULL)
+		panic("%s: clockintr_establish roundrobin", __func__);
+	spc->spc_statclock = clockintr_establish(ci, statclock, NULL);
+	if (spc->spc_statclock == NULL)
+		panic("%s: clockintr_establish statclock", __func__);
 
 	kthread_create_deferred(sched_kthreads_create, ci);
 
@@ -206,13 +222,17 @@ void
 sched_exit(struct proc *p)
 {
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
-	struct timespec ts;
 	struct proc *idle;
 	int s;
 
-	nanouptime(&ts);
-	timespecsub(&ts, &spc->spc_runtime, &ts);
-	timespecadd(&p->p_rtime, &ts, &p->p_rtime);
+	if (ISSET(spc->spc_schedflags, SPCF_ITIMER)) {
+		atomic_clearbits_int(&spc->spc_schedflags, SPCF_ITIMER);
+		clockintr_cancel(spc->spc_itimer);
+	}
+	if (ISSET(spc->spc_schedflags, SPCF_PROFCLOCK)) {
+		atomic_clearbits_int(&spc->spc_schedflags, SPCF_PROFCLOCK);
+		clockintr_cancel(spc->spc_profclock);
+	}
 
 	LIST_INSERT_HEAD(&spc->spc_deadproc, p, p_hash);
 
@@ -248,6 +268,7 @@ setrunqueue(struct cpu_info *ci, struct proc *p, uint8_t prio)
 
 	KASSERT(ci != NULL);
 	SCHED_ASSERT_LOCKED();
+	KASSERT(p->p_wchan == NULL);
 
 	p->p_cpu = ci;
 	p->p_stat = SRUN;
@@ -358,7 +379,6 @@ sched_choosecpu_fork(struct proc *parent, int flags)
 {
 #ifdef MULTIPROCESSOR
 	struct cpu_info *choice = NULL;
-	fixpt_t load, best_load = ~0;
 	int run, best_run = INT_MAX;
 	struct cpu_info *ci;
 	struct cpuset set;
@@ -392,13 +412,10 @@ sched_choosecpu_fork(struct proc *parent, int flags)
 	while ((ci = cpuset_first(&set)) != NULL) {
 		cpuset_del(&set, ci);
 
-		load = ci->ci_schedstate.spc_ldavg;
 		run = ci->ci_schedstate.spc_nrun;
 
-		if (choice == NULL || run < best_run ||
-		    (run == best_run &&load < best_load)) {
+		if (choice == NULL || run < best_run) {
 			choice = ci;
-			best_load = load;
 			best_run = run;
 		}
 	}
@@ -519,6 +536,9 @@ sched_steal_proc(struct cpu_info *self)
 	if (best == NULL)
 		return (NULL);
 
+	TRACEPOINT(sched, steal, best->p_tid + THREAD_PID_OFFSET,
+	    best->p_p->ps_pid, CPU_INFO_UNIT(self));
+
 	remrunqueue(best);
 	best->p_cpu = self;
 
@@ -592,11 +612,6 @@ sched_proc_to_cpu_cost(struct cpu_info *ci, struct proc *p)
 		cost += sched_cost_runnable;
 
 	/*
-	 * Higher load on the destination means we don't want to go there.
-	 */
-	cost += ((sched_cost_load * spc->spc_ldavg) >> FSHIFT);
-
-	/*
 	 * If the proc is on this cpu already, lower the cost by how much
 	 * it has been running and an estimate of its footprint.
 	 */
@@ -668,13 +683,12 @@ sched_stop_secondary_cpus(void)
 	}
 	CPU_INFO_FOREACH(cii, ci) {
 		struct schedstate_percpu *spc = &ci->ci_schedstate;
-		struct sleep_state sls;
 
 		if (CPU_IS_PRIMARY(ci) || !CPU_IS_RUNNING(ci))
 			continue;
 		while ((spc->spc_schedflags & SPCF_HALTED) == 0) {
-			sleep_setup(&sls, spc, PZERO, "schedstate", 0);
-			sleep_finish(&sls,
+			sleep_setup(spc, PZERO, "schedstate");
+			sleep_finish(0,
 			    (spc->spc_schedflags & SPCF_HALTED) == 0);
 		}
 	}

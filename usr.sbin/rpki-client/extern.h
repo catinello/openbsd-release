@@ -1,4 +1,4 @@
-/*	$OpenBSD: extern.h,v 1.175 2023/03/13 19:51:49 job Exp $ */
+/*	$OpenBSD: extern.h,v 1.192 2023/09/25 14:56:20 tb Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -217,6 +217,7 @@ struct mft {
 	time_t		 expires; /* when the signature path expires */
 	size_t		 filesz; /* number of filenames */
 	unsigned int	 repoid;
+	int		 talid;
 	int		 stale; /* if a stale manifest */
 };
 
@@ -347,11 +348,7 @@ struct gbr {
 	time_t		 notbefore; /* EE cert's Not Before */
 	time_t		 notafter; /* Not After of the GBR EE */
 	time_t		 expires; /* when the signature path expires */
-};
-
-struct aspa_provider {
-	uint32_t	 as;
-	enum afi	 afi;
+	int		 talid; /* TAL the GBR is chained up to */
 };
 
 /*
@@ -365,7 +362,7 @@ struct aspa {
 	char			*sia; /* SIA signedObject */
 	char			*ski; /* SKI */
 	uint32_t		 custasid; /* the customerASID */
-	struct aspa_provider	*providers; /* the providers */
+	uint32_t		*providers; /* the providers */
 	size_t			 providersz; /* number of providers */
 	time_t			 signtime; /* CMS signing-time attribute */
 	time_t		 	 notbefore; /* EE cert's Not Before */
@@ -380,9 +377,11 @@ struct aspa {
 struct vap {
 	RB_ENTRY(vap)		 entry;
 	uint32_t		 custasid;
-	struct aspa_provider	*providers;
+	uint32_t		*providers;
 	size_t			 providersz;
 	time_t			 expires;
+	int			 talid;
+	unsigned int		 repoid;
 };
 
 /*
@@ -397,12 +396,12 @@ RB_PROTOTYPE(vap_tree, vap, entry, vapcmp);
 struct vrp {
 	RB_ENTRY(vrp)	entry;
 	struct ip_addr	addr;
-	int		talid; /* covered by which TAL */
-	unsigned int	repoid;
 	uint32_t	asid;
 	enum afi	afi;
 	unsigned char	maxlength;
 	time_t		expires; /* transitive expiry moment */
+	int		talid; /* covered by which TAL */
+	unsigned int	repoid;
 };
 /*
  * Tree of VRP sorted by afi, addr, maxlength and asid
@@ -451,6 +450,7 @@ struct auth {
 	RB_ENTRY(auth)	 entry;
 	struct cert	*cert; /* owner information */
 	struct auth	*parent; /* pointer to parent or NULL for TA cert */
+	int		 any_inherits;
 };
 /*
  * Tree of auth sorted by ski
@@ -481,6 +481,9 @@ enum rrdp_msg {
 	RRDP_ABORT,
 };
 
+/* Maximum number of delta files per RRDP notification file. */
+#define MAX_RRDP_DELTAS		300
+
 /*
  * RRDP session state, needed to pickup at the right spot on next run.
  */
@@ -488,6 +491,7 @@ struct rrdp_session {
 	char			*last_mod;
 	char			*session_id;
 	long long		 serial;
+	char			*deltas[MAX_RRDP_DELTAS];
 };
 
 /*
@@ -507,6 +511,7 @@ struct entity {
 	TAILQ_ENTRY(entity) entries;
 	char		*path;		/* path relative to repository */
 	char		*file;		/* filename or valid repo path */
+	char		*mftaki;	/* expected AKI (taken from Manifest) */
 	unsigned char	*data;		/* optional data blob */
 	size_t		 datasz;	/* length of optional data blob */
 	unsigned int	 repoid;	/* repository identifier */
@@ -525,9 +530,7 @@ enum stype {
 	STYPE_TOTAL,
 	STYPE_UNIQUE,
 	STYPE_DEC_UNIQUE,
-	STYPE_BOTH,
-	STYPE_ONLY_IPV4,
-	STYPE_ONLY_IPV6,
+	STYPE_PROVIDERS,
 };
 
 struct repo;
@@ -538,7 +541,7 @@ RB_HEAD(filepath_tree, filepath);
 /*
  * Statistics collected during run-time.
  */
-struct repostats {
+struct repotalstats {
 	uint32_t	 certs; /* certificates */
 	uint32_t	 certs_fail; /* invalid certificate */
 	uint32_t	 mfts; /* total number of manifests */
@@ -557,10 +560,15 @@ struct repostats {
 	uint32_t	 vaps; /* total number of Validated ASPA Payloads */
 	uint32_t	 vaps_uniqs; /* total number of unique VAPs */
 	uint32_t	 vaps_pas; /* total number of providers */
-	uint32_t	 vaps_pas4; /* total number of IPv4 only providers */
-	uint32_t	 vaps_pas6; /* total number of IPv6 only providers */
 	uint32_t	 vrps; /* total number of Validated ROA Payloads */
 	uint32_t	 vrps_uniqs; /* number of unique vrps */
+};
+
+struct repostats {
+	uint32_t	 del_files;	/* number of files removed in cleanup */
+	uint32_t	 extra_files;	/* number of superfluous files */
+	uint32_t	 del_extra_files;/* number of removed extra files */
+	uint32_t	 del_dirs;	/* number of dirs removed in cleanup */
 	struct timespec	 sync_time;	/* time to sync repo */
 };
 
@@ -573,11 +581,9 @@ struct stats {
 	uint32_t	 http_fails; /* failed http repositories */
 	uint32_t	 rrdp_repos; /* synced rrdp repositories */
 	uint32_t	 rrdp_fails; /* failed rrdp repositories */
-	uint32_t	 del_files; /* number of files removed in cleanup */
-	uint32_t	 extra_files; /* number of superfluous files */
-	uint32_t	 del_dirs; /* number of dirs removed in cleanup */
 	uint32_t	 skiplistentries; /* number of skiplist entries */
 
+	struct repotalstats	repo_tal_stats;
 	struct repostats	repo_stats;
 	struct timespec		elapsed_time;
 	struct timespec		user_time;
@@ -594,7 +600,7 @@ extern int excludeaspa;
 extern const char *tals[];
 extern const char *taldescs[];
 extern unsigned int talrepocnt[];
-extern struct repostats talstats[];
+extern struct repotalstats talstats[];
 extern int talsz;
 
 /* Routines for RPKI entities. */
@@ -618,33 +624,33 @@ void		 cert_insert_brks(struct brk_tree *, struct cert *);
 enum rtype	 rtype_from_file_extension(const char *);
 void		 mft_buffer(struct ibuf *, const struct mft *);
 void		 mft_free(struct mft *);
-struct mft	*mft_parse(X509 **, const char *, const unsigned char *,
+struct mft	*mft_parse(X509 **, const char *, int, const unsigned char *,
 		    size_t);
 struct mft	*mft_read(struct ibuf *);
 int		 mft_compare(const struct mft *, const struct mft *);
 
 void		 roa_buffer(struct ibuf *, const struct roa *);
 void		 roa_free(struct roa *);
-struct roa	*roa_parse(X509 **, const char *, const unsigned char *,
+struct roa	*roa_parse(X509 **, const char *, int, const unsigned char *,
 		    size_t);
 struct roa	*roa_read(struct ibuf *);
 void		 roa_insert_vrps(struct vrp_tree *, struct roa *,
 		    struct repo *);
 
 void		 gbr_free(struct gbr *);
-struct gbr	*gbr_parse(X509 **, const char *, const unsigned char *,
+struct gbr	*gbr_parse(X509 **, const char *, int, const unsigned char *,
 		    size_t);
 
 void		 geofeed_free(struct geofeed *);
-struct geofeed	*geofeed_parse(X509 **, const char *, char *, size_t);
+struct geofeed	*geofeed_parse(X509 **, const char *, int, char *, size_t);
 
 void		 rsc_free(struct rsc *);
-struct rsc	*rsc_parse(X509 **, const char *, const unsigned char *,
+struct rsc	*rsc_parse(X509 **, const char *, int, const unsigned char *,
 		    size_t);
 
 void		 takey_free(struct takey *);
 void		 tak_free(struct tak *);
-struct tak	*tak_parse(X509 **, const char *, const unsigned char *,
+struct tak	*tak_parse(X509 **, const char *, int, const unsigned char *,
 		    size_t);
 struct tak	*tak_read(struct ibuf *);
 
@@ -652,7 +658,7 @@ void		 aspa_buffer(struct ibuf *, const struct aspa *);
 void		 aspa_free(struct aspa *);
 void		 aspa_insert_vaps(struct vap_tree *, struct aspa *,
 		    struct repo *);
-struct aspa	*aspa_parse(X509 **, const char *, const unsigned char *,
+struct aspa	*aspa_parse(X509 **, const char *, int, const unsigned char *,
 		    size_t);
 struct aspa	*aspa_read(struct ibuf *);
 
@@ -666,7 +672,7 @@ void		 crl_tree_free(struct crl_tree *);
 /* Validation of our objects. */
 
 struct auth	*valid_ski_aki(const char *, struct auth_tree *,
-		    const char *, const char *);
+		    const char *, const char *, const char *);
 int		 valid_ta(const char *, struct auth_tree *,
 		    const struct cert *);
 int		 valid_cert(const char *, struct auth *, const struct cert *);
@@ -679,7 +685,8 @@ int		 valid_origin(const char *, const char *);
 int		 valid_x509(char *, X509_STORE_CTX *, X509 *, struct auth *,
 		    struct crl *, const char **);
 int		 valid_rsc(const char *, struct cert *, struct rsc *);
-int		 valid_econtent_version(const char *, const ASN1_INTEGER *);
+int		 valid_econtent_version(const char *, const ASN1_INTEGER *,
+		    uint64_t);
 int		 valid_aspa(const char *, struct cert *, struct aspa *);
 int		 valid_geofeed(const char *, struct cert *, struct geofeed *);
 int		 valid_uuid(const char *);
@@ -701,6 +708,8 @@ int		 ip_addr_parse(const ASN1_BIT_STRING *,
 			enum afi, const char *, struct ip_addr *);
 void		 ip_addr_print(const struct ip_addr *, enum afi, char *,
 			size_t);
+void		 ip_addr_range_print(const struct ip_addr_range *, enum afi,
+			char *, size_t);
 int		 ip_addr_cmp(const struct ip_addr *, const struct ip_addr *);
 int		 ip_addr_check_overlap(const struct cert_ip *,
 			const char *, const struct cert_ip *, size_t);
@@ -714,6 +723,9 @@ int		 sbgp_addr(const char *, struct cert_ip *, size_t *,
 int		 sbgp_addr_range(const char *, struct cert_ip *, size_t *,
 		    enum afi, const IPAddressRange *);
 
+int		 sbgp_parse_ipaddrblk(const char *, const IPAddrBlocks *,
+		    struct cert_ip **, size_t *);
+
 /* Work with RFC 3779 AS numbers, ranges. */
 
 int		 as_id_parse(const ASN1_INTEGER *, uint32_t *);
@@ -726,6 +738,9 @@ int		 sbgp_as_id(const char *, struct cert_as *, size_t *,
 		    const ASN1_INTEGER *);
 int		 sbgp_as_range(const char *, struct cert_as *, size_t *,
 		    const ASRange *);
+
+int		 sbgp_parse_assysnum(const char *, const ASIdentifiers *,
+		    struct cert_as **, size_t *);
 
 /* Parser-specific */
 void		 entity_free(struct entity *);
@@ -745,9 +760,13 @@ void		 proc_http(char *, int) __attribute__((noreturn));
 void		 proc_rrdp(int) __attribute__((noreturn));
 
 /* Repository handling */
-int		 filepath_add(struct filepath_tree *, char *);
+int		 filepath_add(struct filepath_tree *, char *, time_t);
 void		 rrdp_clear(unsigned int);
-void		 rrdp_save_state(unsigned int, struct rrdp_session *);
+void		 rrdp_session_save(unsigned int, struct rrdp_session *);
+void		 rrdp_session_free(struct rrdp_session *);
+void		 rrdp_session_buffer(struct ibuf *,
+		    const struct rrdp_session *);
+struct rrdp_session	*rrdp_session_read(struct ibuf *);
 int		 rrdp_handle_file(unsigned int, enum publish_type, char *,
 		    char *, size_t, char *, size_t);
 char		*repo_basedir(const struct repo *, int);
@@ -756,6 +775,7 @@ const char	*repo_uri(const struct repo *);
 void		 repo_fetch_uris(const struct repo *, const char **,
 		    const char **);
 int		 repo_synced(const struct repo *);
+const char	*repo_proto(const struct repo *);
 int		 repo_talid(const struct repo *);
 struct repo	*ta_lookup(int, struct tal *);
 struct repo	*repo_lookup(int, const char *, const char *);
@@ -763,7 +783,9 @@ struct repo	*repo_byid(unsigned int);
 int		 repo_queued(struct repo *, struct entity *);
 void		 repo_cleanup(struct filepath_tree *, int);
 int		 repo_check_timeout(int);
-void		 repo_stat_inc(struct repo *, enum rtype, enum stype);
+void		 repo_stat_inc(struct repo *, int, enum rtype, enum stype);
+void		 repo_tal_stats_collect(void (*)(const struct repo *,
+		    const struct repotalstats *, void *), int, void *);
 void		 repo_stats_collect(void (*)(const struct repo *,
 		    const struct repostats *, void *), void *);
 void		 repo_free(void);
@@ -780,14 +802,6 @@ void		 rrdp_fetch(unsigned int, const char *, const char *,
 		    struct rrdp_session *);
 void		 rrdp_abort(unsigned int);
 void		 rrdp_http_done(unsigned int, enum http_result, const char *);
-
-/* Logging (though really used for OpenSSL errors). */
-
-void		 cryptowarnx(const char *, ...)
-			__attribute__((format(printf, 1, 2)));
-void		 cryptoerrx(const char *, ...)
-			__attribute__((format(printf, 1, 2)))
-			__attribute__((noreturn));
 
 /* Encoding functions for hex and base64. */
 
@@ -833,6 +847,7 @@ int		 x509_location(const char *, const char *, const char *,
 		    GENERAL_NAME *, char **);
 int		 x509_inherits(X509 *);
 int		 x509_any_inherits(X509 *);
+int		 x509_valid_subject(const char *, const X509 *);
 time_t		 x509_find_expires(time_t, struct auth *, struct crl_tree *);
 
 /* printers */
@@ -929,7 +944,12 @@ int	mkpathat(int, const char *);
 /* Maximum number of delegated hosting locations (repositories) for each TAL. */
 #define MAX_REPO_PER_TAL	1000
 
-/* Maximum number of delta files per RRDP notification file. */
-#define MAX_RRDP_DELTAS		300
+/*
+ * Time - Evaluation time is used as the current time if it is
+ * larger than X509_TIME_MIN, otherwise the system time is used.
+ */
+#define X509_TIME_MAX 253402300799LL
+#define X509_TIME_MIN -62167219200LL
+extern time_t  get_current_time(void);
 
 #endif /* ! EXTERN_H */

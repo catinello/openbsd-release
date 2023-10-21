@@ -1,4 +1,4 @@
-/*	$OpenBSD: viocon.c,v 1.8 2021/11/05 11:38:29 mpi Exp $	*/
+/*	$OpenBSD: viocon.c,v 1.10 2023/07/28 16:54:48 dv Exp $	*/
 
 /*
  * Copyright (c) 2013-2015 Stefan Fritsch <sf@sfritsch.de>
@@ -180,7 +180,7 @@ viocon_attach(struct device *parent, struct device *self, void *aux)
 		panic("already attached to something else");
 	vsc->sc_child = self;
 	vsc->sc_ipl = IPL_TTY;
-	vsc->sc_config_change = 0;
+	vsc->sc_config_change = NULL;
 	sc->sc_virtio = vsc;
 	sc->sc_max_ports = maxports;
 
@@ -203,6 +203,7 @@ viocon_attach(struct device *parent, struct device *self, void *aux)
 		goto err;
 	}
 	viocon_rx_fill(sc->sc_ports[0]);
+	virtio_set_status(vsc, VIRTIO_CONFIG_DEVICE_STATUS_DRIVER_OK);
 
 	return;
 err:

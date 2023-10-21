@@ -1,4 +1,4 @@
-/*	$OpenBSD: subr_prof.c,v 1.31 2021/09/03 16:45:45 jasper Exp $	*/
+/*	$OpenBSD: subr_prof.c,v 1.38 2023/09/10 03:08:05 cheloha Exp $	*/
 /*	$NetBSD: subr_prof.c,v 1.12 1996/04/22 01:38:50 christos Exp $	*/
 
 /*-
@@ -34,12 +34,17 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/atomic.h>
+#include <sys/clockintr.h>
+#include <sys/pledge.h>
 #include <sys/proc.h>
 #include <sys/resourcevar.h>
 #include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <sys/syscallargs.h>
+#include <sys/user.h>
 
+uint32_t profclock_period;
 
 #if defined(GPROF) || defined(DDBPROF)
 #include <sys/malloc.h>
@@ -55,8 +60,11 @@
  * until we're sure they are in a sane state.
  */
 int gmoninit = 0;
+u_int gmon_cpu_count;		/* [K] number of CPUs with profiling enabled */
 
 extern char etext[];
+
+void gmonclock(struct clockintr *, void *, void *);
 
 void
 prof_init(void)
@@ -93,6 +101,13 @@ prof_init(void)
 
 	/* Allocate and initialize one profiling buffer per CPU. */
 	CPU_INFO_FOREACH(cii, ci) {
+		ci->ci_gmonclock = clockintr_establish(ci, gmonclock, NULL);
+		if (ci->ci_gmonclock == NULL) {
+			printf("%s: clockintr_establish gmonclock\n", __func__);
+			return;
+		}
+		clockintr_stagger(ci->ci_gmonclock, profclock_period,
+		    CPU_INFO_UNIT(ci), MAXCPUS);
 		cp = km_alloc(round_page(size), &kv_any, &kp_zero, &kd_nowait);
 		if (cp == NULL) {
 			printf("No memory for profiling.\n");
@@ -122,9 +137,12 @@ prof_init(void)
 }
 
 int
-prof_state_toggle(struct gmonparam *gp, int oldstate)
+prof_state_toggle(struct cpu_info *ci, int oldstate)
 {
+	struct gmonparam *gp = ci->ci_gmon;
 	int error = 0;
+
+	KERNEL_ASSERT_LOCKED();
 
 	if (gp->state == oldstate)
 		return (0);
@@ -134,19 +152,24 @@ prof_state_toggle(struct gmonparam *gp, int oldstate)
 #if !defined(GPROF)
 		/*
 		 * If this is not a profiling kernel, we need to patch
-		 * all symbols that can be instrummented.
+		 * all symbols that can be instrumented.
 		 */
 		error = db_prof_enable();
 #endif
-		if (error == 0)
-			startprofclock(&process0);
+		if (error == 0) {
+			if (++gmon_cpu_count == 1)
+				startprofclock(&process0);
+			clockintr_advance(ci->ci_gmonclock, profclock_period);
+		}
 		break;
 	default:
 		error = EINVAL;
 		gp->state = GMON_PROF_OFF;
 		/* FALLTHROUGH */
 	case GMON_PROF_OFF:
-		stopprofclock(&process0);
+		clockintr_cancel(ci->ci_gmonclock);
+		if (--gmon_cpu_count == 0)
+			stopprofclock(&process0);
 #if !defined(GPROF)
 		db_prof_disable();
 #endif
@@ -194,7 +217,7 @@ sysctl_doprof(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
 		error = sysctl_int(oldp, oldlenp, newp, newlen, &gp->state);
 		if (error)
 			return (error);
-		return (prof_state_toggle(gp, state));
+		return prof_state_toggle(ci, state);
 	case GPROF_COUNT:
 		return (sysctl_struct(oldp, oldlenp, newp, newlen,
 		    gp->kcount, gp->kcountsize));
@@ -211,6 +234,31 @@ sysctl_doprof(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
 	}
 	/* NOTREACHED */
 }
+
+void
+gmonclock(struct clockintr *cl, void *cf, void *arg)
+{
+	uint64_t count;
+	struct clockframe *frame = cf;
+	struct gmonparam *g = curcpu()->ci_gmon;
+	u_long i;
+
+	count = clockintr_advance(cl, profclock_period);
+	if (count > ULONG_MAX)
+		count = ULONG_MAX;
+
+	/*
+	 * Kernel statistics are just like addupc_intr(), only easier.
+	 */
+	if (!CLKF_USERMODE(frame) && g != NULL && g->state == GMON_PROF_ON) {
+		i = CLKF_PC(frame) - g->lowpc;
+		if (i < g->textsize) {
+			i /= HISTFRACTION * sizeof(*g->kcount);
+			g->kcount[i] += (u_long)count;
+		}
+	}
+}
+
 #endif /* GPROF || DDBPROF */
 
 /*
@@ -230,12 +278,17 @@ sys_profil(struct proc *p, void *v, register_t *retval)
 	} */ *uap = v;
 	struct process *pr = p->p_p;
 	struct uprof *upp;
-	int s;
+	int error, s;
+
+	error = pledge_profil(p, SCARG(uap, scale));
+	if (error)
+		return error;
 
 	if (SCARG(uap, scale) > (1 << 16))
 		return (EINVAL);
 	if (SCARG(uap, scale) == 0) {
 		stopprofclock(pr);
+		need_resched(curcpu());
 		return (0);
 	}
 	upp = &pr->ps_prof;
@@ -248,8 +301,29 @@ sys_profil(struct proc *p, void *v, register_t *retval)
 	upp->pr_size = SCARG(uap, size);
 	startprofclock(pr);
 	splx(s);
+	need_resched(curcpu());
 
 	return (0);
+}
+
+void
+profclock(struct clockintr *cl, void *cf, void *arg)
+{
+	uint64_t count;
+	struct clockframe *frame = cf;
+	struct proc *p = curproc;
+
+	count = clockintr_advance(cl, profclock_period);
+	if (count > ULONG_MAX)
+		count = ULONG_MAX;
+
+	if (CLKF_USERMODE(frame)) {
+		if (ISSET(p->p_p->ps_flags, PS_PROFIL))
+			addupc_intr(p, CLKF_PC(frame), (u_long)count);
+	} else {
+		if (p != NULL && ISSET(p->p_p->ps_flags, PS_PROFIL))
+			addupc_intr(p, PROC_PC(p), (u_long)count);
+	}
 }
 
 /*
@@ -269,7 +343,7 @@ sys_profil(struct proc *p, void *v, register_t *retval)
  * Trap will then call addupc_task().
  */
 void
-addupc_intr(struct proc *p, u_long pc)
+addupc_intr(struct proc *p, u_long pc, u_long nticks)
 {
 	struct uprof *prof;
 
@@ -278,7 +352,7 @@ addupc_intr(struct proc *p, u_long pc)
 		return;			/* out of range; ignore */
 
 	p->p_prof_addr = pc;
-	p->p_prof_ticks++;
+	p->p_prof_ticks += nticks;
 	atomic_setbits_int(&p->p_flag, P_OWEUPC);
 	need_proftick(p);
 }

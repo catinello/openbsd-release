@@ -1,4 +1,4 @@
-/*	$OpenBSD: l2tp_subr.c,v 1.4 2012/05/08 13:15:11 yasuoka Exp $	*/
+/*	$OpenBSD: l2tp_subr.c,v 1.5 2023/09/11 07:33:07 yasuoka Exp $	*/
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -25,7 +25,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/* $Id: l2tp_subr.c,v 1.4 2012/05/08 13:15:11 yasuoka Exp $ */
+/* $Id: l2tp_subr.c,v 1.5 2023/09/11 07:33:07 yasuoka Exp $ */
 /**@file L2TP related sub-routines */
 #include <sys/types.h>
 #include <sys/time.h>

@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.25 2023/01/25 09:53:53 kettenis Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.27 2023/08/19 00:47:51 gkoehler Exp $	*/
 
 /*
  * Copyright (c) 2020 Mark Kettenis <kettenis@openbsd.org>
@@ -189,22 +189,27 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 	if (dev->dv_unit != 0) {
 		int timeout = 10000;
 
+		clockqueue_init(&ci->ci_queue);
 		sched_init_cpu(ci);
 		ncpus++;
 
 		ci->ci_initstack_end = km_alloc(PAGE_SIZE, &kv_any, &kp_zero,
 		    &kd_waitok) + PAGE_SIZE;
 
-		opal_start_cpu(ci->ci_pir, (vaddr_t)cpu_hatch);
+		if (opal_start_cpu(ci->ci_pir, (vaddr_t)cpu_hatch) ==
+		    OPAL_SUCCESS) {
+			atomic_setbits_int(&ci->ci_flags, CPUF_IDENTIFY);
+			membar_sync();
 
-		atomic_setbits_int(&ci->ci_flags, CPUF_IDENTIFY);
-		membar_sync();
-
-		while ((ci->ci_flags & CPUF_IDENTIFIED) == 0 &&
-		    --timeout)
-			delay(1000);
-		if (timeout == 0) {
-			printf(" failed to identify");
+			while ((ci->ci_flags & CPUF_IDENTIFIED) == 0 &&
+			    --timeout)
+				delay(1000);
+			if (timeout == 0) {
+				printf(" failed to identify");
+				ci->ci_flags = 0;
+			}
+		} else {
+			printf(" failed to start");
 			ci->ci_flags = 0;
 		}
 	}
@@ -383,6 +388,8 @@ cpu_boot_secondary_processors(void)
 		    IPL_IPI, ci, cpu_intr, ci, ci->ci_dev->dv_xname);
 
 		if (CPU_IS_PRIMARY(ci))
+			continue;
+		if ((ci->ci_flags & CPUF_PRESENT) == 0)
 			continue;
 
 		ci->ci_randseed = (arc4random() & 0x7fffffff) + 1;

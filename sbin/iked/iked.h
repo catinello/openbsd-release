@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.210 2023/03/05 22:17:22 tobhe Exp $	*/
+/*	$OpenBSD: iked.h,v 1.224 2023/08/11 11:24:55 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2019 Tobias Heider <tobias.heider@stusta.de>
@@ -260,6 +260,7 @@ struct iked_policy {
 #define IKED_POLICY_SKIP		 0x10
 #define IKED_POLICY_IPCOMP		 0x20
 #define IKED_POLICY_TRANSPORT		 0x40
+#define IKED_POLICY_ROUTING		 0x80
 
 	int				 pol_refcnt;
 
@@ -642,6 +643,7 @@ struct iked_message {
 	struct iked_id		 msg_peerid;
 	struct iked_id		 msg_localid;
 	struct iked_id		 msg_cert;
+	struct iked_id		 msg_scert[IKED_SCERT_MAX]; /* supplemental certs */
 	struct ibuf		*msg_cookie;
 	uint16_t		 msg_group;
 	uint16_t		 msg_cpi;
@@ -1176,9 +1178,9 @@ int	 ca_setcert(struct iked *, struct iked_sahdr *, struct iked_id *,
 int	 ca_setauth(struct iked *, struct iked_sa *,
 	    struct ibuf *, enum privsep_procid);
 void	 ca_getkey(struct privsep *, struct iked_id *, enum imsg_type);
+int	 ca_certbundle_add(struct ibuf *, struct iked_id *);
 int	 ca_privkey_serialize(EVP_PKEY *, struct iked_id *);
 int	 ca_pubkey_serialize(EVP_PKEY *, struct iked_id *);
-void	 ca_sslinit(void);
 void	 ca_sslerror(const char *);
 char	*ca_asn1_name(uint8_t *, size_t);
 void	*ca_x509_name_parse(char *);
@@ -1241,6 +1243,7 @@ const char *
 void	 lc_idtype(char *);
 void	 print_hex(const uint8_t *, off_t, size_t);
 void	 print_hexval(const uint8_t *, off_t, size_t);
+void	 print_hexbuf(struct ibuf *);
 const char *
 	 print_bits(unsigned short, unsigned char *);
 int	 sockaddr_cmp(struct sockaddr *, struct sockaddr *, int);
@@ -1251,7 +1254,7 @@ struct in6_addr *
 uint32_t
 	 prefixlen2mask(uint8_t);
 const char *
-	 print_host(struct sockaddr *, char *, size_t);
+	 print_addr(void *);
 char	*get_string(uint8_t *, size_t);
 const char *
 	 print_proto(uint8_t);
@@ -1267,24 +1270,14 @@ struct ibuf *
 	 ibuf_new(const void *, size_t);
 struct ibuf *
 	 ibuf_static(void);
-int	 ibuf_cat(struct ibuf *, struct ibuf *);
-void	 ibuf_release(struct ibuf *);
 size_t	 ibuf_length(struct ibuf *);
 int	 ibuf_setsize(struct ibuf *, size_t);
-uint8_t *
-	 ibuf_data(struct ibuf *);
-void	*ibuf_getdata(struct ibuf *, size_t);
 struct ibuf *
-	 ibuf_get(struct ibuf *, size_t);
+	 ibuf_getdata(struct ibuf *, size_t);
 struct ibuf *
 	 ibuf_dup(struct ibuf *);
 struct ibuf *
 	 ibuf_random(size_t);
-int	 ibuf_prepend(struct ibuf *, void *, size_t);
-void	*ibuf_advance(struct ibuf *, size_t);
-void	 ibuf_zero(struct ibuf *);
-int	 ibuf_strcat(struct ibuf **, const char *);
-int	 ibuf_strlen(struct ibuf *);
 
 /* log.c */
 void	log_init(int, int);

@@ -1,4 +1,4 @@
-/* $OpenBSD: qcscm.c,v 1.2 2023/01/21 10:34:49 kettenis Exp $ */
+/* $OpenBSD: qcscm.c,v 1.5 2023/07/22 22:48:35 patrick Exp $ */
 /*
  * Copyright (c) 2022 Patrick Wildt <patrick@blueri.se>
  *
@@ -43,6 +43,7 @@
 #define ARM_SMCCC_STD_CALL			(0U << 31)
 #define ARM_SMCCC_FAST_CALL			(1U << 31)
 #define ARM_SMCCC_LP64				(1U << 30)
+#define ARM_SMCCC_OWNER_SIP			2
 
 #define QCTEE_TZ_OWNER_TZ_APPS			48
 #define QCTEE_TZ_OWNER_QSEE_OS			50
@@ -68,6 +69,14 @@
 #define QCTEE_UEFI_DEVICE_ERROR			0x80000007
 #define QCTEE_UEFI_NOT_FOUND			0x8000000e
 
+#define QCSCM_SVC_PIL			0x02
+#define QCSCM_PIL_PAS_INIT_IMAGE	0x01
+#define QCSCM_PIL_PAS_MEM_SETUP		0x02
+#define QCSCM_PIL_PAS_AUTH_AND_RESET	0x05
+#define QCSCM_PIL_PAS_SHUTDOWN		0x06
+#define QCSCM_PIL_PAS_IS_SUPPORTED	0x07
+#define QCSCM_PIL_PAS_MSS_RESET		0x0a
+
 #define QCSCM_INTERRUPTED		1
 
 #define QCSCM_ARGINFO_NUM(x)		(((x) & 0xf) << 0)
@@ -80,6 +89,8 @@
 #define EFI_VARIABLE_NON_VOLATILE	0x00000001
 #define EFI_VARIABLE_BOOTSERVICE_ACCESS	0x00000002
 #define EFI_VARIABLE_RUNTIME_ACCESS	0x00000004
+
+#define UNIX_GPS_EPOCH_OFFSET		315964800
 
 struct qcscm_dmamem {
 	bus_dmamap_t		qdm_map;
@@ -189,20 +200,19 @@ void
 qcscm_smc_exec(uint64_t *in, uint64_t *out)
 {
 	__asm(
-	    "ldp x0, x1, [%0, %2]\n"
-	    "ldp x2, x3, [%0, %3]\n"
-	    "ldp x4, x5, [%0, %4]\n"
-	    "ldp x6, x7, [%0, %5]\n"
+	    "ldp x0, x1, [%0, #0]\n"
+	    "ldp x2, x3, [%0, #16]\n"
+	    "ldp x4, x5, [%0, #32]\n"
+	    "ldp x6, x7, [%0, #48]\n"
 	    "smc #0\n"
-	    "stp x0, x1, [%1, %2]\n"
-	    "stp x2, x3, [%1, %3]\n"
-	    "stp x4, x5, [%1, %4]\n"
-	    "stp x6, x7, [%1, %5]\n" ::
-	    "r" (in), "r" (out),
-	    "i"(0), "i"(16), "i"(32), "i"(48),
-	    "m" (*in), "m" (*out) :
+	    "stp x0, x1, [%1, #0]\n"
+	    "stp x2, x3, [%1, #16]\n"
+	    "stp x4, x5, [%1, #32]\n"
+	    "stp x6, x7, [%1, #48]\n" ::
+	    "r" (in), "r" (out) :
 	    "x0", "x1", "x2", "x3",
-	    "x4", "x5", "x6", "x7");
+	    "x4", "x5", "x6", "x7",
+	    "memory");
 }
 
 int
@@ -695,7 +705,8 @@ qcscm_uefi_rtc_get(uint32_t *off)
 	    &rtcinfosize) != 0)
 		return EIO;
 
-	*off = rtcinfo[0];
+	/* UEFI stores the offset based on GPS epoch */
+	*off = rtcinfo[0] + UNIX_GPS_EPOCH_OFFSET;
 	return 0;
 }
 
@@ -714,6 +725,9 @@ qcscm_uefi_rtc_set(uint32_t off)
 	    &rtcinfosize) != 0)
 		return EIO;
 
+	/* UEFI stores the offset based on GPS epoch */
+	off -= UNIX_GPS_EPOCH_OFFSET;
+
 	/* No need to set if we're not changing anything */
 	if (rtcinfo[0] == off)
 		return 0;
@@ -729,6 +743,93 @@ qcscm_uefi_rtc_set(uint32_t off)
 		return EIO;
 
 	return 0;
+}
+
+int
+qcscm_pas_init_image(uint32_t peripheral, paddr_t metadata)
+{
+	struct qcscm_softc *sc = qcscm_sc;
+	uint64_t res[3];
+	uint64_t args[2];
+	uint32_t arginfo;
+	int ret;
+
+	if (sc == NULL)
+		return ENXIO;
+
+	arginfo = QCSCM_ARGINFO_NUM(nitems(args));
+	arginfo |= QCSCM_ARGINFO_TYPE(0, QCSCM_ARGINFO_TYPE_VAL);
+	arginfo |= QCSCM_ARGINFO_TYPE(1, QCSCM_ARGINFO_TYPE_RW);
+	args[0] = peripheral;
+	args[1] = metadata;
+
+	/* Make call into TEE */
+	ret = qcscm_smc_call(sc, ARM_SMCCC_OWNER_SIP, QCSCM_SVC_PIL,
+	    QCSCM_PIL_PAS_INIT_IMAGE, arginfo, args, nitems(args), res);
+
+	/* If the call succeeded, check the response status */
+	if (ret == 0)
+		ret = res[0];
+
+	return ret;
+}
+
+int
+qcscm_pas_mem_setup(uint32_t peripheral, paddr_t addr, size_t size)
+{
+	struct qcscm_softc *sc = qcscm_sc;
+	uint64_t res[3];
+	uint64_t args[3];
+	uint32_t arginfo;
+	int ret;
+
+	if (sc == NULL)
+		return ENXIO;
+
+	arginfo = QCSCM_ARGINFO_NUM(nitems(args));
+	arginfo |= QCSCM_ARGINFO_TYPE(0, QCSCM_ARGINFO_TYPE_VAL);
+	arginfo |= QCSCM_ARGINFO_TYPE(1, QCSCM_ARGINFO_TYPE_VAL);
+	arginfo |= QCSCM_ARGINFO_TYPE(2, QCSCM_ARGINFO_TYPE_VAL);
+	args[0] = peripheral;
+	args[1] = addr;
+	args[2] = size;
+
+	/* Make call into TEE */
+	ret = qcscm_smc_call(sc, ARM_SMCCC_OWNER_SIP, QCSCM_SVC_PIL,
+	    QCSCM_PIL_PAS_MEM_SETUP, arginfo, args, nitems(args), res);
+
+	/* If the call succeeded, check the response status */
+	if (ret == 0)
+		ret = res[0];
+
+	return ret;
+}
+
+int
+qcscm_pas_auth_and_reset(uint32_t peripheral)
+{
+	struct qcscm_softc *sc = qcscm_sc;
+	uint64_t res[3];
+	uint64_t args[1];
+	uint32_t arginfo;
+	int ret;
+
+	if (sc == NULL)
+		return ENXIO;
+
+	arginfo = QCSCM_ARGINFO_NUM(nitems(args));
+	arginfo |= QCSCM_ARGINFO_TYPE(0, QCSCM_ARGINFO_TYPE_VAL);
+	args[0] = peripheral;
+
+	/* Make call into TEE */
+	ret = qcscm_smc_call(sc, ARM_SMCCC_OWNER_SIP, QCSCM_SVC_PIL,
+	    QCSCM_PIL_PAS_AUTH_AND_RESET, arginfo, args, nitems(args), res);
+
+	/* If the call succeeded, check the response status */
+	if (ret == 0)
+		ret = res[0];
+
+	return ret;
 }
 
 /* DMA code */

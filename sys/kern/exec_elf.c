@@ -1,4 +1,4 @@
-/*	$OpenBSD: exec_elf.c,v 1.180 2023/01/16 07:09:11 guenther Exp $	*/
+/*	$OpenBSD: exec_elf.c,v 1.183 2023/07/12 19:34:14 jasper Exp $	*/
 
 /*
  * Copyright (c) 1996 Per Fogelstrom
@@ -928,6 +928,10 @@ elf_os_pt_note(struct proc *p, struct exec_package *epp, Elf_Ehdr *eh, int *name
 			epp->ep_flags |= EXEC_WXNEEDED;
 			continue;
 		}
+		if (ph->p_type == PT_OPENBSD_NOBTCFI) {
+			epp->ep_flags |= EXEC_NOBTCFI;
+			continue;
+		}
 
 		if (ph->p_type != PT_NOTE || ph->p_filesz > 1024)
 			continue;
@@ -1389,6 +1393,9 @@ coredump_note_elf(struct proc *p, void *iocookie, size_t *sizep)
 #ifdef PT_GETFPREGS
 	struct fpreg freg;
 #endif
+#ifdef PT_PACMASK
+	register_t pacmask[2];
+#endif
 
 	size = 0;
 
@@ -1427,6 +1434,24 @@ coredump_note_elf(struct proc *p, void *iocookie, size_t *sizep)
 		nhdr.type = NT_OPENBSD_FPREGS;
 
 		error = coredump_writenote_elf(p, iocookie, &nhdr, name, &freg);
+		if (error)
+			return (error);
+	}
+	size += notesize;
+#endif
+
+#ifdef PT_PACMASK
+	notesize = sizeof(nhdr) + elfround(namesize) +
+	    elfround(sizeof(pacmask));
+	if (iocookie) {
+		pacmask[0] = pacmask[1] = process_get_pacmask(p);
+
+		nhdr.namesz = namesize;
+		nhdr.descsz = sizeof(pacmask);
+		nhdr.type = NT_OPENBSD_PACMASK;
+
+		error = coredump_writenote_elf(p, iocookie, &nhdr,
+		    name, &pacmask);
 		if (error)
 			return (error);
 	}

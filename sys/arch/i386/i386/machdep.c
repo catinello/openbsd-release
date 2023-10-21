@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.663 2023/01/30 10:49:05 jsg Exp $	*/
+/*	$OpenBSD: machdep.c,v 1.669 2023/08/23 01:55:46 cheloha Exp $	*/
 /*	$NetBSD: machdep.c,v 1.214 1996/11/10 03:16:17 thorpej Exp $	*/
 
 /*-
@@ -233,6 +233,7 @@ void (*cpusensors_setup)(struct cpu_info *);
 
 void (*delay_func)(int) = i8254_delay;
 void (*initclock_func)(void) = i8254_initclocks;
+void (*startclock_func)(void) = i8254_start_both_clocks;
 
 /*
  * Extent maps to manage I/O and ISA memory hole space.  Allocate
@@ -1859,6 +1860,23 @@ identifycpu(struct cpu_info *ci)
 		printf(", %02x-%02x-%02x", ci->ci_family, ci->ci_model,
 		    step);
 
+	if ((cpu_ecxfeature & CPUIDECX_HV) == 0) {
+		uint64_t level = 0;
+		uint32_t dummy;
+
+		if (strcmp(cpu_vendor, "AuthenticAMD") == 0 &&
+		    ci->ci_family >= 0x0f) {
+			level = rdmsr(MSR_PATCH_LEVEL);
+		} else if (strcmp(cpu_vendor, "GenuineIntel") == 0 &&
+		    ci->ci_family >= 6) {
+			wrmsr(MSR_BIOS_SIGN, 0);
+			CPUID(1, dummy, dummy, dummy, dummy);
+			level = rdmsr(MSR_BIOS_SIGN) >> 32;
+		}
+		if (level != 0)
+			printf(", patch %08llx", level);
+	}
+
 	printf("\n");
 
 	if (ci->ci_feature_flags) {
@@ -1996,7 +2014,6 @@ identifycpu(struct cpu_info *ci)
 		if (family == 0x17 && ci->ci_model >= 0x31 &&
 		    (cpu_ecxfeature & CPUIDECX_HV) == 0) {
 			nmsr = msr = rdmsr(MSR_DE_CFG);
-#define DE_CFG_SERIALIZE_9 (1 << 9)		/* Zenbleed chickenbit */
 			nmsr |= DE_CFG_SERIALIZE_9;
 			if (msr != nmsr)
 				wrmsr(MSR_DE_CFG, nmsr);
@@ -3420,6 +3437,12 @@ void
 cpu_initclocks(void)
 {
 	(*initclock_func)();		/* lapic or i8254 */
+}
+
+void
+cpu_startclock(void)
+{
+	(*startclock_func)();
 }
 
 void

@@ -1,4 +1,4 @@
-/* $OpenBSD: format.c,v 1.311 2023/02/07 10:21:01 nicm Exp $ */
+/* $OpenBSD: format.c,v 1.318 2023/09/08 06:52:31 nicm Exp $ */
 
 /*
  * Copyright (c) 2011 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -1126,7 +1126,6 @@ format_cb_mouse_word(struct format_tree *ft)
 	struct window_pane	*wp;
 	struct grid		*gd;
 	u_int			 x, y;
-	char			*s;
 
 	if (!ft->m.valid)
 		return (NULL);
@@ -1139,7 +1138,7 @@ format_cb_mouse_word(struct format_tree *ft)
 	if (!TAILQ_EMPTY(&wp->modes)) {
 		if (TAILQ_FIRST(&wp->modes)->mode == &window_copy_mode ||
 		    TAILQ_FIRST(&wp->modes)->mode == &window_view_mode)
-			return (s = window_copy_get_word(wp, x, y));
+			return (window_copy_get_word(wp, x, y));
 		return (NULL);
 	}
 	gd = wp->base.grid;
@@ -1189,6 +1188,72 @@ format_cb_mouse_line(struct format_tree *ft)
 	}
 	gd = wp->base.grid;
 	return (format_grid_line(gd, gd->hsize + y));
+}
+
+/* Callback for mouse_status_line. */
+static void *
+format_cb_mouse_status_line(struct format_tree *ft)
+{
+	char	*value;
+	u_int	 y;
+
+	if (!ft->m.valid)
+		return (NULL);
+	if (ft->c == NULL || (~ft->c->tty.flags & TTY_STARTED))
+		return (NULL);
+
+	if (ft->m.statusat == 0 && ft->m.y < ft->m.statuslines) {
+		y = ft->m.y;
+	} else if (ft->m.statusat > 0 && ft->m.y >= (u_int)ft->m.statusat) {
+		y = ft->m.y - ft->m.statusat;
+	} else
+		return (NULL);
+	xasprintf(&value, "%u", y);
+	return (value);
+
+}
+
+/* Callback for mouse_status_range. */
+static void *
+format_cb_mouse_status_range(struct format_tree *ft)
+{
+	struct style_range	*sr;
+	u_int			 x, y;
+
+	if (!ft->m.valid)
+		return (NULL);
+	if (ft->c == NULL || (~ft->c->tty.flags & TTY_STARTED))
+		return (NULL);
+
+	if (ft->m.statusat == 0 && ft->m.y < ft->m.statuslines) {
+		x = ft->m.x;
+		y = ft->m.y;
+	} else if (ft->m.statusat > 0 && ft->m.y >= (u_int)ft->m.statusat) {
+		x = ft->m.x;
+		y = ft->m.y - ft->m.statusat;
+	} else
+		return (NULL);
+
+	sr = status_get_range(ft->c, x, y);
+	if (sr == NULL)
+		return (NULL);
+	switch (sr->type) {
+	case STYLE_RANGE_NONE:
+		return (NULL);
+	case STYLE_RANGE_LEFT:
+		return (xstrdup("left"));
+	case STYLE_RANGE_RIGHT:
+		return (xstrdup("right"));
+	case STYLE_RANGE_PANE:
+		return (xstrdup("pane"));
+	case STYLE_RANGE_WINDOW:
+		return (xstrdup("window"));
+	case STYLE_RANGE_SESSION:
+		return (xstrdup("session"));
+	case STYLE_RANGE_USER:
+		return (xstrdup(sr->string));
+	}
+	return (NULL);
 }
 
 /* Callback for alternate_on. */
@@ -1885,12 +1950,24 @@ format_cb_pane_input_off(struct format_tree *ft)
 	return (NULL);
 }
 
+/* Callback for pane_unseen_changes. */
+static void *
+format_cb_pane_unseen_changes(struct format_tree *ft)
+{
+	if (ft->wp != NULL) {
+		if (ft->wp->flags & PANE_UNSEENCHANGES)
+			return (xstrdup("1"));
+		return (xstrdup("0"));
+	}
+	return (NULL);
+}
+
 /* Callback for pane_last. */
 static void *
 format_cb_pane_last(struct format_tree *ft)
 {
 	if (ft->wp != NULL) {
-		if (ft->wp == ft->wp->window->last)
+		if (ft->wp == TAILQ_FIRST(&ft->wp->window->last_panes))
 			return (xstrdup("1"));
 		return (xstrdup("0"));
 	}
@@ -2063,6 +2140,18 @@ format_cb_scroll_region_upper(struct format_tree *ft)
 	if (ft->wp != NULL)
 		return (format_printf("%u", ft->wp->base.rupper));
 	return (NULL);
+}
+
+/* Callback for server_sessions. */
+static void *
+format_cb_server_sessions(__unused struct format_tree *ft)
+{
+	struct session	*s;
+	u_int		 n = 0;
+
+	RB_FOREACH(s, sessions, &sessions)
+		n++;
+	return (format_printf("%u", n));
 }
 
 /* Callback for session_attached. */
@@ -2824,6 +2913,12 @@ static const struct format_table_entry format_table[] = {
 	{ "mouse_standard_flag", FORMAT_TABLE_STRING,
 	  format_cb_mouse_standard_flag
 	},
+	{ "mouse_status_line", FORMAT_TABLE_STRING,
+	  format_cb_mouse_status_line
+	},
+	{ "mouse_status_range", FORMAT_TABLE_STRING,
+	  format_cb_mouse_status_range
+	},
 	{ "mouse_utf8_flag", FORMAT_TABLE_STRING,
 	  format_cb_mouse_utf8_flag
 	},
@@ -2953,6 +3048,9 @@ static const struct format_table_entry format_table[] = {
 	{ "pane_tty", FORMAT_TABLE_STRING,
 	  format_cb_pane_tty
 	},
+	{ "pane_unseen_changes", FORMAT_TABLE_STRING,
+	  format_cb_pane_unseen_changes
+	},
 	{ "pane_width", FORMAT_TABLE_STRING,
 	  format_cb_pane_width
 	},
@@ -2964,6 +3062,9 @@ static const struct format_table_entry format_table[] = {
 	},
 	{ "scroll_region_upper", FORMAT_TABLE_STRING,
 	  format_cb_scroll_region_upper
+	},
+	{ "server_sessions", FORMAT_TABLE_STRING,
+	  format_cb_server_sessions
 	},
 	{ "session_activity", FORMAT_TABLE_TIME,
 	  format_cb_session_activity
@@ -3634,7 +3735,9 @@ format_skip(const char *s, const char *end)
 	for (; *s != '\0'; s++) {
 		if (*s == '#' && s[1] == '{')
 			brackets++;
-		if (*s == '#' && strchr(",#{}:", s[1]) != NULL) {
+		if (*s == '#' &&
+		    s[1] != '\0' &&
+		    strchr(",#{}:", s[1]) != NULL) {
 			s++;
 			continue;
 		}
@@ -3783,7 +3886,7 @@ format_build_modifiers(struct format_expand_state *es, const char **s,
 		argc = 0;
 
 		/* Single argument with no wrapper character. */
-		if (!ispunct(cp[1]) || cp[1] == '-') {
+		if (!ispunct((u_char)cp[1]) || cp[1] == '-') {
 			end = format_skip(cp + 1, ":;");
 			if (end == NULL)
 				break;
@@ -4081,7 +4184,7 @@ static char *
 format_loop_clients(struct format_expand_state *es, const char *fmt)
 {
 	struct format_tree		*ft = es->ft;
-	struct client			*c = ft->client;
+	struct client			*c;
 	struct cmdq_item		*item = ft->item;
 	struct format_tree		*nft;
 	struct format_expand_state	 next;

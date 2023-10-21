@@ -1,4 +1,4 @@
-/*	$OpenBSD: output-ometric.c,v 1.1 2022/12/15 12:02:29 claudio Exp $ */
+/*	$OpenBSD: output-ometric.c,v 1.5 2023/06/29 14:33:35 tb Exp $ */
 /*
  * Copyright (c) 2022 Claudio Jeker <claudio@openbsd.org>
  *
@@ -26,14 +26,16 @@
 #include "ometric.h"
 #include "version.h"
 
-struct ometric *rpki_info, *rpki_completion_time, *rpki_duration;
-struct ometric *rpki_repo, *rpki_obj, *rpki_ta_obj;
-struct ometric *rpki_repo_obj, *rpki_repo_duration, *rpki_repo_state;
+static struct ometric *rpki_info, *rpki_completion_time, *rpki_duration;
+static struct ometric *rpki_repo, *rpki_obj, *rpki_ta_obj;
+static struct ometric *rpki_repo_obj, *rpki_repo_duration;
+static struct ometric *rpki_repo_state, *rpki_repo_proto;
 
 static const char * const repo_states[2] = { "failed", "synced" };
+static const char * const repo_protos[3] = { "rrdp", "rsync", "https" };
 
 static void
-set_common_stats(const struct repostats *in, struct ometric *metric,
+set_common_stats(const struct repotalstats *in, struct ometric *metric,
     struct olabels *ol)
 {
 	ometric_set_int_with_labels(metric, in->certs,
@@ -81,11 +83,7 @@ set_common_stats(const struct repostats *in, struct ometric *metric,
 	ometric_set_int_with_labels(metric, in->vaps_uniqs,
 	    OKV("type", "state"), OKV("vap", "unique"), ol);
 	ometric_set_int_with_labels(metric, in->vaps_pas,
-	    OKV("type", "state"), OKV("vap providers", "both"), ol);
-	ometric_set_int_with_labels(metric, in->vaps_pas4,
-	    OKV("type", "state"), OKV("vap providers", "IPv4 only"), ol);
-	ometric_set_int_with_labels(metric, in->vaps_pas6,
-	    OKV("type", "state"), OKV("vap providers", "IPv6 only"), ol);
+	    OKV("type", "state"), OKV("vap providers", "total"), ol);
 }
 
 static void
@@ -104,20 +102,47 @@ ta_stats(int id)
 }
 
 static void
-repo_stats(const struct repo *rp, const struct repostats *in, void *arg)
+repo_tal_stats(const struct repo *rp, const struct repotalstats *in, void *arg)
 {
 	struct olabels *ol;
 	const char *keys[4] = { "name", "carepo", "notify", NULL };
 	const char *values[4];
+	int talid = *(int *)arg;
 
-	values[0] = taldescs[repo_talid(rp)];
+	values[0] = taldescs[talid];
 	repo_fetch_uris(rp, &values[1], &values[2]);
 	values[3] = NULL;
 
 	ol = olabels_new(keys, values);
 	set_common_stats(in, rpki_repo_obj, ol);
+	olabels_free(ol);
+}
+
+static void
+repo_stats(const struct repo *rp, const struct repostats *in, void *arg)
+{
+	struct olabels *ol;
+	const char *keys[3] = { "carepo", "notify", NULL };
+	const char *values[3];
+
+	repo_fetch_uris(rp, &values[0], &values[1]);
+	values[2] = NULL;
+
+	ol = olabels_new(keys, values);
 	ometric_set_timespec(rpki_repo_duration, &in->sync_time, ol);
+
+	ometric_set_int_with_labels(rpki_repo_obj, in->del_files,
+	    OKV("type", "state"), OKV("files", "deleted"), ol);
+	ometric_set_int_with_labels(rpki_repo_obj, in->extra_files,
+	    OKV("type", "state"), OKV("files", "extra"), ol);
+	ometric_set_int_with_labels(rpki_repo_obj, in->del_extra_files,
+	    OKV("type", "state"), OKV("files", "deleted_extra"), ol);
+	ometric_set_int_with_labels(rpki_repo_obj, in->del_dirs,
+	    OKV("type", "state"), OKV("dirs", "deleted"), ol);
+
 	ometric_set_state(rpki_repo_state, repo_states[repo_synced(rp)], ol);
+	if (repo_synced(rp))
+		ometric_set_state(rpki_repo_proto, repo_proto(rp), ol);
 	olabels_free(ol);
 }
 
@@ -158,6 +183,10 @@ output_ometric(FILE *out, struct vrp_tree *vrps, struct brk_tree *brks,
 	    sizeof(repo_states) / sizeof(repo_states[0]),
 	    "rpki_client_repository_state",
 	    "repository state");
+	rpki_repo_proto = ometric_new_state(repo_protos,
+	    sizeof(repo_protos) / sizeof(repo_protos[0]),
+	    "rpki_client_repository_protos",
+	    "used protocol to sync repository");
 
 	/*
 	 * Dump statistics
@@ -176,12 +205,13 @@ output_ometric(FILE *out, struct vrp_tree *vrps, struct brk_tree *brks,
 	ometric_set_info(rpki_info, NULL, NULL, ol);
 	olabels_free(ol);
 
-	repo_stats_collect(repo_stats, NULL);
-	for (i = 0; i < talsz; i++)
+	for (i = 0; i < talsz; i++) {
+		repo_tal_stats_collect(repo_tal_stats, i, &i);
 		ta_stats(i);
-	set_common_stats(&st->repo_stats, rpki_obj, NULL);
+	}
+	repo_stats_collect(repo_stats, NULL);
+	set_common_stats(&st->repo_tal_stats, rpki_obj, NULL);
 
-	ometric_set_int(rpki_repo, st->repos, NULL);
 	ometric_set_int_with_labels(rpki_repo, st->rsync_repos,
 	    OKV("type", "state"), OKV("rsync", "synced"), NULL);
 	ometric_set_int_with_labels(rpki_repo, st->rsync_fails,

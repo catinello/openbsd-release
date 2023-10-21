@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfvar_priv.h,v 1.30 2023/01/06 17:44:34 sashan Exp $	*/
+/*	$OpenBSD: pfvar_priv.h,v 1.34 2023/07/06 04:55:05 dlg Exp $	*/
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier
@@ -41,6 +41,12 @@
 #include <sys/mutex.h>
 #include <sys/percpu.h>
 
+struct pfsync_deferral;
+
+/*
+ * pf state items - links from pf_state_key to pf_states
+ */
+
 struct pf_state_item {
 	TAILQ_ENTRY(pf_state_item)
 				 si_entry;
@@ -48,6 +54,10 @@ struct pf_state_item {
 };
 
 TAILQ_HEAD(pf_statelisthead, pf_state_item);
+
+/*
+ * pf state keys - look up states by address
+ */
 
 struct pf_state_key {
 	struct pf_addr	 addr[2];
@@ -73,11 +83,13 @@ RBT_PROTOTYPE(pf_state_tree, pf_state_key, sk_entry, pf_state_compare_key);
 	 (key[PF_SK_WIRE]->af != (family)))
 
 /*
+ * pf state
+ *
  * Protection/ownership of pf_state members:
  *	I	immutable after pf_state_insert()
  *	M	pf_state mtx
  *	P	PF_STATE_LOCK
- *	S	pfsync mutex
+ *	S	pfsync
  *	L	pf_state_list
  *	g	pf_purge gc
  */
@@ -89,7 +101,7 @@ struct pf_state {
 	u_int8_t		 pad[3];
 
 	TAILQ_ENTRY(pf_state)	 sync_list;	/* [S] */
-	TAILQ_ENTRY(pf_state)	 sync_snap;	/* [S] */
+	struct pfsync_deferral	*sync_defer;	/* [S] */
 	TAILQ_ENTRY(pf_state)	 entry_list;	/* [L] */
 	SLIST_ENTRY(pf_state)	 gc_list;	/* [g] */
 	RB_ENTRY(pf_state)	 entry_id;	/* [P] */
@@ -101,7 +113,7 @@ struct pf_state {
 	union pf_rule_ptr	 natrule;	/* [I] */
 	struct pf_addr		 rt_addr;	/* [I] */
 	struct pf_sn_head	 src_nodes;	/* [I] */
-	struct pf_state_key	*key[2];	/* [I] stack and wire  */
+	struct pf_state_key	*key[2];	/* [I] stack and wire */
 	struct pfi_kif		*kif;		/* [I] */
 	struct mutex		 mtx;
 	pf_refcnt_t		 refcnt;
@@ -109,16 +121,16 @@ struct pf_state {
 	u_int64_t		 bytes[2];
 	int32_t			 creation;	/* [I] */
 	int32_t			 expire;
-	int32_t			 pfsync_time;
-	int			 rtableid[2];	/* [I] rtables stack and wire */
+	int32_t			 pfsync_time;	/* [S] */
+	int			 rtableid[2];	/* [I] stack and wire */
 	u_int16_t		 qid;		/* [I] */
 	u_int16_t		 pqid;		/* [I] */
 	u_int16_t		 tag;		/* [I] */
-	u_int16_t		 state_flags;
+	u_int16_t		 state_flags;	/* [M] */
 	u_int8_t		 log;		/* [I] */
 	u_int8_t		 timeout;
-	u_int8_t		 sync_state;	/* PFSYNC_S_x */
-	u_int8_t		 sync_updates;
+	u_int8_t		 sync_state;	/* [S] PFSYNC_S_x */
+	u_int8_t		 sync_updates;	/* [S] */
 	u_int8_t		 min_ttl;	/* [I] */
 	u_int8_t		 set_tos;	/* [I] */
 	u_int8_t		 set_prio[2];	/* [I] */
@@ -127,7 +139,6 @@ struct pf_state {
 	u_int16_t		 if_index_out;	/* [I] */
 	u_int16_t		 delay;		/* [I] */
 	u_int8_t		 rt;		/* [I] */
-	u_int8_t		 snapped;	/* [S] */
 };
 
 RBT_HEAD(pf_state_tree_id, pf_state);
@@ -135,7 +146,6 @@ RBT_PROTOTYPE(pf_state_tree_id, pf_state, entry_id, pf_state_compare_id);
 extern struct pf_state_tree_id tree_id;
 
 /*
- *
  * states are linked into a global list to support the following
  * functionality:
  *
@@ -148,7 +158,7 @@ extern struct pf_state_tree_id tree_id;
  * been successfully added to the various trees that make up the state
  * table. states are only removed from the pf_state_list by the garbage
  * collection process.
-
+ *
  * the pf_state_list head and tail pointers (ie, the pfs_list TAILQ_HEAD
  * structure) and the pointers between the entries on the pf_state_list
  * are locked separately. at a high level, this allows for insertion
@@ -322,6 +332,31 @@ enum {
 
 extern struct cpumem *pf_anchor_stack;
 
+enum pf_trans_type {
+	PF_TRANS_NONE,
+	PF_TRANS_GETRULE,
+	PF_TRANS_MAX
+};
+
+struct pf_trans {
+	LIST_ENTRY(pf_trans)	pft_entry;
+	uint32_t		pft_unit;		/* process id */
+	uint64_t		pft_ticket;
+	enum pf_trans_type	pft_type;
+	union {
+		struct {
+			u_int32_t		 gr_version;
+			struct pf_anchor	*gr_anchor;
+			struct pf_rule		*gr_rule;
+		} u_getrule;
+	} u;
+};
+
+#define pftgr_version	u.u_getrule.gr_version
+#define pftgr_anchor	u.u_getrule.gr_anchor
+#define pftgr_rule	u.u_getrule.gr_rule
+
+extern struct timeout	pf_purge_states_to;
 extern struct task	pf_purge_task;
 extern struct timeout	pf_purge_to;
 
@@ -374,14 +409,14 @@ extern struct rwlock	pf_state_lock;
 			    rw_status(&pf_state_lock), __func__);\
 	} while (0)
 
-extern void			 pf_purge_timeout(void *);
-extern void			 pf_purge(void *);
-
 /* for copies to/from network byte order */
 void			pf_state_peer_hton(const struct pf_state_peer *,
 			    struct pfsync_state_peer *);
 void			pf_state_peer_ntoh(const struct pfsync_state_peer *,
 			    struct pf_state_peer *);
+u_int16_t		pf_pkt_hash(sa_family_t, uint8_t,
+			    const struct pf_addr *, const struct pf_addr *,
+			    uint16_t, uint16_t);
 
 #endif /* _KERNEL */
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfvar.h,v 1.529 2023/02/07 17:58:43 sashan Exp $ */
+/*	$OpenBSD: pfvar.h,v 1.533 2023/07/06 04:55:05 dlg Exp $ */
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier
@@ -822,7 +822,7 @@ struct pf_ruleset {
 		struct {
 			struct pf_rulequeue	*ptr;
 			u_int32_t		 rcount;
-			u_int32_t		 ticket;
+			u_int32_t		 version;
 			int			 open;
 		}			 active, inactive;
 	}			 rules;
@@ -844,6 +844,7 @@ struct pf_anchor {
 	struct pf_ruleset	 ruleset;
 	int			 refcnt;	/* anchor rules */
 	int			 match;
+	struct refcnt		 ref;		/* for transactions */
 };
 RB_PROTOTYPE(pf_anchor_global, pf_anchor, entry_global, pf_anchor_compare)
 RB_PROTOTYPE(pf_anchor_node, pf_anchor, entry_node, pf_anchor_compare)
@@ -1572,6 +1573,7 @@ struct pfioc_synflwats {
 #define DIOCSETSYNFLWATS	_IOWR('D', 97, struct pfioc_synflwats)
 #define DIOCSETSYNCOOKIES	_IOWR('D', 98, u_int8_t)
 #define DIOCGETSYNFLWATS	_IOWR('D', 99, struct pfioc_synflwats)
+#define DIOCXEND	_IOWR('D', 100, u_int32_t)
 
 #ifdef _KERNEL
 
@@ -1602,15 +1604,10 @@ extern void			 pf_tbladdr_remove(struct pf_addr_wrap *);
 extern void			 pf_tbladdr_copyout(struct pf_addr_wrap *);
 extern void			 pf_calc_skip_steps(struct pf_rulequeue *);
 extern void			 pf_purge_expired_src_nodes(void);
-extern void			 pf_purge_expired_states(u_int32_t);
 extern void			 pf_purge_expired_rules(void);
 extern void			 pf_remove_state(struct pf_state *);
 extern void			 pf_remove_divert_state(struct pf_state_key *);
 extern void			 pf_free_state(struct pf_state *);
-extern int			 pf_state_insert(struct pfi_kif *,
-				    struct pf_state_key **,
-				    struct pf_state_key **,
-				    struct pf_state *);
 int				 pf_insert_src_node(struct pf_src_node **,
 				    struct pf_rule *, enum pf_sn_types,
 				    sa_family_t, struct pf_addr *,
@@ -1673,6 +1670,10 @@ int	pf_match(u_int8_t, u_int32_t, u_int32_t, u_int32_t);
 int	pf_match_port(u_int8_t, u_int16_t, u_int16_t, u_int16_t);
 int	pf_match_uid(u_int8_t, uid_t, uid_t, uid_t);
 int	pf_match_gid(u_int8_t, gid_t, gid_t, gid_t);
+
+struct pf_state_scrub *
+	pf_state_scrub_get(void);
+void	pf_state_scrub_put(struct pf_state_scrub *);
 
 int	pf_refragment6(struct mbuf **, struct m_tag *mtag,
 	    struct sockaddr_in6 *, struct ifnet *, struct rtentry *);
@@ -1794,10 +1795,16 @@ const struct pfq_ops
 extern struct pf_status	pf_status;
 extern struct pool	pf_frent_pl, pf_frag_pl;
 
+/*
+ * Protection/ownership of pf_pool_limit:
+ *	I	immutable after pfattach()
+ *	p	pf_lock
+ */
+
 struct pf_pool_limit {
-	void		*pp;
-	unsigned	 limit;
-	unsigned	 limit_new;
+	void		*pp;		/* [I] */
+	unsigned	 limit;		/* [p] */
+	unsigned	 limit_new;	/* [p] */
 };
 extern struct pf_pool_limit	pf_pool_limits[PF_LIMIT_MAX];
 
@@ -1823,6 +1830,8 @@ struct pf_ruleset 	*pf_get_leaf_ruleset(char *, char **);
 struct pf_anchor 	*pf_create_anchor(struct pf_anchor *, const char *);
 struct pf_ruleset	*pf_find_or_create_ruleset(const char *);
 void			 pf_rs_initialize(void);
+void			 pf_anchor_rele(struct pf_anchor *);
+struct pf_anchor	*pf_anchor_take(struct pf_anchor *);
 
 /* The fingerprint functions can be linked into userland programs (tcpdump) */
 int	pf_osfp_add(struct pf_osfp_ioctl *);

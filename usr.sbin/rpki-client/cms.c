@@ -1,4 +1,4 @@
-/*	$OpenBSD: cms.c,v 1.33 2023/03/13 19:46:55 job Exp $ */
+/*	$OpenBSD: cms.c,v 1.39 2023/08/14 08:25:26 tb Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -100,6 +100,7 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 	const ASN1_OBJECT		*obj, *octype;
 	ASN1_OCTET_STRING		*kid = NULL;
 	CMS_ContentInfo			*cms;
+	long				 version;
 	STACK_OF(X509)			*certs = NULL;
 	STACK_OF(X509_CRL)		*crls;
 	STACK_OF(CMS_SignerInfo)	*sinfos;
@@ -123,7 +124,7 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 
 	oder = der;
 	if ((cms = d2i_CMS_ContentInfo(NULL, &der, len)) == NULL) {
-		cryptowarnx("%s: RFC 6488: failed CMS parse", fn);
+		warnx("%s: RFC 6488: failed CMS parse", fn);
 		goto out;
 	}
 	if (der != oder + len) {
@@ -137,24 +138,49 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 	 */
 	if (!CMS_verify(cms, NULL, NULL, bio, NULL,
 	    CMS_NO_SIGNER_CERT_VERIFY)) {
-		cryptowarnx("%s: CMS verification error", fn);
+		warnx("%s: CMS verification error", fn);
 		goto out;
 	}
 
 	/* RFC 6488 section 3 verify the CMS */
-	/* the version of SignedData and SignerInfos can't be verified */
 
-	sinfos = CMS_get0_SignerInfos(cms);
-	assert(sinfos != NULL);
+	/* Should only return NULL if cms is not of type SignedData. */
+	if ((sinfos = CMS_get0_SignerInfos(cms)) == NULL) {
+		if ((obj = CMS_get0_type(cms)) == NULL) {
+			warnx("%s: RFC 6488: missing content-type", fn);
+			goto out;
+		}
+		OBJ_obj2txt(buf, sizeof(buf), obj, 1);
+		warnx("%s: RFC 6488: no signerInfo in CMS object of type %s",
+		    fn, buf);
+		goto out;
+	}
 	if (sk_CMS_SignerInfo_num(sinfos) != 1) {
-		cryptowarnx("%s: RFC 6488: CMS has multiple signerInfos", fn);
+		warnx("%s: RFC 6488: CMS has multiple signerInfos", fn);
 		goto out;
 	}
 	si = sk_CMS_SignerInfo_value(sinfos, 0);
 
+	if (!CMS_get_version(cms, &version)) {
+		warnx("%s: Failed to retrieve SignedData version", fn);
+		goto out;
+	}
+	if (version != 3) {
+		warnx("%s: SignedData version %ld != 3", fn, version);
+		goto out;
+	}
+	if (!CMS_SignerInfo_get_version(si, &version)) {
+		warnx("%s: Failed to retrieve SignerInfo version", fn);
+		goto out;
+	}
+	if (version != 3) {
+		warnx("%s: SignerInfo version %ld != 3", fn, version);
+		goto out;
+	}
+
 	nattrs = CMS_signed_get_attr_count(si);
 	if (nattrs <= 0) {
-		cryptowarnx("%s: RFC 6488: error extracting signedAttrs", fn);
+		warnx("%s: RFC 6488: error extracting signedAttrs", fn);
 		goto out;
 	}
 	for (i = 0; i < nattrs; i++) {
@@ -162,31 +188,31 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 
 		attr = CMS_signed_get_attr(si, i);
 		if (attr == NULL || X509_ATTRIBUTE_count(attr) != 1) {
-			cryptowarnx("%s: RFC 6488: "
-			    "bad signed attribute encoding", fn);
+			warnx("%s: RFC 6488: bad signed attribute encoding",
+			    fn);
 			goto out;
 		}
 
 		obj = X509_ATTRIBUTE_get0_object(attr);
 		if (obj == NULL) {
-			cryptowarnx("%s: RFC 6488: bad signed attribute", fn);
+			warnx("%s: RFC 6488: bad signed attribute", fn);
 			goto out;
 		}
 		if (OBJ_cmp(obj, cnt_type_oid) == 0) {
 			if (has_ct++ != 0) {
-				cryptowarnx("%s: RFC 6488: duplicate "
+				warnx("%s: RFC 6488: duplicate "
 				    "signed attribute", fn);
 				goto out;
 			}
 		} else if (OBJ_cmp(obj, msg_dgst_oid) == 0) {
 			if (has_md++ != 0) {
-				cryptowarnx("%s: RFC 6488: duplicate "
+				warnx("%s: RFC 6488: duplicate "
 				    "signed attribute", fn);
 				goto out;
 			}
 		} else if (OBJ_cmp(obj, sign_time_oid) == 0) {
 			if (has_st++ != 0) {
-				cryptowarnx("%s: RFC 6488: duplicate "
+				warnx("%s: RFC 6488: duplicate "
 				    "signed attribute", fn);
 				goto out;
 			}
@@ -194,13 +220,13 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 				goto out;
 		} else if (OBJ_cmp(obj, bin_sign_time_oid) == 0) {
 			if (has_bst++ != 0) {
-				cryptowarnx("%s: RFC 6488: duplicate "
+				warnx("%s: RFC 6488: duplicate "
 				    "signed attribute", fn);
 				goto out;
 			}
 		} else {
 			OBJ_obj2txt(buf, sizeof(buf), obj, 1);
-			cryptowarnx("%s: RFC 6488: "
+			warnx("%s: RFC 6488: "
 			    "CMS has unexpected signed attribute %s",
 			    fn, buf);
 			goto out;
@@ -208,7 +234,7 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 	}
 
 	if (!has_ct || !has_md) {
-		cryptowarnx("%s: RFC 6488: CMS missing required "
+		warnx("%s: RFC 6488: CMS missing required "
 		    "signed attribute", fn);
 		goto out;
 	}
@@ -216,8 +242,11 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 	if (has_bst)
 		warnx("%s: unsupported CMS signing-time attribute", fn);
 
+	if (!has_st)
+		warnx("%s: missing CMS signing-time attribute", fn);
+
 	if (CMS_unsigned_get_attr_count(si) != -1) {
-		cryptowarnx("%s: RFC 6488: CMS has unsignedAttrs", fn);
+		warnx("%s: RFC 6488: CMS has unsignedAttrs", fn);
 		goto out;
 	}
 
@@ -264,7 +293,7 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 	assert(octype != NULL);
 	if (OBJ_cmp(obj, octype) != 0) {
 		OBJ_obj2txt(buf, sizeof(buf), obj, 1);
-		OBJ_obj2txt(obuf, sizeof(obuf), oid, 1);
+		OBJ_obj2txt(obuf, sizeof(obuf), octype, 1);
 		warnx("%s: RFC 6488: eContentType does not match Content-Type "
 		    "OID: %s, want %s", fn, buf, obuf);
 		goto out;
@@ -276,7 +305,7 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 	crls = CMS_get1_crls(cms);
 	if (crls != NULL) {
 		sk_X509_CRL_pop_free(crls, X509_CRL_free);
-		cryptowarnx("%s: RFC 6488: CMS has CRLs", fn);
+		warnx("%s: RFC 6488: CMS has CRLs", fn);
 		goto out;
 	}
 
@@ -300,17 +329,15 @@ cms_parse_validate_internal(X509 **xp, const char *fn, const unsigned char *der,
 
 	/* Cache X509v3 extensions, see X509_check_ca(3). */
 	if (X509_check_purpose(*xp, -1, -1) <= 0) {
-		cryptowarnx("%s: could not cache X509v3 extensions", fn);
+		warnx("%s: could not cache X509v3 extensions", fn);
 		goto out;
 	}
 
 	if (!x509_get_notafter(*xp, fn, &notafter))
 		goto out;
-	if (*signtime > notafter) {
+	if (*signtime > notafter)
 		warnx("%s: dating issue: CMS signing-time after X.509 notAfter",
 		    fn);
-		goto out;
-	}
 
 	if (CMS_SignerInfo_get0_signer_id(si, &kid, NULL, NULL) != 1 ||
 	    kid == NULL) {

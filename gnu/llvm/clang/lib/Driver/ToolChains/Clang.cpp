@@ -1800,7 +1800,10 @@ void Clang::AddAArch64TargetArgs(const ArgList &Args,
         D.Diag(diag::err_invalid_branch_protection)
             << Scope << A->getAsString(Args);
       Key = "a_key";
-      IndirectBranches = false;
+      if (Triple.isOSOpenBSD())
+        IndirectBranches = true;
+      else
+        IndirectBranches = false;
     } else {
       StringRef Err;
       llvm::AArch64::ParsedBranchProtection PBP;
@@ -1818,6 +1821,12 @@ void Clang::AddAArch64TargetArgs(const ArgList &Args,
         Args.MakeArgString(Twine("-msign-return-address-key=") + Key));
     if (IndirectBranches)
       CmdArgs.push_back("-mbranch-target-enforce");
+  } else {
+    if (Triple.isOSOpenBSD()) {
+      CmdArgs.push_back("-msign-return-address=non-leaf");
+      CmdArgs.push_back("-msign-return-address-key=a_key");
+      CmdArgs.push_back("-mbranch-target-enforce");
+    }
   }
 
   // Handle -msve_vector_bits=<bits>
@@ -6011,6 +6020,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Arg *A = Args.getLastArg(options::OPT_fcf_protection_EQ)) {
     CmdArgs.push_back(
         Args.MakeArgString(Twine("-fcf-protection=") + A->getValue()));
+  } else if (Triple.isOSOpenBSD() && Triple.getArch() == llvm::Triple::x86_64) {
+    // Emit IBT endbr64 instructions by default
+    CmdArgs.push_back("-fcf-protection=branch");
+    // jump-table can generate indirect jumps, which are not permitted
+    CmdArgs.push_back("-fno-jump-tables");
   }
 
   // Forward -f options with positive and negative forms; we translate these by

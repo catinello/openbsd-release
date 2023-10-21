@@ -1,4 +1,4 @@
-/*	$OpenBSD: mft.c,v 1.89 2023/03/13 19:54:36 job Exp $ */
+/*	$OpenBSD: mft.c,v 1.98 2023/09/25 11:08:45 tb Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -87,6 +87,8 @@ ASN1_SEQUENCE(Manifest) = {
 DECLARE_ASN1_FUNCTIONS(Manifest);
 IMPLEMENT_ASN1_FUNCTIONS(Manifest);
 
+#define GENTIME_LENGTH 15
+
 /*
  * Convert an ASN1_GENERALIZEDTIME to a struct tm.
  * Returns 1 on success, 0 on failure.
@@ -94,15 +96,18 @@ IMPLEMENT_ASN1_FUNCTIONS(Manifest);
 static int
 generalizedtime_to_tm(const ASN1_GENERALIZEDTIME *gtime, struct tm *tm)
 {
-	const char *data;
-	size_t len;
-
-	data = ASN1_STRING_get0_data(gtime);
-	len = ASN1_STRING_length(gtime);
+	/*
+	 * ASN1_GENERALIZEDTIME is another name for ASN1_STRING. Check type and
+	 * length, so we don't accidentally accept a UTCTime. Punt on checking
+	 * Zulu time for OpenSSL: we don't want to mess about with silly flags.
+	 */
+	if (ASN1_STRING_type(gtime) != V_ASN1_GENERALIZEDTIME)
+		return 0;
+	if (ASN1_STRING_length(gtime) != GENTIME_LENGTH)
+		return 0;
 
 	memset(tm, 0, sizeof(*tm));
-	return ASN1_time_parse(data, len, tm, V_ASN1_GENERALIZEDTIME) ==
-	    V_ASN1_GENERALIZEDTIME;
+	return ASN1_TIME_to_tm(gtime, tm);
 }
 
 /*
@@ -124,15 +129,14 @@ mft_parse_time(const ASN1_GENERALIZEDTIME *from,
 		return 0;
 	}
 
-	/* check that until is not before from */
-	if (ASN1_time_tm_cmp(&tm_until, &tm_from) < 0) {
-		warnx("%s: bad update interval", p->fn);
-		return 0;
-	}
-
 	if ((p->res->thisupdate = timegm(&tm_from)) == -1 ||
 	    (p->res->nextupdate = timegm(&tm_until)) == -1)
 		errx(1, "%s: timegm failed", p->fn);
+
+	if (p->res->thisupdate > p->res->nextupdate) {
+		warnx("%s: bad update interval", p->fn);
+		return 0;
+	}
 
 	return 1;
 }
@@ -229,6 +233,7 @@ mft_parse_filehash(struct parse *p, const FileAndHash *fh)
 	int			 rc = 0;
 	struct mftfile		*fent;
 	enum rtype		 type;
+	size_t			 new_idx = 0;
 
 	if (!valid_mft_filename(fh->file->data, fh->file->length)) {
 		warnx("%s: RFC 6486 section 4.2.2: bad filename", p->fn);
@@ -252,8 +257,15 @@ mft_parse_filehash(struct parse *p, const FileAndHash *fh)
 		p->found_crl = 1;
 	}
 
-	/* Insert the filename and hash value. */
-	fent = &p->res->files[p->res->filesz++];
+	if (filemode)
+		fent = &p->res->files[p->res->filesz++];
+	else {
+		/* Fisher-Yates shuffle */
+		new_idx = arc4random_uniform(p->res->filesz + 1);
+		p->res->files[p->res->filesz++] = p->res->files[new_idx];
+		fent = &p->res->files[new_idx];
+	}
+
 	fent->type = type;
 	fent->file = fn;
 	fn = NULL;
@@ -277,12 +289,12 @@ mft_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
 	int			 i, rc = 0;
 
 	if ((mft = d2i_Manifest(NULL, &d, dsz)) == NULL) {
-		cryptowarnx("%s: RFC 6486 section 4: failed to parse Manifest",
+		warnx("%s: RFC 6486 section 4: failed to parse Manifest",
 		    p->fn);
 		goto out;
 	}
 
-	if (!valid_econtent_version(p->fn, mft->version))
+	if (!valid_econtent_version(p->fn, mft->version, 0))
 		goto out;
 
 	p->res->seqnum = x509_convert_seqnum(p->fn, mft->manifestNumber);
@@ -346,9 +358,11 @@ mft_parse_econtent(const unsigned char *d, size_t dsz, struct parse *p)
  * The MFT content is otherwise returned.
  */
 struct mft *
-mft_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
+mft_parse(X509 **x509, const char *fn, int talid, const unsigned char *der,
+    size_t len)
 {
 	struct parse	 p;
+	struct cert	*cert = NULL;
 	int		 rc = 0;
 	size_t		 cmsz;
 	unsigned char	*cms;
@@ -414,6 +428,9 @@ mft_parse(X509 **x509, const char *fn, const unsigned char *der, size_t len)
 	if (mft_parse_econtent(cms, cmsz, &p) == 0)
 		goto out;
 
+	if ((cert = cert_parse_ee_cert(fn, *x509)) == NULL)
+		goto out;
+
 	if (p.res->signtime > p.res->nextupdate) {
 		warnx("%s: dating issue: CMS signing-time after MFT nextUpdate",
 		    fn);
@@ -429,6 +446,7 @@ out:
 		*x509 = NULL;
 	}
 	free(crldp);
+	cert_free(cert);
 	free(cms);
 	return p.res;
 }
@@ -470,6 +488,7 @@ mft_buffer(struct ibuf *b, const struct mft *p)
 
 	io_simple_buffer(b, &p->stale, sizeof(p->stale));
 	io_simple_buffer(b, &p->repoid, sizeof(p->repoid));
+	io_simple_buffer(b, &p->talid, sizeof(p->talid));
 	io_str_buffer(b, p->path);
 
 	io_str_buffer(b, p->aia);
@@ -502,6 +521,7 @@ mft_read(struct ibuf *b)
 
 	io_read_buf(b, &p->stale, sizeof(p->stale));
 	io_read_buf(b, &p->repoid, sizeof(p->repoid));
+	io_read_buf(b, &p->talid, sizeof(p->talid));
 	io_read_str(b, &p->path);
 
 	io_read_str(b, &p->aia);
@@ -545,7 +565,7 @@ mft_compare(const struct mft *a, const struct mft *b)
 		return 0;
 
 	r = strcmp(a->seqnum, b->seqnum);
-	if (r >= 0)	/* a is greater or equal, prefer a */
+	if (r > 0)	/* a is greater, prefer a */
 		return 1;
 	return 0;
 }

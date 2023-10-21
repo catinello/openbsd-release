@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmd.h,v 1.114 2023/01/28 14:40:53 dv Exp $	*/
+/*	$OpenBSD: vmd.h,v 1.124 2023/07/27 09:27:43 dv Exp $	*/
 
 /*
  * Copyright (c) 2015 Mike Larkin <mlarkin@openbsd.org>
@@ -22,6 +22,8 @@
 #include <sys/socket.h>
 
 #include <machine/vmmvar.h>
+
+#include <dev/vmm/vmm.h>
 
 #include <net/if.h>
 #include <netinet/in.h>
@@ -55,9 +57,6 @@
 #define VM_MAX_BASE_PER_DISK	4
 #define VM_TTYNAME_MAX		16
 #define VM_MAX_DISKS_PER_VM	4
-#define VM_MAX_PATH_DISK	128
-#define VM_MAX_PATH_CDROM	128
-#define VM_MAX_KERNEL_PATH	128
 #define VM_MAX_NICS_PER_VM	4
 
 #define VM_PCI_MMIO_BAR_SIZE	0x00010000
@@ -71,6 +70,13 @@
 #define VM_DEFAULT_MEMORY	512 * 1024 * 1024	/* 512 MiB */
 
 #define VMD_DEFAULT_STAGGERED_START_DELAY 30
+
+/* Launch mode identifiers for when a vm fork+exec's. */
+#define VMD_LAUNCH_VM		1
+#define VMD_LAUNCH_DEV		2
+
+#define VMD_DEVTYPE_NET		'n'
+#define VMD_DEVTYPE_DISK	'd'
 
 /* Rate-limit fast reboots */
 #define VM_START_RATE_SEC	6	/* min. seconds since last reboot */
@@ -95,6 +101,10 @@
 
 /* Unique local address for IPv6 */
 #define VMD_ULA_PREFIX		"fd00::/8"
+
+/* Verbosity arguments for use when caling execvp(2). */
+#define VMD_VERBOSE_1		"-v";
+#define VMD_VERBOSE_2		"-vv";
 
 enum imsg_type {
 	IMSG_VMDOP_START_VM_REQUEST = IMSG_PROC_MAX,
@@ -135,7 +145,10 @@ enum imsg_type {
 	IMSG_VMDOP_VM_SHUTDOWN,
 	IMSG_VMDOP_VM_REBOOT,
 	IMSG_VMDOP_CONFIG,
-	IMSG_VMDOP_DONE
+	IMSG_VMDOP_DONE,
+	/* Device Operation Messages */
+	IMSG_DEVOP_HOSTMAC,
+	IMSG_DEVOP_MSG,
 };
 
 struct vmop_result {
@@ -213,15 +226,23 @@ struct vmop_create_params {
 #define VMIFF_RDOMAIN		0x08
 #define VMIFF_OPTMASK		(VMIFF_LOCKED|VMIFF_LOCAL|VMIFF_RDOMAIN)
 
+	size_t			 vmc_ndisks;
+	char			 vmc_disks[VM_MAX_DISKS_PER_VM][PATH_MAX];
 	unsigned int		 vmc_disktypes[VM_MAX_DISKS_PER_VM];
 	unsigned int		 vmc_diskbases[VM_MAX_DISKS_PER_VM];
 #define VMDF_RAW		0x01
 #define VMDF_QCOW2		0x02
 
+	char			 vmc_cdrom[PATH_MAX];
+	int			 vmc_kernel;
+
+	size_t			 vmc_nnics;
 	char			 vmc_ifnames[VM_MAX_NICS_PER_VM][IF_NAMESIZE];
 	char			 vmc_ifswitch[VM_MAX_NICS_PER_VM][VM_NAME_MAX];
 	char			 vmc_ifgroup[VM_MAX_NICS_PER_VM][IF_NAMESIZE];
 	unsigned int		 vmc_ifrdomain[VM_MAX_NICS_PER_VM];
+	uint8_t			 vmc_macs[VM_MAX_NICS_PER_VM][6];
+
 	struct vmop_owner	 vmc_owner;
 
 	/* instance template params */
@@ -282,11 +303,14 @@ struct vmd_vm {
 	struct vmop_create_params vm_params;
 	pid_t			 vm_pid;
 	uint32_t		 vm_vmid;
+
 	int			 vm_kernel;
+	char			*vm_kernel_path; /* Used by vm.conf. */
+
 	int			 vm_cdrom;
 	int			 vm_disks[VM_MAX_DISKS_PER_VM][VM_MAX_BASE_PER_DISK];
 	struct vmd_if		 vm_ifs[VM_MAX_NICS_PER_VM];
-	char			*vm_ttyname;
+	char			 vm_ttyname[VM_TTYNAME_MAX];
 	int			 vm_tty;
 	uint32_t		 vm_peerid;
 	/* When set, VM was defined in a config file */
@@ -321,12 +345,12 @@ struct name2id {
 };
 TAILQ_HEAD(name2idlist, name2id);
 
-struct address {
-	struct sockaddr_storage	 ss;
-	int			 prefixlen;
-	TAILQ_ENTRY(address)	 entry;
+struct local_prefix {
+	struct in_addr		 lp_in;
+	struct in_addr		 lp_mask;
+	struct in6_addr		 lp_in6;
+	struct in6_addr		 lp_mask6;
 };
-TAILQ_HEAD(addresslist, address);
 
 #define SUN_PATH_LEN		(sizeof(((struct sockaddr_un *)NULL)->sun_path))
 struct vmd_agentx {
@@ -347,14 +371,14 @@ struct vmd_config {
 
 	struct timeval		 delay;
 	int			 parallelism;
-	struct address		 cfg_localprefix;
-	struct address		 cfg_localprefix6;
+	struct local_prefix	 cfg_localprefix;
 	struct vmd_agentx	 cfg_agentx;
 };
 
 struct vmd {
 	struct privsep		 vmd_ps;
 	const char		*vmd_conffile;
+	char			*argv0;	/* abs. path to vmd for exec, unveil */
 
 	/* global configuration that is sent to the children */
 	struct vmd_config	 vmd_cfg;
@@ -443,6 +467,7 @@ char	*get_string(uint8_t *, size_t);
 uint32_t prefixlen2mask(uint8_t);
 void	 prefixlen2mask6(u_int8_t, struct in6_addr *);
 void	 getmonotime(struct timeval *);
+int	 close_fd(int);
 
 /* priv.c */
 void	 priv(struct privsep *, struct privsep_proc *);
@@ -451,9 +476,9 @@ int	 priv_findname(const char *, const char **);
 int	 priv_validgroup(const char *);
 int	 vm_priv_ifconfig(struct privsep *, struct vmd_vm *);
 int	 vm_priv_brconfig(struct privsep *, struct vmd_switch *);
-uint32_t vm_priv_addr(struct vmd_config *, uint32_t, int, int);
-int	 vm_priv_addr6(struct vmd_config *, uint32_t, int, int,
-	    struct in6_addr *);
+uint32_t vm_priv_addr(struct local_prefix *, uint32_t, int, int);
+int	 vm_priv_addr6(struct local_prefix *, uint32_t, int, int,
+    	    struct in6_addr *);
 
 /* vmm.c */
 void	 vmm(struct privsep *, struct privsep_proc *);
@@ -463,6 +488,7 @@ int	 fd_hasdata(int);
 int	 vmm_pipe(struct vmd_vm *, int, void (*)(int, short, void *));
 
 /* vm.c */
+void	 vm_main(int, int);
 void	 mutex_lock(pthread_mutex_t *);
 void	 mutex_unlock(pthread_mutex_t *);
 int	 read_mem(paddr_t, void *buf, size_t);
@@ -473,6 +499,7 @@ void	 vm_pipe_send(struct vm_dev_pipe *, enum pipe_msg_type);
 enum pipe_msg_type vm_pipe_recv(struct vm_dev_pipe *);
 int	 write_mem(paddr_t, const void *buf, size_t);
 void*	 hvaddr_mem(paddr_t, size_t);
+int	 remap_guest_mem(struct vmd_vm *, int);
 
 /* config.c */
 int	 config_init(struct vmd *);
@@ -494,9 +521,16 @@ void vm_agentx_shutdown(void);
 /* parse.y */
 int	 parse_config(const char *);
 int	 cmdline_symset(char *);
-int	 host(const char *, struct address *);
+int	 parse_prefix4(const char *, struct local_prefix *, const char **);
+int	 parse_prefix6(const char *, struct local_prefix *, const char **);
 
 /* virtio.c */
 int	 virtio_get_base(int, char *, size_t, int, const char *);
+
+/* vionet.c */
+__dead void vionet_main(int, int);
+
+/* vioblk.c */
+__dead void vioblk_main(int, int);
 
 #endif /* VMD_H */

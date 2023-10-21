@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip6_forward.c,v 1.108 2022/08/09 21:10:02 kn Exp $	*/
+/*	$OpenBSD: ip6_forward.c,v 1.112 2023/07/07 08:05:02 bluhm Exp $	*/
 /*	$KAME: ip6_forward.c,v 1.75 2001/06/29 12:42:13 jinmei Exp $	*/
 
 /*
@@ -63,8 +63,10 @@
 #include <netinet/ip_ah.h>
 #include <netinet/ip_esp.h>
 #include <netinet/udp.h>
-#include <netinet/tcp.h>
 #endif
+#include <netinet/tcp.h>
+#include <netinet/tcp_timer.h>
+#include <netinet/tcp_var.h>
 
 /*
  * Forward a packet.  If some error occurs return the sender
@@ -102,9 +104,13 @@ ip6_forward(struct mbuf *m, struct rtentry *rt, int srcrt)
 	if ((m->m_flags & (M_BCAST|M_MCAST)) != 0 ||
 	    IN6_IS_ADDR_MULTICAST(&ip6->ip6_dst) ||
 	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src)) {
+		time_t uptime;
+
 		ip6stat_inc(ip6s_cantforward);
-		if (ip6_log_time + ip6_log_interval < getuptime()) {
-			ip6_log_time = getuptime();
+		uptime = getuptime();
+
+		if (ip6_log_time + ip6_log_interval < uptime) {
+			ip6_log_time = uptime;
 			inet_ntop(AF_INET6, &ip6->ip6_src, src6, sizeof(src6));
 			inet_ntop(AF_INET6, &ip6->ip6_dst, dst6, sizeof(dst6));
 			log(LOG_DEBUG,
@@ -189,11 +195,14 @@ reroute:
 	 */
 	if (in6_addr2scopeid(m->m_pkthdr.ph_ifidx, &ip6->ip6_src) !=
 	    in6_addr2scopeid(rt->rt_ifidx, &ip6->ip6_src)) {
+		time_t uptime;
+
 		ip6stat_inc(ip6s_cantforward);
 		ip6stat_inc(ip6s_badscope);
+		uptime = getuptime();
 
-		if (ip6_log_time + ip6_log_interval < getuptime()) {
-			ip6_log_time = getuptime();
+		if (ip6_log_time + ip6_log_interval < uptime) {
+			ip6_log_time = uptime;
 			inet_ntop(AF_INET6, &ip6->ip6_src, src6, sizeof(src6));
 			inet_ntop(AF_INET6, &ip6->ip6_dst, dst6, sizeof(dst6));
 			log(LOG_DEBUG,
@@ -309,33 +318,21 @@ reroute:
 		goto reroute;
 	}
 #endif
-	in6_proto_cksum_out(m, ifp);
 
-	/* Check the size after pf_test to give pf a chance to refragment. */
-	if (m->m_pkthdr.len > ifp->if_mtu) {
-		if (mcopy)
-			icmp6_error(mcopy, ICMP6_PACKET_TOO_BIG, 0,
-			    ifp->if_mtu);
-		m_freem(m);
-		goto out;
-	}
-
-	error = ifp->if_output(ifp, m, sin6tosa(sin6), rt);
-	if (error) {
+	error = if_output_tso(ifp, &m, sin6tosa(sin6), rt, ifp->if_mtu);
+	if (error)
 		ip6stat_inc(ip6s_cantforward);
-	} else {
+	else if (m == NULL)
 		ip6stat_inc(ip6s_forward);
-		if (type)
-			ip6stat_inc(ip6s_redirectsent);
-		else {
-			if (mcopy)
-				goto freecopy;
-		}
-	}
+	if (error || m == NULL)
+		goto senderr;
 
-#if NPF > 0 || defined(IPSEC)
+	if (mcopy != NULL)
+		icmp6_error(mcopy, ICMP6_PACKET_TOO_BIG, 0, ifp->if_mtu);
+	m_freem(m);
+	goto out;
+
 senderr:
-#endif
 	if (mcopy == NULL)
 		goto out;
 
@@ -343,6 +340,7 @@ senderr:
 	case 0:
 		if (type == ND_REDIRECT) {
 			icmp6_redirect_output(mcopy, rt);
+			ip6stat_inc(ip6s_redirectsent);
 			goto out;
 		}
 		goto freecopy;

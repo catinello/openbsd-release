@@ -1,4 +1,4 @@
-/*	$OpenBSD: uipc_socket.c,v 1.301 2023/02/10 14:34:17 visa Exp $	*/
+/*	$OpenBSD: uipc_socket.c,v 1.309 2023/08/08 22:07:25 mvs Exp $	*/
 /*	$NetBSD: uipc_socket.c,v 1.21 1996/02/04 02:17:52 christos Exp $	*/
 
 /*
@@ -316,21 +316,19 @@ sofree(struct socket *so, int keep_lock)
 	klist_free(&so->so_rcv.sb_klist);
 	klist_free(&so->so_snd.sb_klist);
 #ifdef SOCKET_SPLICE
-	if (so->so_sp) {
-		if (issplicedback(so)) {
-			int freeing = SOSP_FREEING_WRITE;
+	if (issplicedback(so)) {
+		int freeing = SOSP_FREEING_WRITE;
 
-			if (so->so_sp->ssp_soback == so)
-				freeing |= SOSP_FREEING_READ;
-			sounsplice(so->so_sp->ssp_soback, so, freeing);
-		}
-		if (isspliced(so)) {
-			int freeing = SOSP_FREEING_READ;
+		if (so->so_sp->ssp_soback == so)
+			freeing |= SOSP_FREEING_READ;
+		sounsplice(so->so_sp->ssp_soback, so, freeing);
+	}
+	if (isspliced(so)) {
+		int freeing = SOSP_FREEING_READ;
 
-			if (so == so->so_sp->ssp_socket)
-				freeing |= SOSP_FREEING_WRITE;
-			sounsplice(so, so->so_sp->ssp_socket, freeing);
-		}
+		if (so == so->so_sp->ssp_socket)
+			freeing |= SOSP_FREEING_WRITE;
+		sounsplice(so, so->so_sp->ssp_socket, freeing);
 	}
 #endif /* SOCKET_SPLICE */
 	sbrelease(so, &so->so_snd);
@@ -408,7 +406,7 @@ drop:
 			while (so->so_newconn > 0) {
 				so->so_state |= SS_NEWCONN_WAIT;
 				sosleep_nsec(so, &so->so_newconn, PSOCK,
-					"netlck", INFSLP);
+				    "newcon", INFSLP);
 			}
 		}
 
@@ -526,7 +524,7 @@ sodisconnect(struct socket *so)
 
 int m_getuio(struct mbuf **, int, long, struct uio *);
 
-#define	SBLOCKWAIT(f)	(((f) & MSG_DONTWAIT) ? M_NOWAIT : M_WAITOK)
+#define	SBLOCKWAIT(f)	(((f) & MSG_DONTWAIT) ? 0 : SBL_WAIT)
 /*
  * Send on a socket.
  * If send must go all at once and message is larger than
@@ -1221,9 +1219,8 @@ sorflush(struct socket *so)
 	const struct protosw *pr = so->so_proto;
 	int error;
 
-	sb->sb_flags |= SB_NOINTR;
-	error = sblock(so, sb, M_WAITOK);
-	/* with SB_NOINTR and M_WAITOK sblock() must not fail */
+	error = sblock(so, sb, SBL_WAIT | SBL_NOINTR);
+	/* with SBL_WAIT and SLB_NOINTR sblock() must not fail */
 	KASSERT(error == 0);
 	socantrcvmore(so);
 	m = sb->sb_mb;
@@ -1260,14 +1257,19 @@ sosplice(struct socket *so, int fd, off_t max, struct timeval *tv)
 		if (sosplice_taskq == NULL) {
 			tq = taskq_create("sosplice", 1, IPL_SOFTNET,
 			    TASKQ_MPSAFE);
+			if (tq == NULL) {
+				rw_exit_write(&sosplice_lock);
+				return (ENOMEM);
+			}
 			/* Ensure the taskq is fully visible to other CPUs. */
 			membar_producer();
 			sosplice_taskq = tq;
 		}
 		rw_exit_write(&sosplice_lock);
+	} else {
+		/* Ensure the taskq is fully visible on this CPU. */
+		membar_consumer();
 	}
-	if (sosplice_taskq == NULL)
-		return (ENOMEM);
 
 	if ((so->so_proto->pr_flags & PR_SPLICE) == 0)
 		return (EPROTONOSUPPORT);
@@ -1287,7 +1289,7 @@ sosplice(struct socket *so, int fd, off_t max, struct timeval *tv)
 	/* If no fd is given, unsplice by removing existing link. */
 	if (fd < 0) {
 		/* Lock receive buffer. */
-		if ((error = sblock(so, &so->so_rcv, M_WAITOK)) != 0) {
+		if ((error = sblock(so, &so->so_rcv, SBL_WAIT)) != 0) {
 			return (error);
 		}
 		if (so->so_sp->ssp_socket)
@@ -1320,10 +1322,10 @@ sosplice(struct socket *so, int fd, off_t max, struct timeval *tv)
 	}
 
 	/* Lock both receive and send buffer. */
-	if ((error = sblock(so, &so->so_rcv, M_WAITOK)) != 0) {
+	if ((error = sblock(so, &so->so_rcv, SBL_WAIT)) != 0) {
 		goto frele;
 	}
-	if ((error = sblock(so, &sosp->so_snd, M_WAITOK)) != 0) {
+	if ((error = sblock(so, &sosp->so_snd, SBL_WAIT)) != 0) {
 		sbunlock(so, &so->so_rcv);
 		goto frele;
 	}
@@ -1787,23 +1789,16 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 {
 	int error = 0;
 
-	soassertlocked(so);
-
 	if (level != SOL_SOCKET) {
 		if (so->so_proto->pr_ctloutput) {
+			solock(so);
 			error = (*so->so_proto->pr_ctloutput)(PRCO_SETOPT, so,
 			    level, optname, m);
+			sounlock(so);
 			return (error);
 		}
 		error = ENOPROTOOPT;
 	} else {
-		switch (optname) {
-		case SO_BINDANY:
-			if ((error = suser(curproc)) != 0)	/* XXX */
-				return (error);
-			break;
-		}
-
 		switch (optname) {
 
 		case SO_LINGER:
@@ -1811,10 +1806,21 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 			    mtod(m, struct linger *)->l_linger < 0 ||
 			    mtod(m, struct linger *)->l_linger > SHRT_MAX)
 				return (EINVAL);
+
+			solock(so);
 			so->so_linger = mtod(m, struct linger *)->l_linger;
+			if (*mtod(m, int *))
+				so->so_options |= optname;
+			else
+				so->so_options &= ~optname;
+			sounlock(so);
+
+			break;
+		case SO_BINDANY:
+			if ((error = suser(curproc)) != 0)	/* XXX */
+				return (error);
 			/* FALLTHROUGH */
 
-		case SO_BINDANY:
 		case SO_DEBUG:
 		case SO_KEEPALIVE:
 		case SO_USELOOPBACK:
@@ -1826,12 +1832,15 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 		case SO_ZEROIZE:
 			if (m == NULL || m->m_len < sizeof (int))
 				return (EINVAL);
+
+			solock(so);
 			if (*mtod(m, int *))
 				so->so_options |= optname;
 			else
 				so->so_options &= ~optname;
-			break;
+			sounlock(so);
 
+			break;
 		case SO_DONTROUTE:
 			if (m == NULL || m->m_len < sizeof (int))
 				return (EINVAL);
@@ -1844,6 +1853,9 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 		case SO_SNDLOWAT:
 		case SO_RCVLOWAT:
 		    {
+			struct sockbuf *sb = (optname == SO_SNDBUF ||
+			    optname == SO_SNDLOWAT ?
+			    &so->so_snd : &so->so_rcv);
 			u_long cnt;
 
 			if (m == NULL || m->m_len < sizeof (int))
@@ -1851,43 +1863,38 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 			cnt = *mtod(m, int *);
 			if ((long)cnt <= 0)
 				cnt = 1;
+
+			solock(so);
 			switch (optname) {
-
 			case SO_SNDBUF:
-				if (so->so_snd.sb_state & SS_CANTSENDMORE)
-					return (EINVAL);
-				if (sbcheckreserve(cnt, so->so_snd.sb_wat) ||
-				    sbreserve(so, &so->so_snd, cnt))
-					return (ENOBUFS);
-				so->so_snd.sb_wat = cnt;
-				break;
-
 			case SO_RCVBUF:
-				if (so->so_rcv.sb_state & SS_CANTRCVMORE)
-					return (EINVAL);
-				if (sbcheckreserve(cnt, so->so_rcv.sb_wat) ||
-				    sbreserve(so, &so->so_rcv, cnt))
-					return (ENOBUFS);
-				so->so_rcv.sb_wat = cnt;
+				if (sb->sb_state &
+				    (SS_CANTSENDMORE | SS_CANTRCVMORE)) {
+					error = EINVAL;
+					break;
+				}
+				if (sbcheckreserve(cnt, sb->sb_wat) ||
+				    sbreserve(so, sb, cnt)) {
+					error = ENOBUFS;
+					break;
+				}
+				sb->sb_wat = cnt;
 				break;
-
 			case SO_SNDLOWAT:
-				so->so_snd.sb_lowat =
-				    (cnt > so->so_snd.sb_hiwat) ?
-				    so->so_snd.sb_hiwat : cnt;
-				break;
 			case SO_RCVLOWAT:
-				so->so_rcv.sb_lowat =
-				    (cnt > so->so_rcv.sb_hiwat) ?
-				    so->so_rcv.sb_hiwat : cnt;
+				sb->sb_lowat = (cnt > sb->sb_hiwat) ?
+				    sb->sb_hiwat : cnt;
 				break;
 			}
+			sounlock(so);
 			break;
 		    }
 
 		case SO_SNDTIMEO:
 		case SO_RCVTIMEO:
 		    {
+			struct sockbuf *sb = (optname == SO_SNDTIMEO ?
+			    &so->so_snd : &so->so_rcv);
 			struct timeval tv;
 			uint64_t nsecs;
 
@@ -1901,15 +1908,10 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 				return (EDOM);
 			if (nsecs == 0)
 				nsecs = INFSLP;
-			switch (optname) {
 
-			case SO_SNDTIMEO:
-				so->so_snd.sb_timeo_nsecs = nsecs;
-				break;
-			case SO_RCVTIMEO:
-				so->so_rcv.sb_timeo_nsecs = nsecs;
-				break;
-			}
+			solock(so);
+			sb->sb_timeo_nsecs = nsecs;
+			sounlock(so);
 			break;
 		    }
 
@@ -1921,19 +1923,20 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 				    so->so_proto->pr_domain;
 
 				level = dom->dom_protosw->pr_protocol;
+				solock(so);
 				error = (*so->so_proto->pr_ctloutput)
 				    (PRCO_SETOPT, so, level, optname, m);
-				return (error);
-			}
-			error = ENOPROTOOPT;
+				sounlock(so);
+			} else
+				error = ENOPROTOOPT;
 			break;
-
 #ifdef SOCKET_SPLICE
 		case SO_SPLICE:
+			solock(so);
 			if (m == NULL) {
 				error = sosplice(so, -1, 0, NULL);
 			} else if (m->m_len < sizeof(int)) {
-				return (EINVAL);
+				error = EINVAL;
 			} else if (m->m_len < sizeof(struct splice)) {
 				error = sosplice(so, *mtod(m, int *), 0, NULL);
 			} else {
@@ -1942,16 +1945,13 @@ sosetopt(struct socket *so, int level, int optname, struct mbuf *m)
 				    mtod(m, struct splice *)->sp_max,
 				   &mtod(m, struct splice *)->sp_idle);
 			}
+			sounlock(so);
 			break;
 #endif /* SOCKET_SPLICE */
 
 		default:
 			error = ENOPROTOOPT;
 			break;
-		}
-		if (error == 0 && so->so_proto->pr_ctloutput) {
-			(*so->so_proto->pr_ctloutput)(PRCO_SETOPT, so,
-			    level, optname, m);
 		}
 	}
 
@@ -2364,7 +2364,8 @@ sobuf_print(struct sockbuf *sb,
 	(*pr)("\tsb_mbtail: %p\n", sb->sb_mbtail);
 	(*pr)("\tsb_lastrecord: %p\n", sb->sb_lastrecord);
 	(*pr)("\tsb_sel: ...\n");
-	(*pr)("\tsb_flags: %i\n", sb->sb_flags);
+	(*pr)("\tsb_flags: %04x\n", sb->sb_flags);
+	(*pr)("\tsb_state: %04x\n", sb->sb_state);
 	(*pr)("\tsb_timeo_nsecs: %llu\n", sb->sb_timeo_nsecs);
 }
 

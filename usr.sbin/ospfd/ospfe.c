@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.111 2023/03/08 04:43:14 guenther Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.113 2023/07/03 09:40:47 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -842,11 +842,11 @@ orig_rtr_lsa(struct area *area)
 		fatal("orig_rtr_lsa");
 
 	/* reserve space for LSA header and LSA Router header */
-	if (ibuf_reserve(buf, sizeof(lsa_hdr)) == NULL)
-		fatal("orig_rtr_lsa: ibuf_reserve failed");
+	if (ibuf_add_zero(buf, sizeof(lsa_hdr)) == -1)
+		fatal("orig_rtr_lsa: ibuf_add_zero failed");
 
-	if (ibuf_reserve(buf, sizeof(lsa_rtr)) == NULL)
-		fatal("orig_rtr_lsa: ibuf_reserve failed");
+	if (ibuf_add_zero(buf, sizeof(lsa_rtr)) == -1)
+		fatal("orig_rtr_lsa: ibuf_add_zero failed");
 
 	/* links */
 	LIST_FOREACH(iface, &area->iface_list, entry) {
@@ -1083,8 +1083,9 @@ orig_rtr_lsa(struct area *area)
 
 	lsa_rtr.dummy = 0;
 	lsa_rtr.nlinks = htons(num_links);
-	memcpy(ibuf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_rtr)),
-	    &lsa_rtr, sizeof(lsa_rtr));
+	if (ibuf_set(buf, sizeof(lsa_hdr), &lsa_rtr, sizeof(lsa_rtr)) ==
+	    -1)
+		fatal("orig_rtr_lsa: ibuf_set failed");
 
 	/* LSA header */
 	lsa_hdr.age = htons(DEFAULT_AGE);
@@ -1095,15 +1096,16 @@ orig_rtr_lsa(struct area *area)
 	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa_hdr.len = htons(ibuf_size(buf));
 	lsa_hdr.ls_chksum = 0;		/* updated later */
-	memcpy(ibuf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
+	if (ibuf_set(buf, 0, &lsa_hdr, sizeof(lsa_hdr)) == -1)
+		fatal("orig_rtr_lsa: ibuf_set failed");
 
-	chksum = htons(iso_cksum(buf->buf, ibuf_size(buf), LS_CKSUM_OFFSET));
-	memcpy(ibuf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
-	    &chksum, sizeof(chksum));
+	chksum = iso_cksum(ibuf_data(buf), ibuf_size(buf), LS_CKSUM_OFFSET);
+	if (ibuf_set_n16(buf, LS_CKSUM_OFFSET, chksum) == -1)
+		fatal("orig_rtr_lsa: ibuf_set_n16 failed");
 
 	if (self && num_links)
 		imsg_compose_event(iev_rde, IMSG_LS_UPD, self->peerid, 0,
-		    -1, buf->buf, ibuf_size(buf));
+		    -1, ibuf_data(buf), ibuf_size(buf));
 	else
 		log_warnx("orig_rtr_lsa: empty area %s",
 		    inet_ntoa(area->id));
@@ -1126,8 +1128,8 @@ orig_net_lsa(struct iface *iface)
 		fatal("orig_net_lsa");
 
 	/* reserve space for LSA header and LSA Router header */
-	if (ibuf_reserve(buf, sizeof(lsa_hdr)) == NULL)
-		fatal("orig_net_lsa: ibuf_reserve failed");
+	if (ibuf_add_zero(buf, sizeof(lsa_hdr)) == -1)
+		fatal("orig_net_lsa: ibuf_add_zero failed");
 
 	/* LSA net mask and then all fully adjacent routers */
 	if (ibuf_add(buf, &iface->mask, sizeof(iface->mask)))
@@ -1160,14 +1162,15 @@ orig_net_lsa(struct iface *iface)
 	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa_hdr.len = htons(ibuf_size(buf));
 	lsa_hdr.ls_chksum = 0;		/* updated later */
-	memcpy(ibuf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
+	if (ibuf_set(buf, 0, &lsa_hdr, sizeof(lsa_hdr)) == -1)
+		fatal("orig_net_lsa: ibuf_set failed");
 
-	chksum = htons(iso_cksum(buf->buf, ibuf_size(buf), LS_CKSUM_OFFSET));
-	memcpy(ibuf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
-	    &chksum, sizeof(chksum));
+	chksum = iso_cksum(ibuf_data(buf), ibuf_size(buf), LS_CKSUM_OFFSET);
+	if (ibuf_set_n16(buf, LS_CKSUM_OFFSET, chksum) == -1)
+		fatal("orig_net_lsa: ibuf_set_n16 failed");
 
 	imsg_compose_event(iev_rde, IMSG_LS_UPD, iface->self->peerid, 0,
-	    -1, buf->buf, ibuf_size(buf));
+	    -1, ibuf_data(buf), ibuf_size(buf));
 
 	ibuf_free(buf);
 }

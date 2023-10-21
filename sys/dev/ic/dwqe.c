@@ -1,4 +1,4 @@
-/*	$OpenBSD: dwqe.c,v 1.3 2023/03/22 21:41:28 jsg Exp $	*/
+/*	$OpenBSD: dwqe.c,v 1.11 2023/08/07 20:28:47 kettenis Exp $	*/
 /*
  * Copyright (c) 2008, 2019 Mark Kettenis <kettenis@openbsd.org>
  * Copyright (c) 2017, 2022 Patrick Wildt <patrick@blueri.se>
@@ -74,6 +74,7 @@ void	dwqe_watchdog(struct ifnet *);
 int	dwqe_media_change(struct ifnet *);
 void	dwqe_media_status(struct ifnet *, struct ifmediareq *);
 
+void	dwqe_mii_attach(struct dwqe_softc *);
 int	dwqe_mii_readreg(struct device *, int, int);
 void	dwqe_mii_writereg(struct device *, int, int, int);
 void	dwqe_mii_statchg(struct device *);
@@ -115,7 +116,7 @@ dwqe_attach(struct dwqe_softc *sc)
 	for (i = 0; i < 4; i++)
 		sc->sc_hw_feature[i] = dwqe_read(sc, GMAC_MAC_HW_FEATURE(i));
 
-	timeout_set(&sc->sc_tick, dwqe_tick, sc);
+	timeout_set(&sc->sc_phy_tick, dwqe_tick, sc);
 	timeout_set(&sc->sc_rxto, dwqe_rxtick, sc);
 
 	ifp = &sc->sc_ac.ac_if;
@@ -212,14 +213,8 @@ dwqe_attach(struct dwqe_softc *sc)
 		dwqe_write(sc, GMAC_SYS_BUS_MODE, mode);
 	}
 
-	mii_attach(&sc->sc_dev, &sc->sc_mii, 0xffffffff, sc->sc_phyloc,
-	    (sc->sc_phyloc == MII_PHY_ANY) ? 0 : MII_OFFSET_ANY, 0);
-	if (LIST_FIRST(&sc->sc_mii.mii_phys) == NULL) {
-		printf("%s: no PHY found!\n", sc->sc_dev.dv_xname);
-		ifmedia_add(&sc->sc_media, IFM_ETHER|IFM_MANUAL, 0, NULL);
-		ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_MANUAL);
-	} else
-		ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_AUTO);
+	if (!sc->sc_fixed_link)
+		dwqe_mii_attach(sc);
 
 	if_attach(ifp);
 	ether_ifattach(ifp);
@@ -229,6 +224,38 @@ dwqe_attach(struct dwqe_softc *sc)
 	dwqe_write(sc, GMAC_CHAN_INTR_ENA(0), 0);
 
 	return 0;
+}
+
+void
+dwqe_mii_attach(struct dwqe_softc *sc)
+{
+	int mii_flags = 0;
+
+	switch (sc->sc_phy_mode) {
+	case DWQE_PHY_MODE_RGMII:
+		mii_flags |= MIIF_SETDELAY;
+		break;
+	case DWQE_PHY_MODE_RGMII_ID:
+		mii_flags |= MIIF_SETDELAY | MIIF_RXID | MIIF_TXID;
+		break;
+	case DWQE_PHY_MODE_RGMII_RXID:
+		mii_flags |= MIIF_SETDELAY | MIIF_RXID;
+		break;
+	case DWQE_PHY_MODE_RGMII_TXID:
+		mii_flags |= MIIF_SETDELAY | MIIF_TXID;
+		break;
+	default:
+		break;
+	}
+
+	mii_attach(&sc->sc_dev, &sc->sc_mii, 0xffffffff, sc->sc_phyloc,
+	    (sc->sc_phyloc == MII_PHY_ANY) ? 0 : MII_OFFSET_ANY, mii_flags);
+	if (LIST_FIRST(&sc->sc_mii.mii_phys) == NULL) {
+		printf("%s: no PHY found!\n", sc->sc_dev.dv_xname);
+		ifmedia_add(&sc->sc_media, IFM_ETHER|IFM_MANUAL, 0, NULL);
+		ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_MANUAL);
+	} else
+		ifmedia_set(&sc->sc_media, IFM_ETHER|IFM_AUTO);
 }
 
 uint32_t
@@ -355,7 +382,10 @@ dwqe_ioctl(struct ifnet *ifp, u_long cmd, caddr_t addr)
 
 	case SIOCGIFMEDIA:
 	case SIOCSIFMEDIA:
-		error = ifmedia_ioctl(ifp, ifr, &sc->sc_media, cmd);
+		if (sc->sc_fixed_link)
+			error = ENOTTY;
+		else
+			error = ifmedia_ioctl(ifp, ifr, &sc->sc_media, cmd);
 		break;
 
 	case SIOCGIFRXR:
@@ -414,17 +444,16 @@ dwqe_mii_readreg(struct device *self, int phy, int reg)
 	int n;
 
 	dwqe_write(sc, GMAC_MAC_MDIO_ADDR,
-	    sc->sc_clk << GMAC_MAC_MDIO_ADDR_CR_SHIFT |
+	    (sc->sc_clk << GMAC_MAC_MDIO_ADDR_CR_SHIFT) |
 	    (phy << GMAC_MAC_MDIO_ADDR_PA_SHIFT) |
 	    (reg << GMAC_MAC_MDIO_ADDR_RDA_SHIFT) |
 	    GMAC_MAC_MDIO_ADDR_GOC_READ |
 	    GMAC_MAC_MDIO_ADDR_GB);
-	delay(10000);
 
-	for (n = 0; n < 1000; n++) {
+	for (n = 0; n < 2000; n++) {
+		delay(10);
 		if ((dwqe_read(sc, GMAC_MAC_MDIO_ADDR) & GMAC_MAC_MDIO_ADDR_GB) == 0)
 			return dwqe_read(sc, GMAC_MAC_MDIO_DATA);
-		delay(10);
 	}
 
 	printf("%s: mii_read timeout\n", sc->sc_dev.dv_xname);
@@ -439,16 +468,16 @@ dwqe_mii_writereg(struct device *self, int phy, int reg, int val)
 
 	dwqe_write(sc, GMAC_MAC_MDIO_DATA, val);
 	dwqe_write(sc, GMAC_MAC_MDIO_ADDR,
-	    sc->sc_clk << GMAC_MAC_MDIO_ADDR_CR_SHIFT |
+	    (sc->sc_clk << GMAC_MAC_MDIO_ADDR_CR_SHIFT) |
 	    (phy << GMAC_MAC_MDIO_ADDR_PA_SHIFT) |
 	    (reg << GMAC_MAC_MDIO_ADDR_RDA_SHIFT) |
 	    GMAC_MAC_MDIO_ADDR_GOC_WRITE |
 	    GMAC_MAC_MDIO_ADDR_GB);
-	delay(10000);
-	for (n = 0; n < 1000; n++) {
+
+	for (n = 0; n < 2000; n++) {
+		delay(10);
 		if ((dwqe_read(sc, GMAC_MAC_MDIO_ADDR) & GMAC_MAC_MDIO_ADDR_GB) == 0)
 			return;
-		delay(10);
 	}
 
 	printf("%s: mii_write timeout\n", sc->sc_dev.dv_xname);
@@ -458,23 +487,21 @@ void
 dwqe_mii_statchg(struct device *self)
 {
 	struct dwqe_softc *sc = (void *)self;
+	struct ifnet *ifp = &sc->sc_ac.ac_if;
 	uint32_t conf;
 
 	conf = dwqe_read(sc, GMAC_MAC_CONF);
 	conf &= ~(GMAC_MAC_CONF_PS | GMAC_MAC_CONF_FES);
 
-	switch (IFM_SUBTYPE(sc->sc_mii.mii_media_active)) {
-	case IFM_1000_SX:
-	case IFM_1000_LX:
-	case IFM_1000_CX:
-	case IFM_1000_T:
+	switch (ifp->if_baudrate) {
+	case IF_Mbps(1000):
 		sc->sc_link = 1;
 		break;
-	case IFM_100_TX:
+	case IF_Mbps(100):
 		conf |= GMAC_MAC_CONF_PS | GMAC_MAC_CONF_FES;
 		sc->sc_link = 1;
 		break;
-	case IFM_10_T:
+	case IF_Mbps(10):
 		conf |= GMAC_MAC_CONF_PS;
 		sc->sc_link = 1;
 		break;
@@ -487,7 +514,7 @@ dwqe_mii_statchg(struct device *self)
 		return;
 
 	conf &= ~GMAC_MAC_CONF_DM;
-	if ((sc->sc_mii.mii_media_active & IFM_GMASK) == IFM_FDX)
+	if (ifp->if_link_state == LINK_STATE_FULL_DUPLEX)
 		conf |= GMAC_MAC_CONF_DM;
 
 	dwqe_write(sc, GMAC_MAC_CONF, conf);
@@ -503,7 +530,7 @@ dwqe_tick(void *arg)
 	mii_tick(&sc->sc_mii);
 	splx(s);
 
-	timeout_add_sec(&sc->sc_tick, 1);
+	timeout_add_sec(&sc->sc_phy_tick, 1);
 }
 
 void
@@ -581,6 +608,9 @@ dwqe_tx_proc(struct dwqe_softc *sc)
 		if (txd->sd_tdes3 & TDES3_OWN)
 			break;
 
+		if (txd->sd_tdes3 & TDES3_ES)
+			ifp->if_oerrors++;
+
 		txb = &sc->sc_txbuf[idx];
 		if (txb->tb_m) {
 			bus_dmamap_sync(sc->sc_dmat, txb->tb_map, 0,
@@ -645,15 +675,21 @@ dwqe_rx_proc(struct dwqe_softc *sc)
 		    len, BUS_DMASYNC_POSTREAD);
 		bus_dmamap_unload(sc->sc_dmat, rxb->tb_map);
 
-		/* Strip off CRC. */
-		len -= ETHER_CRC_LEN;
-		KASSERT(len > 0);
-
 		m = rxb->tb_m;
 		rxb->tb_m = NULL;
-		m->m_pkthdr.len = m->m_len = len;
 
-		ml_enqueue(&ml, m);
+		if (rxd->sd_tdes3 & RDES3_ES) {
+			ifp->if_ierrors++;
+			m_freem(m);
+		} else {
+			/* Strip off CRC. */
+			len -= ETHER_CRC_LEN;
+			KASSERT(len > 0);
+
+			m->m_pkthdr.len = m->m_len = len;
+
+			ml_enqueue(&ml, m);
+		}
 
 		put++;
 		if (sc->sc_rx_cons == (DWQE_NRXDESC - 1))
@@ -671,7 +707,6 @@ dwqe_rx_proc(struct dwqe_softc *sc)
 	bus_dmamap_sync(sc->sc_dmat, DWQE_DMA_MAP(sc->sc_rxring), 0,
 	    DWQE_DMA_LEN(sc->sc_rxring),
 	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
-
 }
 
 void
@@ -776,7 +811,7 @@ dwqe_up(struct dwqe_softc *sc)
 	if (sc->sc_force_thresh_dma_mode) {
 		mode &= ~GMAC_MTL_CHAN_TX_OP_MODE_TSF;
 		mode &= ~GMAC_MTL_CHAN_TX_OP_MODE_TTC_MASK;
-		mode |= GMAC_MTL_CHAN_TX_OP_MODE_TTC_128;
+		mode |= GMAC_MTL_CHAN_TX_OP_MODE_TTC_512;
 	} else {
 		mode |= GMAC_MTL_CHAN_TX_OP_MODE_TSF;
 	}
@@ -809,7 +844,8 @@ dwqe_up(struct dwqe_softc *sc)
 	    GMAC_CHAN_INTR_ENA_RIE |
 	    GMAC_CHAN_INTR_ENA_TIE);
 
-	timeout_add_sec(&sc->sc_tick, 1);
+	if (!sc->sc_fixed_link)
+		timeout_add_sec(&sc->sc_phy_tick, 1);
 }
 
 void
@@ -821,7 +857,8 @@ dwqe_down(struct dwqe_softc *sc)
 	int i;
 
 	timeout_del(&sc->sc_rxto);
-	timeout_del(&sc->sc_tick);
+	if (!sc->sc_fixed_link)
+		timeout_del(&sc->sc_phy_tick);
 
 	ifp->if_flags &= ~IFF_RUNNING;
 	ifq_clr_oactive(&ifp->if_snd);

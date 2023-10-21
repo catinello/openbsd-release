@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_input.c,v 1.387 2023/03/14 00:24:05 yasuoka Exp $	*/
+/*	$OpenBSD: tcp_input.c,v 1.391 2023/09/03 21:37:17 bluhm Exp $	*/
 /*	$NetBSD: tcp_input.c,v 1.23 1996/02/13 23:43:44 christos Exp $	*/
 
 /*
@@ -130,8 +130,8 @@ struct timeval tcp_ackdrop_ppslim_last;
 #define TCP_PAWS_IDLE	TCP_TIME(24 * 24 * 60 * 60)
 
 /* for modulo comparisons of timestamps */
-#define TSTMP_LT(a,b)	((int)((a)-(b)) < 0)
-#define TSTMP_GEQ(a,b)	((int)((a)-(b)) >= 0)
+#define TSTMP_LT(a,b)	((int32_t)((a)-(b)) < 0)
+#define TSTMP_GEQ(a,b)	((int32_t)((a)-(b)) >= 0)
 
 /* for TCP SACK comparisons */
 #define	SEQ_MIN(a,b)	(SEQ_LT(a,b) ? (a) : (b))
@@ -190,18 +190,17 @@ void	 tcp_newreno_partialack(struct tcpcb *, struct tcphdr *);
 
 void	 syn_cache_put(struct syn_cache *);
 void	 syn_cache_rm(struct syn_cache *);
-int	 syn_cache_respond(struct syn_cache *, struct mbuf *, uint32_t);
+int	 syn_cache_respond(struct syn_cache *, struct mbuf *, uint64_t);
 void	 syn_cache_timer(void *);
-void	 syn_cache_reaper(void *);
 void	 syn_cache_insert(struct syn_cache *, struct tcpcb *);
 void	 syn_cache_reset(struct sockaddr *, struct sockaddr *,
 		struct tcphdr *, u_int);
 int	 syn_cache_add(struct sockaddr *, struct sockaddr *, struct tcphdr *,
 		unsigned int, struct socket *, struct mbuf *, u_char *, int,
-		struct tcp_opt_info *, tcp_seq *, uint32_t);
+		struct tcp_opt_info *, tcp_seq *, uint64_t);
 struct socket *syn_cache_get(struct sockaddr *, struct sockaddr *,
 		struct tcphdr *, unsigned int, unsigned int, struct socket *,
-		struct mbuf *, uint32_t);
+		struct mbuf *, uint64_t);
 struct syn_cache *syn_cache_lookup(struct sockaddr *, struct sockaddr *,
 		struct syn_cache_head **, u_int);
 
@@ -375,7 +374,7 @@ tcp_input(struct mbuf **mp, int *offp, int proto, int af)
 	short ostate;
 	caddr_t saveti;
 	tcp_seq iss, *reuse = NULL;
-	uint32_t now;
+	uint64_t now;
 	u_long tiwin;
 	struct tcp_opt_info opti;
 	struct tcphdr *th;
@@ -885,7 +884,7 @@ findpcb:
 			goto drop;
 
 	if (opti.ts_present && opti.ts_ecr) {
-		int rtt_test;
+		int32_t rtt_test;
 
 		/* subtract out the tcp timestamp modulator */
 		opti.ts_ecr -= tp->ts_modulate;
@@ -1272,7 +1271,7 @@ trimthenstep6:
 	    TSTMP_LT(opti.ts_val, tp->ts_recent)) {
 
 		/* Check to see if ts_recent is over 24 days old.  */
-		if ((int)(now - tp->ts_recent_age) > TCP_PAWS_IDLE) {
+		if (now - tp->ts_recent_age > TCP_PAWS_IDLE) {
 			/*
 			 * Invalidate ts_recent.  If this segment updates
 			 * ts_recent, the age will be reset later and ts_recent
@@ -2120,7 +2119,7 @@ drop:
 int
 tcp_dooptions(struct tcpcb *tp, u_char *cp, int cnt, struct tcphdr *th,
     struct mbuf *m, int iphlen, struct tcp_opt_info *oi,
-    u_int rtableid, uint32_t now)
+    u_int rtableid, uint64_t now)
 {
 	u_int16_t mss = 0;
 	int opt, optlen;
@@ -2686,7 +2685,7 @@ tcp_pulloutofband(struct socket *so, u_int urgent, struct mbuf *m, int off)
  * and update averages and current timeout.
  */
 void
-tcp_xmit_timer(struct tcpcb *tp, int rtt)
+tcp_xmit_timer(struct tcpcb *tp, int32_t rtt)
 {
 	int delta, rttmin;
 
@@ -3091,6 +3090,7 @@ int	tcp_syn_cache_limit = TCP_SYN_HASH_SIZE*TCP_SYN_BUCKET_SIZE;
 int	tcp_syn_bucket_limit = 3*TCP_SYN_BUCKET_SIZE;
 int	tcp_syn_use_limit = 100000;
 
+struct pool syn_cache_pool;
 struct syn_cache_set tcp_syn_cache[2];
 int tcp_syn_cache_active;
 
@@ -3138,38 +3138,26 @@ syn_cache_rm(struct syn_cache *sc)
 	TAILQ_REMOVE(&sc->sc_buckethead->sch_bucket, sc, sc_bucketq);
 	sc->sc_tp = NULL;
 	LIST_REMOVE(sc, sc_tpq);
+	refcnt_rele(&sc->sc_refcnt);
 	sc->sc_buckethead->sch_length--;
-	timeout_del(&sc->sc_timer);
+	if (timeout_del(&sc->sc_timer))
+		refcnt_rele(&sc->sc_refcnt);
 	sc->sc_set->scs_count--;
 }
 
 void
 syn_cache_put(struct syn_cache *sc)
 {
+	if (refcnt_rele(&sc->sc_refcnt) == 0)
+		return;
+
 	m_free(sc->sc_ipopts);
 	if (sc->sc_route4.ro_rt != NULL) {
 		rtfree(sc->sc_route4.ro_rt);
 		sc->sc_route4.ro_rt = NULL;
 	}
-	timeout_set(&sc->sc_timer, syn_cache_reaper, sc);
-	timeout_add(&sc->sc_timer, 0);
+	pool_put(&syn_cache_pool, sc);
 }
-
-struct pool syn_cache_pool;
-
-/*
- * We don't estimate RTT with SYNs, so each packet starts with the default
- * RTT and each timer step has a fixed timeout value.
- */
-#define	SYN_CACHE_TIMER_ARM(sc)						\
-do {									\
-	TCPT_RANGESET((sc)->sc_rxtcur,					\
-	    TCPTV_SRTTDFLT * tcp_backoff[(sc)->sc_rxtshift], TCPTV_MIN,	\
-	    TCPTV_REXMTMAX);						\
-	if (!timeout_initialized(&(sc)->sc_timer))			\
-		timeout_set_proc(&(sc)->sc_timer, syn_cache_timer, (sc)); \
-	timeout_add_msec(&(sc)->sc_timer, (sc)->sc_rxtcur);		\
-} while (/*CONSTCOND*/0)
 
 void
 syn_cache_init(void)
@@ -3299,13 +3287,20 @@ syn_cache_insert(struct syn_cache *sc, struct tcpcb *tp)
 	}
 
 	/*
-	 * Initialize the entry's timer.
+	 * Initialize the entry's timer.  We don't estimate RTT
+	 * with SYNs, so each packet starts with the default RTT
+	 * and each timer step has a fixed timeout value.
 	 */
 	sc->sc_rxttot = 0;
 	sc->sc_rxtshift = 0;
-	SYN_CACHE_TIMER_ARM(sc);
+	TCPT_RANGESET(sc->sc_rxtcur,
+	    TCPTV_SRTTDFLT * tcp_backoff[sc->sc_rxtshift], TCPTV_MIN,
+	    TCPTV_REXMTMAX);
+	if (timeout_add_msec(&sc->sc_timer, sc->sc_rxtcur))
+		refcnt_take(&sc->sc_refcnt);
 
 	/* Link it from tcpcb entry */
+	refcnt_take(&sc->sc_refcnt);
 	LIST_INSERT_HEAD(&tp->t_sc, sc, sc_tpq);
 
 	/* Put it into the bucket. */
@@ -3335,11 +3330,12 @@ void
 syn_cache_timer(void *arg)
 {
 	struct syn_cache *sc = arg;
-	uint32_t now;
+	uint64_t now;
+	int lastref;
 
 	NET_LOCK();
 	if (sc->sc_flags & SCF_DEAD)
-		goto out;
+		goto freeit;
 
 	now = tcp_now();
 
@@ -3362,26 +3358,25 @@ syn_cache_timer(void *arg)
 
 	/* Advance the timer back-off. */
 	sc->sc_rxtshift++;
-	SYN_CACHE_TIMER_ARM(sc);
+	TCPT_RANGESET(sc->sc_rxtcur,
+	    TCPTV_SRTTDFLT * tcp_backoff[sc->sc_rxtshift], TCPTV_MIN,
+	    TCPTV_REXMTMAX);
+	if (!timeout_add_msec(&sc->sc_timer, sc->sc_rxtcur))
+		syn_cache_put(sc);
 
- out:
 	NET_UNLOCK();
 	return;
 
  dropit:
 	tcpstat_inc(tcps_sc_timed_out);
 	syn_cache_rm(sc);
+	/* Decrement reference of the timer and free object after remove. */
+	lastref = refcnt_rele(&sc->sc_refcnt);
+	KASSERT(lastref == 0);
+	(void)lastref;
+ freeit:
 	syn_cache_put(sc);
 	NET_UNLOCK();
-}
-
-void
-syn_cache_reaper(void *arg)
-{
-	struct syn_cache *sc = arg;
-
-	pool_put(&syn_cache_pool, (sc));
-	return;
 }
 
 /*
@@ -3469,7 +3464,7 @@ syn_cache_lookup(struct sockaddr *src, struct sockaddr *dst,
  */
 struct socket *
 syn_cache_get(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
-    u_int hlen, u_int tlen, struct socket *so, struct mbuf *m, uint32_t now)
+    u_int hlen, u_int tlen, struct socket *so, struct mbuf *m, uint64_t now)
 {
 	struct syn_cache *sc;
 	struct syn_cache_head *scp;
@@ -3744,7 +3739,7 @@ syn_cache_unreach(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 int
 syn_cache_add(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
     u_int iphlen, struct socket *so, struct mbuf *m, u_char *optp, int optlen,
-    struct tcp_opt_info *oi, tcp_seq *issp, uint32_t now)
+    struct tcp_opt_info *oi, tcp_seq *issp, uint64_t now)
 {
 	struct tcpcb tb, *tp;
 	long win;
@@ -3826,6 +3821,8 @@ syn_cache_add(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 		m_free(ipopts);
 		return (-1);
 	}
+	refcnt_init_trace(&sc->sc_refcnt, DT_REFCNT_IDX_SYNCACHE);
+	timeout_set_proc(&sc->sc_timer, syn_cache_timer, sc);
 
 	/*
 	 * Fill in the cache, and put the necessary IP and TCP
@@ -3911,7 +3908,7 @@ syn_cache_add(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 }
 
 int
-syn_cache_respond(struct syn_cache *sc, struct mbuf *m, uint32_t now)
+syn_cache_respond(struct syn_cache *sc, struct mbuf *m, uint64_t now)
 {
 	u_int8_t *optp;
 	int optlen, error;
@@ -3990,14 +3987,11 @@ syn_cache_respond(struct syn_cache *sc, struct mbuf *m, uint32_t now)
 		ip6->ip6_dst = sc->sc_src.sin6.sin6_addr;
 		ip6->ip6_src = sc->sc_dst.sin6.sin6_addr;
 		ip6->ip6_nxt = IPPROTO_TCP;
-		/* ip6_plen will be updated in ip6_output() */
 		th = (struct tcphdr *)(ip6 + 1);
 		th->th_dport = sc->sc_src.sin6.sin6_port;
 		th->th_sport = sc->sc_dst.sin6.sin6_port;
 		break;
 #endif
-	default:
-		unhandled_af(sc->sc_src.sa.sa_family);
 	}
 
 	th->th_seq = htonl(sc->sc_iss);
@@ -4096,21 +4090,7 @@ syn_cache_respond(struct syn_cache *sc, struct mbuf *m, uint32_t now)
 	}
 #endif /* TCP_SIGNATURE */
 
-	/* Compute the packet's checksum. */
-	switch (sc->sc_src.sa.sa_family) {
-	case AF_INET:
-		ip->ip_len = htons(tlen - hlen);
-		th->th_sum = 0;
-		th->th_sum = in_cksum(m, tlen);
-		break;
-#ifdef INET6
-	case AF_INET6:
-		ip6->ip6_plen = htons(tlen - hlen);
-		th->th_sum = 0;
-		th->th_sum = in6_cksum(m, IPPROTO_TCP, hlen, tlen - hlen);
-		break;
-#endif
-	}
+	SET(m->m_pkthdr.csum_flags, M_TCP_CSUM_OUT);
 
 	/* use IPsec policy and ttl from listening socket, on SYN ACK */
 	inp = sc->sc_tp ? sc->sc_tp->t_inpcb : NULL;
@@ -4125,34 +4105,22 @@ syn_cache_respond(struct syn_cache *sc, struct mbuf *m, uint32_t now)
 		ip->ip_ttl = inp ? inp->inp_ip.ip_ttl : ip_defttl;
 		if (inp != NULL)
 			ip->ip_tos = inp->inp_ip.ip_tos;
-		break;
-#ifdef INET6
-	case AF_INET6:
-		ip6->ip6_vfc &= ~IPV6_VERSION_MASK;
-		ip6->ip6_vfc |= IPV6_VERSION;
-		ip6->ip6_plen = htons(tlen - hlen);
-		/* ip6_hlim will be initialized afterwards */
-		/* leave flowlabel = 0, it is legal and require no state mgmt */
-		break;
-#endif
-	}
 
-	switch (sc->sc_src.sa.sa_family) {
-	case AF_INET:
 		error = ip_output(m, sc->sc_ipopts, &sc->sc_route4,
 		    (ip_mtudisc ? IP_MTUDISC : 0),  NULL, inp, 0);
 		break;
 #ifdef INET6
 	case AF_INET6:
+		ip6->ip6_vfc &= ~IPV6_VERSION_MASK;
+		ip6->ip6_vfc |= IPV6_VERSION;
+		/* ip6_plen will be updated in ip6_output() */
 		ip6->ip6_hlim = in6_selecthlim(inp);
+		/* leave flowlabel = 0, it is legal and require no state mgmt */
 
 		error = ip6_output(m, NULL /*XXX*/, &sc->sc_route6, 0,
 		    NULL, NULL);
 		break;
 #endif
-	default:
-		error = EAFNOSUPPORT;
-		break;
 	}
 	return (error);
 }

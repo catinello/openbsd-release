@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile.amd64,v 1.129 2023/01/01 01:34:33 jsg Exp $
+#	$OpenBSD: Makefile.amd64,v 1.134 2023/09/06 01:47:36 jsg Exp $
 
 # For instructions on building kernels consult the config(8) and options(4)
 # manual pages.
@@ -69,16 +69,15 @@ CMACHFLAGS+=	-msave-args
 SORTR=		cat
 COPTIMIZE=	-Oz
 .if ${COMPILER_VERSION:Mclang}
-CMACHFLAGS+=	-mno-retpoline
+CMACHFLAGS+=	-mno-retpoline -fcf-protection=none
 .endif
+.else
+CMACHFLAGS+=	-mretpoline-external-thunk -fcf-protection=branch
 .endif
 .if ${COMPILER_VERSION:Mclang}
 NO_INTEGR_AS=	-no-integrated-as
 CWARNFLAGS+=	-Wno-address-of-packed-member -Wno-constant-conversion \
 		-Wno-unused-but-set-variable -Wno-gnu-folding-constant
-# XXX Workaround for zlib + clang 15
-# https://github.com/madler/zlib/issues/633
-CWARNFLAGS+=	-Wno-deprecated-non-prototype -Wno-unknown-warning-option
 .endif
 
 DEBUG?=		-g
@@ -175,7 +174,7 @@ ld.script: ${_machdir}/conf/ld.script
 
 gapdummy.o:
 	echo '__asm(".section .rodata,\"a\"");' > gapdummy.c
-	${CC} -c ${CFLAGS} ${CPPFLAGS} gapdummy.c -o $@
+	${CC} -c ${CFLAGS} ${CPPFLAGS} -fcf-protection=none gapdummy.c -o $@
 
 makegap.sh:
 	cp $S/conf/makegap.sh $@

@@ -1,4 +1,4 @@
-/*	$Id: test-mft.c,v 1.22 2022/08/26 06:32:03 tb Exp $ */
+/*	$Id: test-mft.c,v 1.27 2023/09/25 11:09:30 tb Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -35,6 +35,7 @@
 
 int outformats;
 int verbose;
+int filemode;
 
 int
 main(int argc, char *argv[])
@@ -72,7 +73,7 @@ main(int argc, char *argv[])
 
 	for (i = 0; i < argc; i++) {
 		buf = load_file(argv[i], &len);
-		if ((p = mft_parse(&xp, argv[i], buf, len)) == NULL) {
+		if ((p = mft_parse(&xp, argv[i], -1, buf, len)) == NULL) {
 			free(buf);
 			break;
 		}
@@ -96,4 +97,10 @@ main(int argc, char *argv[])
 
 	printf("OK\n");
 	return 0;
+}
+
+time_t
+get_current_time(void)
+{
+	return time(NULL);
 }

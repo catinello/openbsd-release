@@ -1,4 +1,4 @@
-# $OpenBSD: Makefile,v 1.78 2022/11/11 11:25:18 beck Exp $
+# $OpenBSD: Makefile,v 1.80 2023/07/06 07:56:32 beck Exp $
 
 .include <bsd.own.mk>
 .ifndef NOMAN
@@ -13,15 +13,11 @@ LIB=	ssl
 
 CFLAGS+= -Wall -Wundef
 .if ${COMPILER_VERSION:L} == "clang"
-CFLAGS+= -Werror
+CFLAGS+= -Werror -Wshadow
 .endif
 CFLAGS+= -DLIBRESSL_INTERNAL
 .ifdef NAMESPACE
 CFLAGS+= -DLIBRESSL_NAMESPACE
-.endif
-.ifdef TLS1_3
-CFLAGS+= -DLIBRESSL_HAS_TLS1_3_CLIENT
-CFLAGS+= -DLIBRESSL_HAS_TLS1_3_SERVER
 .endif
 .ifdef TLS1_3_DEBUG
 CFLAGS+= -DTLS13_DEBUG

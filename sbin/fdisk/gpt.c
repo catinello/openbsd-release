@@ -1,4 +1,4 @@
-/*	$OpenBSD: gpt.c,v 1.86 2023/03/06 13:24:40 krw Exp $	*/
+/*	$OpenBSD: gpt.c,v 1.93 2023/06/20 11:52:08 krw Exp $	*/
 /*
  * Copyright (c) 2015 Markus Muller <mmu@grummel.net>
  * Copyright (c) 2015 Kenneth R Westerback <krw@openbsd.org>
@@ -77,10 +77,9 @@ name_to_string(const unsigned int pn)
 	static char		name[GPTPARTNAMESIZE + 1];
 	unsigned int		i;
 
-	memset(name, 0, sizeof(name));
-
-	for (i = 0; i < sizeof(name) && gp[pn].gp_name[i] != 0; i++)
+	for (i = 0; i < GPTPARTNAMESIZE && gp[pn].gp_name[i] != 0; i++)
 		name[i] = letoh16(gp[pn].gp_name[i]) & 0x7F;
+	name[i] = '\0';
 
 	return name;
 }
@@ -132,7 +131,7 @@ protective_mbr(const struct mbr *mbr)
 	for (i = 0; i < nitems(dp); i++) {
 		memset(&dos_partition, 0, sizeof(dos_partition));
 		if (i < nitems(mbr->mbr_prt))
-			PRT_make(&mbr->mbr_prt[i], mbr->mbr_lba_self,
+			PRT_prt_to_dp(&mbr->mbr_prt[i], mbr->mbr_lba_self,
 			    mbr->mbr_lba_firstembr, &dos_partition);
 		memcpy(&dp[i], &dos_partition, sizeof(dp[i]));
 	}
@@ -436,9 +435,7 @@ GPT_print_parthdr(const int verbosity)
 void
 GPT_print_part(const unsigned int pn, const char *units, const int verbosity)
 {
-	const uint8_t		 gpt_uuid_msdos[] = GPT_UUID_MSDOS;
 	const struct unit_type	*ut;
-	struct uuid		 uuid;
 	char			*guidstr = NULL;
 	double			 size;
 	uint64_t		 attrs, end, start;
@@ -449,7 +446,7 @@ GPT_print_part(const unsigned int pn, const char *units, const int verbosity)
 	size = units_size(units, (start > end) ? 0 : end - start + 1, &ut);
 
 	printf(" %3u: %-36s [%12lld: %12.0f%s]\n", pn,
-	    PRT_uuid_to_sname(&gp[pn].gp_type), start, size, ut->ut_abbr);
+	    PRT_uuid_to_desc(&gp[pn].gp_type), start, size, ut->ut_abbr);
 
 	if (verbosity == VERBOSE) {
 		uuid_to_string(&gp[pn].gp_guid, &guidstr, &status);
@@ -457,7 +454,7 @@ GPT_print_part(const unsigned int pn, const char *units, const int verbosity)
 			printf("      <invalid partition guid>             ");
 		else
 			printf("      %-36s ", guidstr);
-		printf("%-36s\n", name_to_string(pn));
+		printf("%s\n", name_to_string(pn));
 		free(guidstr);
 		attrs = gp[pn].gp_attrs;
 		if (attrs) {
@@ -468,17 +465,14 @@ GPT_print_part(const unsigned int pn, const char *units, const int verbosity)
 				printf("Ignore ");
 			if (attrs & GPTPARTATTR_BOOTABLE)
 				printf("Bootable ");
-			uuid_dec_be(gpt_uuid_msdos, &uuid);
-			if (uuid_compare(&uuid, &gp[pn].gp_type, NULL) == 0) {
-				if (attrs & GPTPARTATTR_MS_READONLY)
-					printf("ReadOnly " );
-				if (attrs & GPTPARTATTR_MS_SHADOW)
-					printf("Shadow ");
-				if (attrs & GPTPARTATTR_MS_HIDDEN)
-					printf("Hidden ");
-				if (attrs & GPTPARTATTR_MS_NOAUTOMOUNT)
-					printf("NoAutoMount ");
-			}
+			if (attrs & GPTPARTATTR_MS_READONLY)
+				printf("MSReadOnly " );
+			if (attrs & GPTPARTATTR_MS_SHADOW)
+				printf("MSShadow ");
+			if (attrs & GPTPARTATTR_MS_HIDDEN)
+				printf("MSHidden ");
+			if (attrs & GPTPARTATTR_MS_NOAUTOMOUNT)
+				printf("MSNoAutoMount ");
 			printf("\n");
 		}
 	}
@@ -619,7 +613,7 @@ init_gp(const int how)
 		memset(&gp, 0, sizeof(gp));
 	else {
 		for (pn = 0; pn < gh.gh_part_num; pn++) {
-			if (PRT_protected_guid(&gp[pn].gp_type) ||
+			if (PRT_protected_uuid(&gp[pn].gp_type) ||
 			    (gp[pn].gp_attrs & GPTPARTATTR_REQUIRED))
 				continue;
 			memset(&gp[pn], 0, sizeof(gp[pn]));

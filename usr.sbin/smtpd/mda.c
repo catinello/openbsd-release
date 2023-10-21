@@ -1,4 +1,4 @@
-/*	$OpenBSD: mda.c,v 1.144 2023/02/08 08:20:54 tb Exp $	*/
+/*	$OpenBSD: mda.c,v 1.146 2023/05/31 16:51:46 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
+#include <time.h>
 #include <unistd.h>
 #include <vis.h>
 
@@ -507,7 +508,7 @@ mda_getlastline(int fd, char *dst, size_t dstsz)
 	size_t	 sz = 0;
 	ssize_t	 len;
 	int	 out = 0;
-	
+
 	if (lseek(fd, 0, SEEK_SET) == -1) {
 		log_warn("warn: mda: lseek");
 		close(fd);

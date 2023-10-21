@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.154 2022/11/29 21:41:39 guenther Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.159 2023/08/23 01:55:46 cheloha Exp $	*/
 /*	$NetBSD: cpu.h,v 1.1 2003/04/26 18:39:39 fvdl Exp $	*/
 
 /*-
@@ -112,10 +112,8 @@ struct cpu_info {
 #define ci_PAGEALIGN	ci_dev
 	struct device *ci_dev;		/* [I] */
 	struct cpu_info *ci_self;	/* [I] */
-	struct schedstate_percpu ci_schedstate; /* scheduler state */
 	struct cpu_info *ci_next;	/* [I] */
 
-	struct proc *ci_curproc;	/* [o] */
 	u_int ci_cpuid;			/* [I] */
 	u_int ci_apicid;		/* [I] */
 	u_int ci_acpi_proc_id;		/* [I] */
@@ -128,6 +126,9 @@ struct cpu_info {
 	/* bits for mitigating Micro-architectural Data Sampling */
 	char		ci_mds_tmp[32];	/* [o] 32byte aligned */
 	void		*ci_mds_buf;	/* [I] */
+
+	struct proc *ci_curproc;	/* [o] */
+	struct schedstate_percpu ci_schedstate; /* scheduler state */
 
 	struct pmap *ci_proc_pmap;	/* last userspace pmap */
 	struct pcb *ci_curpcb;		/* [o] */
@@ -207,6 +208,7 @@ struct cpu_info {
 	u_int64_t		ci_hz_aperf;
 #if defined(GPROF) || defined(DDBPROF)
 	struct gmonparam	*ci_gmon;
+	struct clockintr	*ci_gmonclock;
 #endif
 	u_int32_t	ci_vmm_flags;
 #define	CI_VMM_VMX	(1 << 0)
@@ -402,7 +404,12 @@ void	cpu_reset(void);
 void	x86_64_proc0_tss_ldt_init(void);
 void	cpu_proc_fork(struct proc *, struct proc *);
 int	amd64_pa_used(paddr_t);
+#define	cpu_idle_enter()	do { /* nothing */ } while (0)
 extern void (*cpu_idle_cycle_fcn)(void);
+#define	cpu_idle_cycle()	(*cpu_idle_cycle_fcn)()
+#define	cpu_idle_leave()	do { /* nothing */ } while (0)
+extern void (*initclock_func)(void);
+extern void (*startclock_func)(void);
 
 struct region_descriptor;
 void	lgdt(struct region_descriptor *);
@@ -413,7 +420,6 @@ void	switch_exit(struct proc *, void (*)(struct proc *));
 void	proc_trampoline(void);
 
 /* clock.c */
-extern void (*initclock_func)(void);
 void	startclocks(void);
 void	rtcinit(void);
 void	rtcstart(void);
@@ -421,6 +427,7 @@ void	rtcstop(void);
 void	i8254_delay(int);
 void	i8254_initclocks(void);
 void	i8254_startclock(void);
+void	i8254_start_both_clocks(void);
 void	i8254_inittimecounter(void);
 void	i8254_inittimecounter_simple(void);
 

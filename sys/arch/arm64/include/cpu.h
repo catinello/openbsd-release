@@ -1,4 +1,4 @@
-/* $OpenBSD: cpu.h,v 1.35 2023/02/19 17:16:13 kettenis Exp $ */
+/* $OpenBSD: cpu.h,v 1.39 2023/08/23 01:55:46 cheloha Exp $ */
 /*
  * Copyright (c) 2016 Dale Rahn <drahn@dalerahn.com>
  *
@@ -60,6 +60,11 @@
 /*
  * Kernel-only definitions
  */
+
+extern uint64_t cpu_id_aa64isar0;
+extern uint64_t cpu_id_aa64isar1;
+extern uint64_t cpu_id_aa64pfr0;
+extern uint64_t cpu_id_aa64pfr1;
 
 #include <machine/intr.h>
 #include <machine/frame.h>
@@ -149,6 +154,9 @@ struct cpu_info {
 	volatile int		ci_opp_max;
 	uint32_t		ci_cpu_supply;
 
+	u_long			ci_prev_sleep;
+	u_long			ci_last_itime;
+
 #ifdef MULTIPROCESSOR
 	struct srp_hazard	ci_srp_hazards[SRP_HAZARD_NUM];
 	volatile int		ci_flags;
@@ -164,6 +172,7 @@ struct cpu_info {
 
 #ifdef GPROF
 	struct gmonparam	*ci_gmon;
+	struct clockintr	*ci_gmonclock;
 #endif
 	struct clockintr_queue	ci_queue;
 	char			ci_panicbuf[512];
@@ -335,9 +344,13 @@ intr_restore(u_long daif)
 }
 
 void	cpu_halt(void);
-void	cpu_startclock(void);
 int	cpu_suspend_primary(void);
 void	cpu_resume_secondary(struct cpu_info *);
+
+extern void (*cpu_idle_cycle_fcn)(void);
+extern void (*cpu_suspend_cycle_fcn)(void);
+
+void	cpu_wfi(void);
 
 void	delay (unsigned);
 #define	DELAY(x)	delay(x)

@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_ix.c,v 1.192 2023/02/06 20:27:44 jan Exp $	*/
+/*	$OpenBSD: if_ix.c,v 1.204 2023/08/21 21:45:18 bluhm Exp $	*/
 
 /******************************************************************************
 
@@ -36,6 +36,12 @@
 
 #include <dev/pci/if_ix.h>
 #include <dev/pci/ixgbe_type.h>
+
+/*
+ * Our TCP/IP Stack could not handle packets greater than MAXMCLBYTES.
+ * This interface could not handle packets greater than IXGBE_TSO_SIZE.
+ */
+CTASSERT(MAXMCLBYTES <= IXGBE_TSO_SIZE);
 
 /*********************************************************************
  *  Driver version
@@ -640,9 +646,8 @@ ixgbe_rxrinfo(struct ix_softc *sc, struct if_rxrinfo *ifri)
 	u_int n = 0;
 
 	if (sc->num_queues > 1) {
-		if ((ifr = mallocarray(sc->num_queues, sizeof(*ifr), M_DEVBUF,
-		    M_WAITOK | M_ZERO)) == NULL)
-			return (ENOMEM);
+		ifr = mallocarray(sc->num_queues, sizeof(*ifr), M_DEVBUF,
+		    M_WAITOK | M_ZERO);
 	} else
 		ifr = &ifr1;
 
@@ -1925,8 +1930,11 @@ ixgbe_setup_interface(struct ix_softc *sc)
 	ifp->if_capabilities |= IFCAP_CSUM_TCPv6 | IFCAP_CSUM_UDPv6;
 	ifp->if_capabilities |= IFCAP_CSUM_IPv4;
 
-	if (sc->hw.mac.type != ixgbe_mac_82598EB)
-		ifp->if_capabilities |= IFCAP_TSO;
+	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
+	if (sc->hw.mac.type != ixgbe_mac_82598EB) {
+		ifp->if_xflags |= IFXF_LRO;
+		ifp->if_capabilities |= IFCAP_LRO;
+	}
 
 	/*
 	 * Specify the media types supported by this sc and register
@@ -2263,7 +2271,7 @@ ixgbe_allocate_transmit_buffers(struct tx_ring *txr)
 	/* Create the descriptor buffer dma maps */
 	for (i = 0; i < sc->num_tx_desc; i++) {
 		txbuf = &txr->tx_buffers[i];
-		error = bus_dmamap_create(txr->txdma.dma_tag, IXGBE_TSO_SIZE,
+		error = bus_dmamap_create(txr->txdma.dma_tag, MAXMCLBYTES,
 			    sc->num_segs, PAGE_SIZE, 0,
 			    BUS_DMA_NOWAIT, &txbuf->map);
 
@@ -2345,6 +2353,7 @@ ixgbe_initialize_transmit_units(struct ix_softc *sc)
 	int		 i;
 	uint64_t	 tdba;
 	uint32_t	 txctrl;
+	uint32_t	 hlreg;
 
 	/* Setup the Base and Length of the Tx Descriptor Ring */
 
@@ -2406,6 +2415,11 @@ ixgbe_initialize_transmit_units(struct ix_softc *sc)
 		rttdcs &= ~IXGBE_RTTDCS_ARBDIS;
 		IXGBE_WRITE_REG(hw, IXGBE_RTTDCS, rttdcs);
 	}
+
+	/* Enable TCP/UDP padding when using TSO */
+	hlreg = IXGBE_READ_REG(hw, IXGBE_HLREG0);
+	hlreg |= IXGBE_HLREG0_TXPADEN;
+	IXGBE_WRITE_REG(hw, IXGBE_HLREG0, hlreg);
 }
 
 /*********************************************************************
@@ -2474,16 +2488,18 @@ ixgbe_free_transmit_buffers(struct tx_ring *txr)
  **********************************************************************/
 
 static inline int
-ixgbe_csum_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
-    uint32_t *type_tucmd_mlhl, uint32_t *olinfo_status)
+ixgbe_tx_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
+    uint32_t *type_tucmd_mlhl, uint32_t *olinfo_status, uint32_t *cmd_type_len,
+    uint32_t *mss_l4len_idx)
 {
 	struct ether_extracted ext;
 	int offload = 0;
-	uint32_t iphlen;
+	uint32_t ethlen, iphlen;
 
 	ether_extract_headers(mp, &ext);
+	ethlen = sizeof(*ext.eh);
 
-	*vlan_macip_lens |= (sizeof(*ext.eh) << IXGBE_ADVTXD_MACLEN_SHIFT);
+	*vlan_macip_lens |= (ethlen << IXGBE_ADVTXD_MACLEN_SHIFT);
 
 	if (ext.ip4) {
 		iphlen = ext.ip4->ip_hl << 2;
@@ -2501,6 +2517,8 @@ ixgbe_csum_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
 		*type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_IPV6;
 #endif
 	} else {
+		if (mp->m_pkthdr.csum_flags & M_TCP_TSO)
+			tcpstat_inc(tcps_outbadtso);
 		return offload;
 	}
 
@@ -2520,6 +2538,31 @@ ixgbe_csum_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
 		}
 	}
 
+	if (mp->m_pkthdr.csum_flags & M_TCP_TSO) {
+		if (ext.tcp) {
+			uint32_t hdrlen, thlen, paylen, outlen;
+
+			thlen = ext.tcp->th_off << 2;
+
+			outlen = mp->m_pkthdr.ph_mss;
+			*mss_l4len_idx |= outlen << IXGBE_ADVTXD_MSS_SHIFT;
+			*mss_l4len_idx |= thlen << IXGBE_ADVTXD_L4LEN_SHIFT;
+
+			hdrlen = ethlen + iphlen + thlen;
+			paylen = mp->m_pkthdr.len - hdrlen;
+			CLR(*olinfo_status, IXGBE_ADVTXD_PAYLEN_MASK
+			    << IXGBE_ADVTXD_PAYLEN_SHIFT);
+			*olinfo_status |= paylen << IXGBE_ADVTXD_PAYLEN_SHIFT;
+
+			*cmd_type_len |= IXGBE_ADVTXD_DCMD_TSE;
+			offload = 1;
+
+			tcpstat_add(tcps_outpkttso,
+			    (paylen + outlen - 1) / outlen);
+		} else
+			tcpstat_inc(tcps_outbadtso);
+	}
+
 	return offload;
 }
 
@@ -2530,6 +2573,7 @@ ixgbe_tx_ctx_setup(struct tx_ring *txr, struct mbuf *mp,
 	struct ixgbe_adv_tx_context_desc *TXD;
 	struct ixgbe_tx_buf *tx_buffer;
 	uint32_t vlan_macip_lens = 0, type_tucmd_mlhl = 0;
+	uint32_t mss_l4len_idx = 0;
 	int	ctxd = txr->next_avail_desc;
 	int	offload = 0;
 
@@ -2545,8 +2589,8 @@ ixgbe_tx_ctx_setup(struct tx_ring *txr, struct mbuf *mp,
 	}
 #endif
 
-	offload |= ixgbe_csum_offload(mp, &vlan_macip_lens, &type_tucmd_mlhl,
-	    olinfo_status);
+	offload |= ixgbe_tx_offload(mp, &vlan_macip_lens, &type_tucmd_mlhl,
+	    olinfo_status, cmd_type_len, &mss_l4len_idx);
 
 	if (!offload)
 		return (0);
@@ -2560,7 +2604,7 @@ ixgbe_tx_ctx_setup(struct tx_ring *txr, struct mbuf *mp,
 	TXD->vlan_macip_lens = htole32(vlan_macip_lens);
 	TXD->type_tucmd_mlhl = htole32(type_tucmd_mlhl);
 	TXD->seqnum_seed = htole32(0);
-	TXD->mss_l4len_idx = htole32(0);
+	TXD->mss_l4len_idx = htole32(mss_l4len_idx);
 
 	tx_buffer->m_head = NULL;
 	tx_buffer->eop_index = -1;
@@ -2869,18 +2913,20 @@ ixgbe_initialize_receive_units(struct ix_softc *sc)
 	}
 	IXGBE_WRITE_REG(hw, IXGBE_FCTRL, fctrl);
 
-	/* Always enable jumbo frame reception */
 	hlreg = IXGBE_READ_REG(hw, IXGBE_HLREG0);
+	/* Always enable jumbo frame reception */
 	hlreg |= IXGBE_HLREG0_JUMBOEN;
+	/* Always enable CRC stripping */
+	hlreg |= IXGBE_HLREG0_RXCRCSTRP;
 	IXGBE_WRITE_REG(hw, IXGBE_HLREG0, hlreg);
 
-	if (ISSET(ifp->if_xflags, IFXF_TSO)) {
+	if (ISSET(ifp->if_xflags, IFXF_LRO)) {
 		rdrxctl = IXGBE_READ_REG(hw, IXGBE_RDRXCTL);
 
 		/* This field has to be set to zero. */
 		rdrxctl &= ~IXGBE_RDRXCTL_RSCFRSTSIZE;
 
-		/* Enable TSO Receive Offloading */
+		/* RSC Coalescing on ACK Change */
 		rdrxctl |= IXGBE_RDRXCTL_RSCACKC;
 		rdrxctl |= IXGBE_RDRXCTL_FCOE_WRFIX;
 
@@ -2903,10 +2949,10 @@ ixgbe_initialize_receive_units(struct ix_softc *sc)
 		srrctl = bufsz | IXGBE_SRRCTL_DESCTYPE_ADV_ONEBUF;
 		IXGBE_WRITE_REG(hw, IXGBE_SRRCTL(i), srrctl);
 
-		if (ISSET(ifp->if_xflags, IFXF_TSO)) {
+		if (ISSET(ifp->if_xflags, IFXF_LRO)) {
 			rdrxctl = IXGBE_READ_REG(&sc->hw, IXGBE_RSCCTL(i));
 
-			/* Enable TSO Receive Side Coalescing */
+			/* Enable Receive Side Coalescing */
 			rdrxctl |= IXGBE_RSCCTL_RSCEN;
 			rdrxctl |= IXGBE_RSCCTL_MAXDESC_16;
 
@@ -3056,8 +3102,11 @@ ixgbe_free_receive_buffers(struct rx_ring *rxr)
 				m_freem(rxbuf->buf);
 				rxbuf->buf = NULL;
 			}
-			bus_dmamap_destroy(rxr->rxdma.dma_tag, rxbuf->map);
-			rxbuf->map = NULL;
+			if (rxbuf->map != NULL) {
+				bus_dmamap_destroy(rxr->rxdma.dma_tag,
+				    rxbuf->map);
+				rxbuf->map = NULL;
+			}
 		}
 		free(rxr->rx_buffers, M_DEVBUF,
 		    sc->num_rx_desc * sizeof(struct ixgbe_rx_buf));
@@ -3176,19 +3225,21 @@ ixgbe_rxeof(struct rx_ring *rxr)
 		sendmp = rxbuf->fmp;
 		rxbuf->buf = rxbuf->fmp = NULL;
 
-		if (sendmp != NULL) /* secondary frag */
-			sendmp->m_pkthdr.len += mp->m_len;
-		else {
+		if (sendmp == NULL) {
 			/* first desc of a non-ps chain */
 			sendmp = mp;
-			sendmp->m_pkthdr.len = mp->m_len;
-#if NVLAN > 0
-			if (sc->vlan_stripping && staterr & IXGBE_RXD_STAT_VP) {
-				sendmp->m_pkthdr.ether_vtag = vtag;
-				sendmp->m_flags |= M_VLANTAG;
-			}
-#endif
+			sendmp->m_pkthdr.len = 0;
+			sendmp->m_pkthdr.ph_mss = 0;
 		}
+		sendmp->m_pkthdr.len += mp->m_len;
+		/*
+		 * This function iterates over interleaved descriptors.
+		 * Thus, we reuse ph_mss as global segment counter per
+		 * TCP connection, instead of introducing a new variable
+		 * in m_pkthdr.
+		 */
+		if (rsccnt)
+			sendmp->m_pkthdr.ph_mss += rsccnt - 1;
 
 		/* Pass the head pointer on */
 		if (eop == 0) {
@@ -3196,11 +3247,65 @@ ixgbe_rxeof(struct rx_ring *rxr)
 			sendmp = NULL;
 			mp->m_next = nxbuf->buf;
 		} else { /* Sending this frame? */
-			ixgbe_rx_checksum(staterr, sendmp);
+			uint16_t pkts;
 
+			ixgbe_rx_checksum(staterr, sendmp);
+#if NVLAN > 0
+			if (staterr & IXGBE_RXD_STAT_VP) {
+				sendmp->m_pkthdr.ether_vtag = vtag;
+				SET(sendmp->m_flags, M_VLANTAG);
+			}
+#endif
 			if (hashtype != IXGBE_RXDADV_RSSTYPE_NONE) {
 				sendmp->m_pkthdr.ph_flowid = hash;
 				SET(sendmp->m_pkthdr.csum_flags, M_FLOWID);
+			}
+
+			pkts = sendmp->m_pkthdr.ph_mss;
+			sendmp->m_pkthdr.ph_mss = 0;
+
+			if (pkts > 1) {
+				struct ether_extracted ext;
+				uint32_t hdrlen, paylen;
+
+				/* Calculate header size. */
+				ether_extract_headers(sendmp, &ext);
+				hdrlen = sizeof(*ext.eh);
+#if NVLAN > 0
+				if (ISSET(sendmp->m_flags, M_VLANTAG) ||
+				    ext.evh)
+					hdrlen += ETHER_VLAN_ENCAP_LEN;
+#endif
+				if (ext.ip4)
+					hdrlen += ext.ip4->ip_hl << 2;
+				if (ext.ip6)
+					hdrlen += sizeof(*ext.ip6);
+				if (ext.tcp) {
+					hdrlen += ext.tcp->th_off << 2;
+					tcpstat_inc(tcps_inhwlro);
+					tcpstat_add(tcps_inpktlro, pkts);
+				} else {
+					tcpstat_inc(tcps_inbadlro);
+				}
+
+				/*
+				 * If we gonna forward this packet, we have to
+				 * mark it as TSO, set a correct mss,
+				 * and recalculate the TCP checksum.
+				 */
+				paylen = sendmp->m_pkthdr.len > hdrlen ?
+				    sendmp->m_pkthdr.len - hdrlen : 0;
+				if (ext.tcp && paylen >= pkts) {
+					SET(sendmp->m_pkthdr.csum_flags,
+					    M_TCP_TSO);
+					sendmp->m_pkthdr.ph_mss = paylen / pkts;
+				}
+				if (ext.tcp &&
+				    ISSET(sendmp->m_pkthdr.csum_flags,
+				    M_TCP_CSUM_IN_OK)) {
+					SET(sendmp->m_pkthdr.csum_flags,
+					    M_TCP_CSUM_OUT);
+				}
 			}
 
 			ml_enqueue(&ml, sendmp);
@@ -3256,20 +3361,8 @@ ixgbe_rx_checksum(uint32_t staterr, struct mbuf * mp)
 void
 ixgbe_setup_vlan_hw_support(struct ix_softc *sc)
 {
-	struct ifnet	*ifp = &sc->arpcom.ac_if;
-	uint32_t	 ctrl;
-	int		 i;
-
-	/*
-	 * We have to disable VLAN striping when using TCP offloading, due to a
-	 * firmware bug.
-	 */
-	if (ISSET(ifp->if_xflags, IFXF_TSO)) {
-		sc->vlan_stripping = 0;
-		return;
-	}
-
-	sc->vlan_stripping = 1;
+	uint32_t	ctrl;
+	int		i;
 
 	/*
 	 * A soft reset zero's out the VFTA, so

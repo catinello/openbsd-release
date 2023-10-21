@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore.S,v 1.132 2023/01/20 16:01:04 deraadt Exp $	*/
+/*	$OpenBSD: locore.S,v 1.140 2023/07/31 04:01:07 guenther Exp $	*/
 /*	$NetBSD: locore.S,v 1.13 2004/03/25 18:33:17 drochner Exp $	*/
 
 /*
@@ -171,6 +171,7 @@ lapic_isr:
 	.section .rodata
 	.globl	sigcode
 sigcode:
+	endbr64
 	call	1f
 	movq	%rsp,%rdi
 	pushq	%rdi			/* fake return address */
@@ -341,7 +342,7 @@ switch_exited:
 #endif
 	CODEPATCH_START
 	fxrstor64	(%rdi)
-	CODEPATCH_END(CPTAG_XRSTOR)
+	CODEPATCH_END(CPTAG_XRSTORS)
 	andl	$~CPUPF_USERXSTATE,CPUVAR(PFLAGS)
 
 .Lxstate_reset:
@@ -472,31 +473,26 @@ bogus_proc_pmap:
 #endif /* DIAGNOSTIC */
 END(cpu_switchto)
 
-ENTRY(cpu_idle_enter)
-	ret
-	lfence
-END(cpu_idle_enter)
-
-ENTRY(cpu_idle_leave)
-	ret
-	lfence
-END(cpu_idle_leave)
-
-/* placed here for correct static branch prediction in cpu_idle_* */
 NENTRY(retpoline_rax)
+	CODEPATCH_START
 	JMP_RETPOLINE(rax)
+	CODEPATCH_END(CPTAG_RETPOLINE_RAX)
+END(retpoline_rax)
 
-ENTRY(cpu_idle_cycle)
-	RETGUARD_SETUP(cpu_idle_cycle, r11)
-	movq	cpu_idle_cycle_fcn,%rax
-	cmpq	$0,%rax
-	jne	retpoline_rax
+NENTRY(__x86_indirect_thunk_r11)
+	CODEPATCH_START
+	JMP_RETPOLINE(r11)
+	CODEPATCH_END(CPTAG_RETPOLINE_R11)
+END(__x86_indirect_thunk_r11)
+
+ENTRY(cpu_idle_cycle_hlt)
+	RETGUARD_SETUP(cpu_idle_cycle_hlt, r11)
 	sti
 	hlt
-	RETGUARD_CHECK(cpu_idle_cycle, r11)
+	RETGUARD_CHECK(cpu_idle_cycle_hlt, r11)
 	ret
 	lfence
-END(cpu_idle_cycle)
+END(cpu_idle_cycle_hlt)
 
 /*
  * savectx(struct pcb *pcb);
@@ -540,6 +536,7 @@ XUsyscall_meltdown:
 	 * In case the CPU speculates past the mov to cr3, we put a
 	 * retpoline-style pause-lfence-jmp-to-pause loop.
 	 */
+	endbr64
 	swapgs
 	movq	%rax,CPUVAR(SCRATCH)
 	movq	CPUVAR(KERN_CR3),%rax
@@ -551,11 +548,12 @@ KUTEXT_PAGE_END
 
 KTEXT_PAGE_START
 	.align	NBPG, 0xcc
-IDTVEC_NOALIGN(syscall_meltdown)
+GENTRY(Xsyscall_meltdown)
 	/* pad to match real Xsyscall_meltdown positioning above */
 	movq	CPUVAR(KERN_CR3),%rax
 	movq	%rax,%cr3
-IDTVEC_NOALIGN(syscall)
+GENTRY(Xsyscall)
+	endbr64
 	swapgs
 	movq	%rax,CPUVAR(SCRATCH)
 	SYSCALL_ENTRY			/* create trapframe */
@@ -677,7 +675,7 @@ KUTEXT_PAGE_END
 	/* untouched state so can't fault */
 	CODEPATCH_START
 	fxrstor64	(%rdi)
-	CODEPATCH_END(CPTAG_XRSTOR)
+	CODEPATCH_END(CPTAG_XRSTORS)
 #if PCB_SAVEFPU != 0
 	subq	$PCB_SAVEFPU,%rdi
 #endif
@@ -865,10 +863,14 @@ KTEXT_PAGE_END
 #if PCB_SAVEFPU != 0
 	addq	$PCB_SAVEFPU,%rdi
 #endif
-	movq	xsave_mask(%rip),%rsi
-	call	xrstor_user
-	testl	%eax,%eax
-	jnz	.Lintr_xrstor_faulted
+	movq	xsave_mask(%rip),%rdx
+	movl	%edx,%eax
+	shrq	$32, %rdx
+	CODEPATCH_START
+	fxrstor64	(%rdi)
+	CODEPATCH_END(CPTAG_XRSTORS)
+	//testl	%eax,%eax
+	//jnz	.Lintr_xrstor_faulted
 .Lintr_restore_fsbase:		/* CPU doesn't have curproc's FS.base */
 	orl	$CPUPF_USERSEGS,CPUVAR(PFLAGS)
 	movq	CPUVAR(CURPCB),%rdx
@@ -891,7 +893,7 @@ KTEXT_PAGE_END
 #endif
 	CODEPATCH_START
 	fxrstor64	(%rdi)
-	CODEPATCH_END(CPTAG_XRSTOR)
+	CODEPATCH_END(CPTAG_XRSTORS)
 	movq	$T_PROTFLT,TF_TRAPNO(%rsp)
 	jmp	recall_trap
 
@@ -942,7 +944,6 @@ NENTRY(intr_fast_exit)
 	testq	$PSL_I,%rdx
 	jnz	.Lintr_exit_not_blocked
 #endif /* DIAGNOSTIC */
-	call	pku_xonly	/* XXX guenther disapproves, but foo3 locks */
 	movq	TF_RDI(%rsp),%rdi
 	movq	TF_RSI(%rsp),%rsi
 	movq	TF_R8(%rsp),%r8
@@ -989,8 +990,14 @@ END(intr_fast_exit)
 
 /*
  * FPU/"extended CPU state" handling
+ *	void xrstor_kern(sfp, mask)
+ *		using first of xrstors/xrstor/fxrstor, load given state
+ *		which is assumed to be trusted: i.e., unaltered from
+ *		xsaves/xsaveopt/xsave/fxsave by kernel
  * 	int xrstor_user(sfp, mask)
- *		load given state, returns 0/1 if okay/it trapped
+ *		using first of xrstor/fxrstor, load given state which might
+ *		not be trustable: #GP faults will be caught; returns 0/1 if
+ *		okay/it trapped.
  *	void fpusave(sfp) 
  *		save current state, but retain it in the FPU
  *	void fpusavereset(sfp)
@@ -998,6 +1005,19 @@ END(intr_fast_exit)
  *	int xsetbv_user(reg, mask)
  *		load specified %xcr# register, returns 0/1 if okay/it trapped
  */
+
+ENTRY(xrstor_kern)
+	RETGUARD_SETUP(xrstor_kern, r11)
+	movq	%rsi, %rdx
+	movl	%esi, %eax
+	shrq	$32, %rdx
+	CODEPATCH_START
+	fxrstor64	(%rdi)
+	CODEPATCH_END(CPTAG_XRSTORS)
+	RETGUARD_CHECK(xrstor_kern, r11)
+	ret
+	lfence
+END(xrstor_kern)
 
 ENTRY(xrstor_user)
 	RETGUARD_SETUP(xrstor_user, r11)
@@ -1047,7 +1067,7 @@ ENTRY(fpusavereset)
 #endif
 	CODEPATCH_START
 	fxrstor64	(%rdi)
-	CODEPATCH_END(CPTAG_XRSTOR)
+	CODEPATCH_END(CPTAG_XRSTORS)
 	RETGUARD_CHECK(fpusavereset, r11)
 	ret
 	lfence
@@ -1073,22 +1093,16 @@ NENTRY(xsetbv_resume)
 	lfence
 END(xsetbv_user)
 
-	.section .rodata
-	.globl	_xrstor
-_xrstor:
-	xrstor64	(%rdi)
-
-	.globl	_xsave
-_xsave:
-	xsave64	(%rdi)
-
-	.globl	_xsaveopt
-_xsaveopt:
-	xsaveopt64	(%rdi)
-
-	.globl	_pcid_set_reuse
-_pcid_set_reuse:
-	orl	$(CR3_REUSE_PCID >> 32),CPUVAR(USER_CR3 + 4)
+CODEPATCH_CODE(_xrstor,		xrstor64 (%rdi))
+CODEPATCH_CODE(_xrstors,	xrstors64 (%rdi))
+CODEPATCH_CODE(_xsave,		xsave64 (%rdi))
+CODEPATCH_CODE(_xsaves,		xsaves64 (%rdi))
+CODEPATCH_CODE(_xsaveopt,	xsaveopt64 (%rdi))
+CODEPATCH_CODE(_pcid_set_reuse,
+		orl	$(CR3_REUSE_PCID >> 32),CPUVAR(USER_CR3 + 4))
+CODEPATCH_CODE_LEN(_jmprax,	jmp *%rax; int3)
+CODEPATCH_CODE_LEN(_jmpr11,	jmp *%r11; int3)
+CODEPATCH_CODE_LEN(_jmpr13,	jmp *%r13; int3)
 
 ENTRY(pagezero)
 	RETGUARD_SETUP(pagezero, r11)
@@ -1146,20 +1160,28 @@ NENTRY(rdmsr_resume)
 	lfence
 END(rdmsr_safe)
 
+#if NHYPERV > 0
+/* uint64_t hv_hypercall_trampoline(uint64_t control, paddr_t input, paddr_t output) */
+NENTRY(hv_hypercall_trampoline)
+	endbr64
+	mov	%rdx, %r8
+	mov	%rsi, %rdx
+	mov	%rdi, %rcx
+	jmp	hv_hypercall_page
+END(hv_hypercall_trampoline)
+	/* Hypercall page needs to be page aligned */
+	.text
+	.align	NBPG, 0xcc
+	.globl	hv_hypercall_page
+hv_hypercall_page:
+	.skip	0x1000, 0xcc
+#endif /* NHYPERV > 0 */
+
 #if NXEN > 0
 	/* Hypercall page needs to be page aligned */
 	.text
 	.align	NBPG, 0xcc
 	.globl	xen_hypercall_page
 xen_hypercall_page:
-	.skip	0x1000, 0xcc
-#endif /* NXEN > 0 */
-
-#if NHYPERV > 0
-	/* Hypercall page needs to be page aligned */
-	.text
-	.align	NBPG, 0xcc
-	.globl	hv_hypercall_page
-hv_hypercall_page:
 	.skip	0x1000, 0xcc
 #endif /* NXEN > 0 */

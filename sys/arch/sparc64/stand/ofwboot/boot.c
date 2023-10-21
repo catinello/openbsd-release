@@ -1,4 +1,4 @@
-/*	$OpenBSD: boot.c,v 1.40 2022/09/02 08:13:03 kn Exp $	*/
+/*	$OpenBSD: boot.c,v 1.43 2023/06/03 21:37:53 krw Exp $	*/
 /*	$NetBSD: boot.c,v 1.3 2001/05/31 08:55:19 mrg Exp $	*/
 /*
  * Copyright (c) 1997, 1999 Eduardo E. Horvath.  All rights reserved.
@@ -58,7 +58,6 @@
 #include <lib/libsa/arc4.h>
 
 #ifdef SOFTRAID
-#include <sys/param.h>
 #include <sys/queue.h>
 #include <dev/biovar.h>
 #include <dev/softraidvar.h>
@@ -111,7 +110,6 @@ static int
 parseargs(char *str, int *howtop)
 {
 	char *cp;
-	int i;
 
 	*howtop = 0;
 	cp = str;
@@ -192,7 +190,7 @@ chain(u_int64_t pentry, char *args, void *ssym, void *esym)
 	bcopy(&machine_tag, args + l, sizeof(machine_tag));
 	l += sizeof(machine_tag);
 
-	/* 
+	/*
 	 * Since we don't need the boot string (we can get it from /chosen)
 	 * we won't pass it in.  Just pass in esym and magic #
 	 */
@@ -285,7 +283,7 @@ int
 loadrandom(char *path, char *buf, size_t buflen)
 {
 	struct stat sb;
-	int fd, i, error = 0;
+	int fd, error = 0;
 
 	fd = open(path, O_RDONLY);
 	if (fd == -1)
@@ -322,7 +320,7 @@ srbootdev(const char *bootline)
 
 	bootdev_dip = NULL;
 
-	/* 
+	/*
 	 * Look for softraid disks in bootline.
 	 * E.g. 'sr0', 'sr0:bsd', or 'sr0a:/bsd'
 	 */
@@ -417,13 +415,13 @@ main(void)
 	int chosen;
 	char bootline[512];		/* Should check size? */
 	char *cp;
-	int i, fd;
+	int fd;
 #ifdef SOFTRAID
 	int err;
 #endif
 	char **bootlp;
 	char *just_bootline[2];
-	
+
 	printf(">> OpenBSD BOOT %s\n", version);
 
 	/*
@@ -484,7 +482,7 @@ main(void)
 					printf("bootargs too long: %s\n",
 					    bootline);
 					_rtt();
-				}	
+				}
 			}
 		}
 		if (!bootlp) {

@@ -1,4 +1,4 @@
-/*	$OpenBSD: icmp6.c,v 1.247 2022/12/10 23:45:51 kn Exp $	*/
+/*	$OpenBSD: icmp6.c,v 1.249 2023/09/16 09:33:27 mpi Exp $	*/
 /*	$KAME: icmp6.c,v 1.217 2001/06/20 15:03:29 jinmei Exp $	*/
 
 /*
@@ -1870,7 +1870,8 @@ icmp6_sysctl_icmp6stat(void *oldp, size_t *oldlenp, void *newp)
 
 	CTASSERT(sizeof(*icmp6stat) == icp6s_ncounters * sizeof(uint64_t));
 	icmp6stat = malloc(sizeof(*icmp6stat), M_TEMP, M_WAITOK|M_ZERO);
-	counters_read(icmp6counters, (uint64_t *)icmp6stat, icp6s_ncounters);
+	counters_read(icmp6counters, (uint64_t *)icmp6stat, icp6s_ncounters,
+	    NULL);
 	ret = sysctl_rdstruct(oldp, oldlenp, newp,
 	    icmp6stat, sizeof(*icmp6stat));
 	free(icmp6stat, M_TEMP, sizeof(*icmp6stat));
@@ -1900,6 +1901,11 @@ icmp6_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
 
 	case ICMPV6CTL_STATS:
 		error = icmp6_sysctl_icmp6stat(oldp, oldlenp, newp);
+		break;
+
+	case ICMPV6CTL_ND6_QUEUED:
+		error = sysctl_rdint(oldp, oldlenp, newp,
+		    atomic_load_int(&ln_hold_total));
 		break;
 
 	default:

@@ -1,4 +1,4 @@
-/*	$OpenBSD: x509.c,v 1.70 2023/03/14 07:09:11 tb Exp $ */
+/*	$OpenBSD: x509.c,v 1.74 2023/09/12 09:33:30 job Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2021 Claudio Jeker <claudio@openbsd.org>
@@ -146,8 +146,14 @@ x509_get_aki(X509 *x, const char *fn, char **aki)
 
 	*aki = NULL;
 	akid = X509_get_ext_d2i(x, NID_authority_key_identifier, &crit, NULL);
-	if (akid == NULL)
+	if (akid == NULL) {
+		if (crit != -1) {
+			warnx("%s: RFC 6487 section 4.8.3: error parsing AKI",
+			    fn);
+			return 0;
+		}
 		return 1;
+	}
 	if (crit != 0) {
 		warnx("%s: RFC 6487 section 4.8.3: "
 		    "AKI: extension not non-critical", fn);
@@ -200,8 +206,14 @@ x509_get_ski(X509 *x, const char *fn, char **ski)
 
 	*ski = NULL;
 	os = X509_get_ext_d2i(x, NID_subject_key_identifier, &crit, NULL);
-	if (os == NULL)
+	if (os == NULL) {
+		if (crit != -1) {
+			warnx("%s: RFC 6487 section 4.8.2: error parsing SKI",
+			    fn);
+			return 0;
+		}
 		return 1;
+	}
 	if (crit != 0) {
 		warnx("%s: RFC 6487 section 4.8.2: "
 		    "SKI: extension not non-critical", fn);
@@ -258,6 +270,20 @@ x509_get_purpose(X509 *x, const char *fn)
 
 	if (X509_check_ca(x) == 1) {
 		bc = X509_get_ext_d2i(x, NID_basic_constraints, &crit, NULL);
+		if (bc == NULL) {
+			if (crit != -1)
+				warnx("%s: RFC 6487 section 4.8.1: "
+				    "error parsing basic constraints", fn);
+			else
+				warnx("%s: RFC 6487 section 4.8.1: "
+				    "missing basic constraints", fn);
+			goto out;
+		}
+		if (crit != 1) {
+			warnx("%s: RFC 6487 section 4.8.1: Basic Constraints "
+			    "must be marked critical", fn);
+			goto out;
+		}
 		if (bc->pathlen != NULL) {
 			warnx("%s: RFC 6487 section 4.8.1: Path Length "
 			    "Constraint must be absent", fn);
@@ -274,7 +300,10 @@ x509_get_purpose(X509 *x, const char *fn)
 
 	eku = X509_get_ext_d2i(x, NID_ext_key_usage, &crit, NULL);
 	if (eku == NULL) {
-		warnx("%s: EKU: extension missing", fn);
+		if (crit != -1)
+			warnx("%s: error parsing EKU", fn);
+		else
+			warnx("%s: EKU: extension missing", fn);
 		goto out;
 	}
 	if (crit != 0) {
@@ -372,18 +401,24 @@ x509_get_aia(X509 *x, const char *fn, char **aia)
 
 	*aia = NULL;
 	info = X509_get_ext_d2i(x, NID_info_access, &crit, NULL);
-	if (info == NULL)
+	if (info == NULL) {
+		if (crit != -1) {
+			warnx("%s: RFC 6487 section 4.8.7: error parsing AIA",
+			    fn);
+			return 0;
+		}
 		return 1;
-
-	if ((X509_get_extension_flags(x) & EXFLAG_SS) != 0) {
-		warnx("%s: RFC 6487 section 4.8.7: AIA must be absent from "
-		    "a self-signed certificate", fn);
-		goto out;
 	}
 
 	if (crit != 0) {
 		warnx("%s: RFC 6487 section 4.8.7: "
 		    "AIA: extension not non-critical", fn);
+		goto out;
+	}
+
+	if ((X509_get_extension_flags(x) & EXFLAG_SS) != 0) {
+		warnx("%s: RFC 6487 section 4.8.7: AIA must be absent from "
+		    "a self-signed certificate", fn);
 		goto out;
 	}
 
@@ -428,8 +463,13 @@ x509_get_sia(X509 *x, const char *fn, char **sia)
 	*sia = NULL;
 
 	info = X509_get_ext_d2i(x, NID_sinfo_access, &crit, NULL);
-	if (info == NULL)
+	if (info == NULL) {
+		if (crit != -1) {
+			warnx("%s: error parsing SIA", fn);
+			return 0;
+		}
 		return 1;
+	}
 
 	if (crit != 0) {
 		warnx("%s: RFC 6487 section 4.8.8: "
@@ -479,8 +519,11 @@ x509_get_sia(X509 *x, const char *fn, char **sia)
 		*sia = NULL;
 	}
 
-	if (!rsync_found)
+	if (!rsync_found) {
+		warnx("%s: RFC 6487 section 4.8.8.2: "
+		    "SIA without rsync accessLocation", fn);
 		goto out;
+	}
 
 	AUTHORITY_INFO_ACCESS_free(info);
 	return 1;
@@ -506,7 +549,7 @@ x509_get_notbefore(X509 *x, const char *fn, time_t *tt)
 		return 0;
 	}
 	if (!x509_get_time(at, tt)) {
-		warnx("%s: ASN1_time_parse failed", fn);
+		warnx("%s: ASN1_TIME_to_tm failed", fn);
 		return 0;
 	}
 	return 1;
@@ -526,7 +569,7 @@ x509_get_notafter(X509 *x, const char *fn, time_t *tt)
 		return 0;
 	}
 	if (!x509_get_time(at, tt)) {
-		warnx("%s: ASN1_time_parse failed", fn);
+		warnx("%s: ASN1_TIME_to_tm failed", fn);
 		return 0;
 	}
 	return 1;
@@ -543,11 +586,14 @@ x509_inherits(X509 *x)
 	STACK_OF(IPAddressFamily)	*addrblk = NULL;
 	ASIdentifiers			*asidentifiers = NULL;
 	const IPAddressFamily		*af;
-	int				 i, rc = 0;
+	int				 crit, i, rc = 0;
 
-	addrblk = X509_get_ext_d2i(x, NID_sbgp_ipAddrBlock, NULL, NULL);
-	if (addrblk == NULL)
+	addrblk = X509_get_ext_d2i(x, NID_sbgp_ipAddrBlock, &crit, NULL);
+	if (addrblk == NULL) {
+		if (crit != -1)
+			warnx("error parsing ipAddrBlock");
 		goto out;
+	}
 
 	/*
 	 * Check by hand, since X509v3_addr_inherits() success only means that
@@ -561,8 +607,11 @@ x509_inherits(X509 *x)
 
 	asidentifiers = X509_get_ext_d2i(x, NID_sbgp_autonomousSysNum, NULL,
 	    NULL);
-	if (asidentifiers == NULL)
+	if (asidentifiers == NULL) {
+		if (crit != -1)
+			warnx("error parsing asIdentifiers");
 		goto out;
+	}
 
 	/* We need to have AS numbers and don't want RDIs. */
 	if (asidentifiers->asnum == NULL || asidentifiers->rdi != NULL)
@@ -587,14 +636,18 @@ x509_any_inherits(X509 *x)
 {
 	STACK_OF(IPAddressFamily)	*addrblk = NULL;
 	ASIdentifiers			*asidentifiers = NULL;
-	int				 rc = 0;
+	int				 crit, rc = 0;
 
-	addrblk = X509_get_ext_d2i(x, NID_sbgp_ipAddrBlock, NULL, NULL);
+	addrblk = X509_get_ext_d2i(x, NID_sbgp_ipAddrBlock, &crit, NULL);
+	if (addrblk == NULL && crit != -1)
+		warnx("error parsing ipAddrBlock");
 	if (X509v3_addr_inherits(addrblk))
 		rc = 1;
 
-	asidentifiers = X509_get_ext_d2i(x, NID_sbgp_autonomousSysNum, NULL,
+	asidentifiers = X509_get_ext_d2i(x, NID_sbgp_autonomousSysNum, &crit,
 	    NULL);
+	if (asidentifiers == NULL && crit != -1)
+		warnx("error parsing asIdentifiers");
 	if (X509v3_asid_inherits(asidentifiers))
 		rc = 1;
 
@@ -621,8 +674,14 @@ x509_get_crl(X509 *x, const char *fn, char **crl)
 
 	*crl = NULL;
 	crldp = X509_get_ext_d2i(x, NID_crl_distribution_points, &crit, NULL);
-	if (crldp == NULL)
+	if (crldp == NULL) {
+		if (crit != -1) {
+			warnx("%s: RFC 6487 section 4.8.6: failed to parse "
+			    "CRL distribution points", fn);
+			return 0;
+		}
 		return 1;
+	}
 
 	if (crit != 0) {
 		warnx("%s: RFC 6487 section 4.8.6: "
@@ -757,7 +816,10 @@ x509_get_time(const ASN1_TIME *at, time_t *t)
 
 	*t = 0;
 	memset(&tm, 0, sizeof(tm));
-	if (ASN1_time_parse(at->data, at->length, &tm, 0) == -1)
+	/* Fail instead of silently falling back to the current time. */
+	if (at == NULL)
+		return 0;
+	if (!ASN1_TIME_to_tm(at, &tm))
 		return 0;
 	if ((*t = timegm(&tm)) == -1)
 		errx(1, "timegm failed");
@@ -794,6 +856,86 @@ x509_location(const char *fn, const char *descr, const char *proto,
 
 	if ((*out = strndup(uri->data, uri->length)) == NULL)
 		err(1, NULL);
+
+	return 1;
+}
+
+/*
+ * Check that the subject only contains commonName and serialNumber.
+ * Return 0 on failure.
+ */
+int
+x509_valid_subject(const char *fn, const X509 *x)
+{
+	const X509_NAME *xn;
+	const X509_NAME_ENTRY *ne;
+	const ASN1_OBJECT *ao;
+	const ASN1_STRING *as;
+	int cn = 0, sn = 0;
+	int i, nid;
+
+	if ((xn = X509_get_subject_name(x)) == NULL) {
+		warnx("%s: X509_get_subject_name", fn);
+		return 0;
+	}
+
+	for (i = 0; i < X509_NAME_entry_count(xn); i++) {
+		if ((ne = X509_NAME_get_entry(xn, i)) == NULL) {
+			warnx("%s: X509_NAME_get_entry", fn);
+			return 0;
+		}
+		if ((ao = X509_NAME_ENTRY_get_object(ne)) == NULL) {
+			warnx("%s: X509_NAME_ENTRY_get_object", fn);
+			return 0;
+		}
+
+		nid = OBJ_obj2nid(ao);
+		switch (nid) {
+		case NID_commonName:
+			if (cn++ > 0) {
+				warnx("%s: duplicate commonName in subject",
+				    fn);
+				return 0;
+			}
+			if ((as = X509_NAME_ENTRY_get_data(ne)) == NULL) {
+				warnx("%s: X509_NAME_ENTRY_get_data failed",
+				    fn);
+				return 0;
+			}
+/*
+ * The following check can be enabled after AFRINIC re-issues CA certs.
+ * https://lists.afrinic.net/pipermail/dbwg/2023-March/000436.html
+ */
+#if 0
+			if (ASN1_STRING_type(as) != V_ASN1_PRINTABLESTRING) {
+				warnx("%s: RFC 6487 section 4.5: commonName is"
+				    " not PrintableString", fn);
+				return 0;
+			}
+#endif
+			break;
+		case NID_serialNumber:
+			if (sn++ > 0) {
+				warnx("%s: duplicate serialNumber in subject",
+				    fn);
+				return 0;
+			}
+			break;
+		case NID_undef:
+			warnx("%s: OBJ_obj2nid failed", fn);
+			return 0;
+		default:
+			warnx("%s: RFC 6487 section 4.5: unexpected attribute "
+			    "%s", fn, OBJ_nid2sn(nid));
+			return 0;
+		}
+	}
+
+	if (cn == 0) {
+		warnx("%s: RFC 6487 section 4.5: subject missing commonName",
+		    fn);
+		return 0;
+	}
 
 	return 1;
 }

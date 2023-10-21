@@ -1,4 +1,4 @@
-/*	$OpenBSD: ucode.c,v 1.3 2020/12/15 22:51:34 kettenis Exp $	*/
+/*	$OpenBSD: ucode.c,v 1.6 2023/09/10 09:32:31 jsg Exp $	*/
 /*
  * Copyright (c) 2018 Stefan Fritsch <fritsch@genua.de>
  * Copyright (c) 2018 Patrick Wildt <patrick@blueri.se>
@@ -164,6 +164,7 @@ cpu_ucode_amd_apply(struct cpu_info *ci)
 	uint16_t eid = 0;
 	uint32_t sig, ebx, ecx, edx;
 	uint64_t start = 0;
+	uint32_t patch_len = 0;
 
 	if (cpu_ucode_data == NULL || cpu_ucode_size == 0) {
 		DPRINTF(("%s: no microcode provided\n", __func__));
@@ -210,8 +211,10 @@ cpu_ucode_amd_apply(struct cpu_info *ci)
 			goto out;
 		}
 		memcpy(&ap, &cpu_ucode_data[i], sizeof(ap));
-		if (ap.type == 1 && ap.eid == eid && ap.level > level)
+		if (ap.type == 1 && ap.eid == eid && ap.level > level) {
 			start = (uint64_t)&cpu_ucode_data[i + 8];
+			patch_len = ap.len;
+		}
 		if (i + ap.len + 8 > cpu_ucode_size) {
 			DPRINTF(("%s: truncated patch\n", __func__));
 			goto out;
@@ -220,9 +223,16 @@ cpu_ucode_amd_apply(struct cpu_info *ci)
 	}
 
 	if (start != 0) {
+		/* alignment required on fam 15h */
+		uint8_t *p = malloc(patch_len, M_TEMP, M_NOWAIT);
+		if (p == NULL)
+			goto out;
+		memcpy(p, (uint8_t *)start, patch_len);
+		start = (uint64_t)p;
 		wrmsr(MSR_PATCH_LOADER, start);
 		level = rdmsr(MSR_PATCH_LEVEL);
 		DPRINTF(("%s: new patch level 0x%llx\n", __func__, level));
+		free(p, M_TEMP, patch_len);
 	}
 out:
 	mtx_leave(&cpu_ucode_mtx);
@@ -284,7 +294,7 @@ out:
 struct intel_ucode_header *
 cpu_ucode_intel_find(char *data, size_t left, uint32_t current)
 {
-	uint64_t platform_id = (rdmsr(MSR_PLATFORM_ID) >> 50) & 0xff;
+	uint64_t platform_id = (rdmsr(MSR_PLATFORM_ID) >> 50) & 7;
 	uint32_t sig, dummy1, dummy2, dummy3;
 	uint32_t mask = 1UL << platform_id;
 	struct intel_ucode_header *hdr;

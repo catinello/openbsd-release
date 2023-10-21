@@ -1,4 +1,4 @@
-/*	$OpenBSD: clock.c,v 1.64 2023/02/04 19:19:36 cheloha Exp $	*/
+/*	$OpenBSD: clock.c,v 1.68 2023/09/17 14:50:51 cheloha Exp $	*/
 /*	$NetBSD: clock.c,v 1.39 1996/05/12 23:11:54 mycroft Exp $	*/
 
 /*-
@@ -426,14 +426,23 @@ i8254_initclocks(void)
 
 	stathz = 128;
 	profhz = 1024;		/* XXX does not divide into 1 billion */
-	clockintr_init(0);
+}
 
+void
+i8254_start_both_clocks(void)
+{
 	clockintr_cpu_init(NULL);
 
-	/* When using i8254 for clock, we also use the rtc for profclock */
-	(void)isa_intr_establish(NULL, 0, IST_PULSE, IPL_CLOCK,
+	/*
+	 * When using i8254 for clock, we also use the rtc for profclock.
+	 *
+	 * These IRQs are not MP-safe, but it is harmless to lie about it
+	 * because we cannot reach this point unless we are only booting
+	 * a single CPU.
+	 */
+	(void)isa_intr_establish(NULL, 0, IST_PULSE, IPL_CLOCK | IPL_MPSAFE,
 	    clockintr, 0, "clock");
-	(void)isa_intr_establish(NULL, 8, IST_PULSE, IPL_STATCLOCK,
+	(void)isa_intr_establish(NULL, 8, IST_PULSE, IPL_STATCLOCK | IPL_MPSAFE,
 	    rtcintr, 0, "rtc");
 
 	rtcstart();			/* start the mc146818 clock */
@@ -663,7 +672,6 @@ setstatclockrate(int arg)
 			mc146818_write(NULL, MC_REGA,
 			    MC_BASE_32_KHz | MC_RATE_1024_Hz);
 	}
-	clockintr_setstatclockrate(arg);
 }
 
 void

@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_ixl.c,v 1.87 2023/02/06 20:27:45 jan Exp $ */
+/*	$OpenBSD: if_ixl.c,v 1.89 2023/09/29 19:44:47 bluhm Exp $ */
 
 /*
  * Copyright (c) 2013-2015, Intel Corporation
@@ -1274,6 +1274,7 @@ struct ixl_softc {
 	unsigned int		 sc_atq_prod;
 	unsigned int		 sc_atq_cons;
 
+	struct mutex		 sc_atq_mtx;
 	struct ixl_dmamem	 sc_arq;
 	struct task		 sc_arq_task;
 	struct ixl_aq_bufs	 sc_arq_idle;
@@ -1723,6 +1724,8 @@ ixl_attach(struct device *parent, struct device *self, void *aux)
 
 	/* initialise the adminq */
 
+	mtx_init(&sc->sc_atq_mtx, IPL_NET);
+
 	if (ixl_dmamem_alloc(sc, &sc->sc_atq,
 	    sizeof(struct ixl_aq_desc) * IXL_AQ_NUM, IXL_AQ_ALIGN) != 0) {
 		printf("\n" "%s: unable to allocate atq\n", DEVNAME(sc));
@@ -2071,8 +2074,10 @@ ixl_media_status(struct ifnet *ifp, struct ifmediareq *ifm)
 
 	KERNEL_ASSERT_LOCKED();
 
+	mtx_enter(&sc->sc_link_state_mtx);
 	ifm->ifm_status = sc->sc_media_status;
 	ifm->ifm_active = sc->sc_media_active;
+	mtx_leave(&sc->sc_link_state_mtx);
 }
 
 static void
@@ -3479,9 +3484,7 @@ ixl_link_state_update_iaq(struct ixl_softc *sc, void *arg)
 		return;
 	}
 
-	KERNEL_LOCK();
 	link_state = ixl_set_link_status(sc, iaq);
-	KERNEL_UNLOCK();
 	mtx_enter(&sc->sc_link_state_mtx);
 	if (ifp->if_link_state != link_state) {
 		ifp->if_link_state = link_state;
@@ -3599,7 +3602,7 @@ ixl_atq_post(struct ixl_softc *sc, struct ixl_atq *iatq)
 	struct ixl_aq_desc *atq, *slot;
 	unsigned int prod;
 
-	/* assert locked */
+	mtx_enter(&sc->sc_atq_mtx);
 
 	atq = IXL_DMA_KVA(&sc->sc_atq);
 	prod = sc->sc_atq_prod;
@@ -3618,6 +3621,8 @@ ixl_atq_post(struct ixl_softc *sc, struct ixl_atq *iatq)
 	prod &= IXL_AQ_MASK;
 	sc->sc_atq_prod = prod;
 	ixl_wr(sc, sc->sc_aq_regs->atq_tail, prod);
+
+	mtx_leave(&sc->sc_atq_mtx);
 }
 
 static void
@@ -3628,11 +3633,15 @@ ixl_atq_done(struct ixl_softc *sc)
 	unsigned int cons;
 	unsigned int prod;
 
+	mtx_enter(&sc->sc_atq_mtx);
+
 	prod = sc->sc_atq_prod;
 	cons = sc->sc_atq_cons;
 
-	if (prod == cons)
+	if (prod == cons) {
+		mtx_leave(&sc->sc_atq_mtx);
 		return;
+	}
 
 	atq = IXL_DMA_KVA(&sc->sc_atq);
 
@@ -3645,6 +3654,7 @@ ixl_atq_done(struct ixl_softc *sc)
 		if (!ISSET(slot->iaq_flags, htole16(IXL_AQ_DD)))
 			break;
 
+		KASSERT(slot->iaq_cookie != 0);
 		iatq = (struct ixl_atq *)slot->iaq_cookie;
 		iatq->iatq_desc = *slot;
 
@@ -3661,6 +3671,8 @@ ixl_atq_done(struct ixl_softc *sc)
 	    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);
 
 	sc->sc_atq_cons = cons;
+
+	mtx_leave(&sc->sc_atq_mtx);
 }
 
 static void
@@ -3691,6 +3703,8 @@ ixl_atq_poll(struct ixl_softc *sc, struct ixl_aq_desc *iaq, unsigned int tm)
 	unsigned int prod;
 	unsigned int t = 0;
 
+	mtx_enter(&sc->sc_atq_mtx);
+
 	atq = IXL_DMA_KVA(&sc->sc_atq);
 	prod = sc->sc_atq_prod;
 	slot = atq + prod;
@@ -3712,8 +3726,10 @@ ixl_atq_poll(struct ixl_softc *sc, struct ixl_aq_desc *iaq, unsigned int tm)
 	while (ixl_rd(sc, sc->sc_aq_regs->atq_head) != prod) {
 		delaymsec(1);
 
-		if (t++ > tm)
+		if (t++ > tm) {
+			mtx_leave(&sc->sc_atq_mtx);
 			return (ETIMEDOUT);
+		}
 	}
 
 	bus_dmamap_sync(sc->sc_dmat, IXL_DMA_MAP(&sc->sc_atq),
@@ -3724,6 +3740,7 @@ ixl_atq_poll(struct ixl_softc *sc, struct ixl_aq_desc *iaq, unsigned int tm)
 
 	sc->sc_atq_cons = prod;
 
+	mtx_leave(&sc->sc_atq_mtx);
 	return (0);
 }
 
@@ -4451,9 +4468,6 @@ ixl_set_link_status(struct ixl_softc *sc, const struct ixl_aq_desc *iaq)
 {
 	const struct ixl_aq_link_status *status;
 	const struct ixl_phy_type *itype;
-
-	KERNEL_ASSERT_LOCKED();
-
 	uint64_t ifm_active = IFM_ETHER;
 	uint64_t ifm_status = IFM_AVALID;
 	int link_state = LINK_STATE_DOWN;
@@ -4479,9 +4493,11 @@ ixl_set_link_status(struct ixl_softc *sc, const struct ixl_aq_desc *iaq)
 	baudrate = ixl_search_link_speed(status->link_speed);
 
 done:
+	mtx_enter(&sc->sc_link_state_mtx);
 	sc->sc_media_active = ifm_active;
 	sc->sc_media_status = ifm_status;
 	sc->sc_ac.ac_if.if_baudrate = baudrate;
+	mtx_leave(&sc->sc_link_state_mtx);
 
 	return (link_state);
 }

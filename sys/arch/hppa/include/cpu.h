@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.99 2023/01/31 15:18:54 deraadt Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.101 2023/08/23 01:55:46 cheloha Exp $	*/
 
 /*
  * Copyright (c) 2000-2004 Michael Shalayeff
@@ -113,6 +113,7 @@ struct cpu_info {
 #endif
 #ifdef GPROF
 	struct gmonparam *ci_gmon;
+	struct clockintr *ci_gmonclock;
 #endif
 	struct clockintr_queue ci_queue;
 	char		ci_panicbuf[512];
@@ -240,7 +241,6 @@ int	copy_on_fault(void);
 void	proc_trampoline(void);
 int	cpu_dumpsize(void);
 int	cpu_dump(void);
-void	cpu_startclock(void);
 
 static inline unsigned int
 cpu_rnd_messybits(void)

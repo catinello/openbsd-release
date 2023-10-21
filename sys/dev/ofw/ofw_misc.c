@@ -1,4 +1,4 @@
-/*	$OpenBSD: ofw_misc.c,v 1.38 2022/12/17 11:54:32 kettenis Exp $	*/
+/*	$OpenBSD: ofw_misc.c,v 1.43 2023/05/17 23:25:45 patrick Exp $	*/
 /*
  * Copyright (c) 2017-2021 Mark Kettenis
  *
@@ -119,6 +119,49 @@ regmap_read_4(struct regmap *rm, bus_size_t offset)
 	return bus_space_read_4(rm->rm_tag, rm->rm_handle, offset);
 }
 
+/*
+ * Network interface support.
+ */
+
+LIST_HEAD(, if_device) if_devices =
+	LIST_HEAD_INITIALIZER(if_devices);
+
+void
+if_register(struct if_device *ifd)
+{
+	ifd->if_phandle = OF_getpropint(ifd->if_node, "phandle", 0);
+
+	LIST_INSERT_HEAD(&if_devices, ifd, if_list);
+}
+
+struct ifnet *
+if_bynode(int node)
+{
+	struct if_device *ifd;
+
+	LIST_FOREACH(ifd, &if_devices, if_list) {
+		if (ifd->if_node == node)
+			return (ifd->if_ifp);
+	}
+
+	return (NULL);
+}
+
+struct ifnet *
+if_byphandle(uint32_t phandle)
+{
+	struct if_device *ifd;
+
+	if (phandle == 0)
+		return (NULL);
+
+	LIST_FOREACH(ifd, &if_devices, if_list) {
+		if (ifd->if_phandle == phandle)
+			return (ifd->if_ifp);
+	}
+
+	return (NULL);
+}
 
 /*
  * PHY support.
@@ -207,19 +250,19 @@ phy_next_phy(uint32_t *cells)
 }
 
 int
-phy_enable_idx(int node, int idx)
+phy_enable_prop_idx(int node, char *prop, int idx)
 {
 	uint32_t *phys;
 	uint32_t *phy;
 	int rv = -1;
 	int len;
 
-	len = OF_getproplen(node, "phys");
+	len = OF_getproplen(node, prop);
 	if (len <= 0)
 		return -1;
 
 	phys = malloc(len, M_TEMP, M_WAITOK);
-	OF_getpropintarray(node, "phys", phys, len);
+	OF_getpropintarray(node, prop, phys, len);
 
 	phy = phys;
 	while (phy && phy < phys + (len / sizeof(uint32_t))) {
@@ -233,6 +276,12 @@ phy_enable_idx(int node, int idx)
 
 	free(phys, M_TEMP, len);
 	return rv;
+}
+
+int
+phy_enable_idx(int node, int idx)
+{
+	return (phy_enable_prop_idx(node, "phys", idx));
 }
 
 int
@@ -1294,4 +1343,109 @@ mbox_recv(struct mbox_channel *mc, void *data, size_t len)
 		return md->md_recv(mc->mc_cookie, data, len);
 
 	return ENXIO;
+}
+
+/* hwlock support */
+
+LIST_HEAD(, hwlock_device) hwlock_devices =
+	LIST_HEAD_INITIALIZER(hwlock_devices);
+
+void
+hwlock_register(struct hwlock_device *hd)
+{
+	hd->hd_cells = OF_getpropint(hd->hd_node, "#hwlock-cells", 0);
+	hd->hd_phandle = OF_getpropint(hd->hd_node, "phandle", 0);
+	if (hd->hd_phandle == 0)
+		return;
+
+	LIST_INSERT_HEAD(&hwlock_devices, hd, hd_list);
+}
+
+int
+hwlock_lock_cells(uint32_t *cells, int lock)
+{
+	struct hwlock_device *hd;
+	uint32_t phandle = cells[0];
+
+	LIST_FOREACH(hd, &hwlock_devices, hd_list) {
+		if (hd->hd_phandle == phandle)
+			break;
+	}
+
+	if (hd && hd->hd_lock)
+		return hd->hd_lock(hd->hd_cookie, &cells[1], lock);
+
+	return ENXIO;
+}
+
+uint32_t *
+hwlock_next_hwlock(uint32_t *cells)
+{
+	uint32_t phandle = cells[0];
+	int node, ncells;
+
+	node = OF_getnodebyphandle(phandle);
+	if (node == 0)
+		return NULL;
+
+	ncells = OF_getpropint(node, "#hwlock-cells", 0);
+	return cells + ncells + 1;
+}
+
+int
+hwlock_do_lock_idx(int node, int idx, int lock)
+{
+	uint32_t *hwlocks;
+	uint32_t *hwlock;
+	int rv = -1;
+	int len;
+
+	len = OF_getproplen(node, "hwlocks");
+	if (len <= 0)
+		return -1;
+
+	hwlocks = malloc(len, M_TEMP, M_WAITOK);
+	OF_getpropintarray(node, "hwlocks", hwlocks, len);
+
+	hwlock = hwlocks;
+	while (hwlock && hwlock < hwlocks + (len / sizeof(uint32_t))) {
+		if (idx <= 0)
+			rv = hwlock_lock_cells(hwlock, lock);
+		if (idx == 0)
+			break;
+		hwlock = hwlock_next_hwlock(hwlock);
+		idx--;
+	}
+
+	free(hwlocks, M_TEMP, len);
+	return rv;
+}
+
+int
+hwlock_lock_idx(int node, int idx)
+{
+	return hwlock_do_lock_idx(node, idx, 1);
+}
+
+int
+hwlock_lock_idx_timeout(int node, int idx, int ms)
+{
+	int i, ret = ENXIO;
+
+	for (i = 0; i <= ms; i++) {
+		ret = hwlock_do_lock_idx(node, idx, 1);
+		if (ret == EAGAIN) {
+			delay(1000);
+			continue;
+		}
+		break;
+	}
+
+	return ret;
+}
+
+int
+hwlock_unlock_idx(int node, int idx)
+{
+	return hwlock_do_lock_idx(node, idx, 0);
 }
