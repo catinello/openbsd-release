@@ -374,16 +374,15 @@ server_fcgi(struct httpd *env, struct client *clt)
 	if (clt->clt_toread != 0) {
 		/*
 		 * XXX - Work around UAF: server_read_httpcontent() can call
-		 * server_close(), normally freeing clt. If clt->clt_fcgi_error
-		 * changed, call server_close() via server_abort_http().
+		 * server_close(), normally freeing clt. If clt->clt_fcgi_count
+		 * reaches 0, call server_close() via server_abort_http().
 		 */
-		clt->clt_fcgi_error = "";
+		clt->clt_fcgi_count++;
 		server_read_httpcontent(clt->clt_bev, clt);
-		errstr = clt->clt_fcgi_error;
-		clt->clt_fcgi_error = NULL;
-		if (errstr[0] != '\0')
+		if (clt->clt_fcgi_count-- <= 0) {
+			errstr = clt->clt_fcgi_error;
 			goto fail;
-		errstr = NULL;
+		}
 		bufferevent_enable(clt->clt_bev, EV_READ);
 	} else {
 		bufferevent_disable(clt->clt_bev, EV_READ);

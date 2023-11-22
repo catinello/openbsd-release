@@ -1300,7 +1300,7 @@ server_close(struct client *clt, const char *msg)
 {
 	struct server		*srv = clt->clt_srv;
 
-	if (clt->clt_fcgi_error != NULL) {
+	if (clt->clt_fcgi_count-- > 0) {
 		clt->clt_fcgi_error = msg;
 		return;
 	}

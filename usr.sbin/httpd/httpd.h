@@ -350,6 +350,7 @@ struct client {
 	int			 clt_done;
 	int			 clt_chunk;
 	int			 clt_inflight;
+	int			 clt_fcgi_count;
 	struct range_data	 clt_ranges;
 	struct fcgi_data	 clt_fcgi;
 	const char		*clt_fcgi_error;
