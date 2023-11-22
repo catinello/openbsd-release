@@ -166,7 +166,8 @@ auth_gen(struct ibuf *buf, struct iface *iface)
 			fatalx("auth_gen: ibuf_set failed");
 
 		if (ibuf_set(buf, offsetof(struct ospf_hdr, auth_key),
-		    iface->auth_key, strlen(iface->auth_key)) == -1)
+		    iface->auth_key, strnlen(iface->auth_key,
+		    sizeof(iface->auth_key))) == -1)
 			fatalx("auth_gen: ibuf_set failed");
 		break;
 	case AUTH_CRYPT:
