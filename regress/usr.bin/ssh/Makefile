@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.127 2023/09/24 08:14:13 claudio Exp $
+#	$OpenBSD: Makefile,v 1.133 2024/01/11 04:50:28 djm Exp $
 
 OPENSSL?=	yes
 
@@ -100,9 +100,12 @@ LTESTS= 	connect \
 		hostbased \
 		channel-timeout \
 		connection-timeout \
-		match-subsystem
+		match-subsystem \
+		agent-pkcs11-restrict \
+		agent-pkcs11-cert
 
 INTEROP_TESTS=	putty-transfer putty-ciphers putty-kex conch-ciphers
+INTEROP_TESTS+=	dropbear-ciphers dropbear-kex
 #INTEROP_TESTS+=ssh-com ssh-com-client ssh-com-keygen ssh-com-sftp
 
 EXTRA_TESTS=	agent-pkcs11
@@ -165,24 +168,30 @@ t5:
 		awk '{print $$2}' | diff - ${.CURDIR}/t5.ok
 
 t6:
-	ssh-keygen -if ${.CURDIR}/dsa_ssh2.prv > t6.out1
-	ssh-keygen -if ${.CURDIR}/dsa_ssh2.pub > t6.out2
-	chmod 600 t6.out1
-	ssh-keygen -yf t6.out1 | diff - t6.out2
+	set -xe ; if ssh -Q key | grep -q ^ssh-dss ; then \
+		ssh-keygen -if ${.CURDIR}/dsa_ssh2.prv > t6.out1 ; \
+		ssh-keygen -if ${.CURDIR}/dsa_ssh2.pub > t6.out2 ; \
+		chmod 600 t6.out1 ; \
+		ssh-keygen -yf t6.out1 | diff - t6.out2 ; \
+	fi
 
 t7.out:
-	ssh-keygen -q -t rsa -N '' -f $@
+	ssh-keygen -q -t rsa -N '' -f $@ ; \
 
 t7: t7.out
 	ssh-keygen -lf t7.out > /dev/null
 	ssh-keygen -Bf t7.out > /dev/null
 
 t8.out:
-	ssh-keygen -q -t dsa -N '' -f $@
+	set -xe ; if ssh -Q key | grep -q ^ssh-dss ; then \
+		ssh-keygen -q -t dsa -N '' -f $@ ; \
+	fi
 
 t8: t8.out
-	ssh-keygen -lf t8.out > /dev/null
-	ssh-keygen -Bf t8.out > /dev/null
+	set -xe ; if ssh -Q key | grep -q ^ssh-dss ; then \
+		ssh-keygen -lf t8.out > /dev/null ; \
+		ssh-keygen -Bf t8.out > /dev/null ; \
+	fi
 
 t9.out:
 	ssh-keygen -q -t ecdsa -N '' -f $@
@@ -230,19 +239,33 @@ REGRESS_TARGETS+=t-${t}
 .endif
 .endfor
 
+# Not run by default
+.if make(interop)
+
 .for t in ${INTEROP_TESTS}
 INTEROP_TARGETS+=t-${t}
 .endfor
 
+REGRESS_TARGETS=${INTEROP_TARGETS}
+SUBDIR=
+
+interop: regress
+
+.endif
+
 # Not run by default
-interop: ${INTEROP_TARGETS}
+.if make(extra)
 
 .for t in ${EXTRA_TESTS}
 EXTRA_TARGETS+=t-${t}
 .endfor
 
-# Not run by default
-extra: ${EXTRA_TARGETS}
+REGRESS_TARGETS=${EXTRA_TARGETS}
+SUBDIR=
+
+extra: regress
+
+.endif
 
 .for s in ${SUBDIR}
 CLEAN_SUBDIR+=c-${s}
@@ -253,5 +276,6 @@ c-${s}:
 clean: ${CLEAN_SUBDIR}
 	rm -f ${CLEANFILES}
 	rm -rf .putty
+	rm -rf .dropbear
 
 .include <bsd.regress.mk>

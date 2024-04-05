@@ -1,4 +1,4 @@
-/* $OpenBSD: subr.S,v 1.29 2023/01/31 15:18:54 deraadt Exp $	*/
+/* $OpenBSD: subr.S,v 1.32 2024/03/08 16:18:53 miod Exp $	*/
 /*
  * Mach Operating System
  * Copyright (c) 1993-1992 Carnegie Mellon University
@@ -714,7 +714,7 @@ ENTRY(copyoutstr)
 	or	%r6,  %r6,  %lo16(Lcosflt)
 	st	%r6,  %r7,  PCB_ONFAULT
 	bcnd	lt0,  CNT,  Lcosflt
-	bcnd	eq0,  CNT,  Lcosdone
+	bcnd	eq0,  CNT,  2f
 	or	%r6,  %r0,  0
 1:
 	ld.bu	%r7,  SRC,  %r6
@@ -727,13 +727,14 @@ ENTRY(copyoutstr)
 #else
 	st.b.usr	%r7,  DEST,  %r6
 #endif
-	bcnd.n	eq0,  %r7, 2f		/* all done */
+	bcnd.n	eq0,  %r7, 3f		/* all done */
 	 addu	%r6,  %r6, 1
 	cmp	%r7,  %r6, CNT
 	bb1	lt,   %r7, 1b
+2:
 	br.n	Lcosdone
 	 or	%r2,  %r0, ENAMETOOLONG
-2:
+3:
 	br.n	Lcosdone
 	 or	%r2,  %r0, 0
 
@@ -1131,22 +1132,15 @@ ENTRY(longjmp)
 GLOBAL(sigcode)			/* r31 points to sigframe */
 	ld	%r2,  %r31, 0	/* pick sigcontext* */
 	or	%r13, %r0,  SYS_sigreturn
+GLOBAL(sigcodecall)
 GLOBAL(sigcoderet)
 	tb0	0,    %r0,  450	/* syscall trap, calling sigreturn */
 	NOP			| failure return
 #ifdef dontbother		/* sigreturn will not return unless it fails */
 	NOP			| success return
 #endif
-	or	%r13, %r0,  SYS_exit
-	tb0	0,    %r0,  450	/* syscall trap, exit */
-	/*
-	 * this never returns, but we need to provide fetchable instructions
-	 * for the 88100 pipeline.
-	 */
-	NOP
-	NOP
 GLOBAL(esigcode)
-
+	/* FALLTHROUGH */
 GLOBAL(sigfill)
 	tb0	0, %r0, 130	/* breakpoint */
 GLOBAL(sigfillsiz)

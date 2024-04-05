@@ -1,4 +1,4 @@
-/*	$OpenBSD: dt_dev.c,v 1.28 2023/07/14 07:07:08 claudio Exp $ */
+/*	$OpenBSD: dt_dev.c,v 1.32 2024/02/29 00:18:48 cheloha Exp $ */
 
 /*
  * Copyright (c) 2019 Martin Pieuchot <mpi@openbsd.org>
@@ -19,6 +19,7 @@
 #include <sys/types.h>
 #include <sys/systm.h>
 #include <sys/param.h>
+#include <sys/clockintr.h>
 #include <sys/device.h>
 #include <sys/exec_elf.h>
 #include <sys/malloc.h>
@@ -56,13 +57,13 @@
  *	proc_trampoline+0x1c
  */
 #if defined(__amd64__)
-#define DT_FA_PROFILE	7
+#define DT_FA_PROFILE	5
 #define DT_FA_STATIC	2
 #elif defined(__i386__)
-#define DT_FA_PROFILE	8
+#define DT_FA_PROFILE	5
 #define DT_FA_STATIC	2
 #elif defined(__macppc__)
-#define DT_FA_PROFILE  7
+#define DT_FA_PROFILE  5
 #define DT_FA_STATIC   2
 #elif defined(__octeon__)
 #define DT_FA_PROFILE	6
@@ -160,12 +161,12 @@ int
 dtopen(dev_t dev, int flags, int mode, struct proc *p)
 {
 	struct dt_softc *sc;
+	struct dt_evt *queue;
+	size_t qlen;
 	int unit = minor(dev);
 
 	if (!allowdt)
 		return EPERM;
-
-	KASSERT(dtlookup(unit) == NULL);
 
 	sc = malloc(sizeof(*sc), M_DEVBUF, M_WAITOK|M_CANFAIL|M_ZERO);
 	if (sc == NULL)
@@ -174,16 +175,26 @@ dtopen(dev_t dev, int flags, int mode, struct proc *p)
 	/*
 	 * Enough space to empty 2 full rings of events in a single read.
 	 */
-	sc->ds_bufqlen = 2 * DT_EVTRING_SIZE;
-	sc->ds_bufqueue = mallocarray(sc->ds_bufqlen, sizeof(*sc->ds_bufqueue),
-	    M_DEVBUF, M_WAITOK|M_CANFAIL);
-	if (sc->ds_bufqueue == NULL)
-		goto bad;
+	qlen = 2 * DT_EVTRING_SIZE;
+	queue = mallocarray(qlen, sizeof(*queue), M_DEVBUF, M_WAITOK|M_CANFAIL);
+	if (queue == NULL) {
+		free(sc, M_DEVBUF, sizeof(*sc));
+		return ENOMEM;
+	}
+
+	/* no sleep after this point */
+	if (dtlookup(unit) != NULL) {
+		free(queue, M_DEVBUF, qlen * sizeof(*queue));
+		free(sc, M_DEVBUF, sizeof(*sc));
+		return EBUSY;
+	}
 
 	sc->ds_unit = unit;
 	sc->ds_pid = p->p_p->ps_pid;
 	TAILQ_INIT(&sc->ds_pcbs);
 	mtx_init(&sc->ds_mtx, IPL_HIGH);
+	sc->ds_bufqlen = qlen;
+	sc->ds_bufqueue = queue;
 	sc->ds_evtcnt = 0;
 	sc->ds_readevt = 0;
 	sc->ds_dropevt = 0;
@@ -193,10 +204,6 @@ dtopen(dev_t dev, int flags, int mode, struct proc *p)
 	DPRINTF("dt%d: pid %d open\n", sc->ds_unit, sc->ds_pid);
 
 	return 0;
-
-bad:
-	free(sc, M_DEVBUF, sizeof(*sc));
-	return ENOMEM;
 }
 
 int
@@ -470,6 +477,7 @@ dt_ioctl_get_stats(struct dt_softc *sc, struct dtioc_stat *dtst)
 int
 dt_ioctl_record_start(struct dt_softc *sc)
 {
+	uint64_t now;
 	struct dt_pcb *dp;
 
 	if (sc->ds_recording)
@@ -480,12 +488,20 @@ dt_ioctl_record_start(struct dt_softc *sc)
 		return ENOENT;
 
 	rw_enter_write(&dt_lock);
+	now = nsecuptime();
 	TAILQ_FOREACH(dp, &sc->ds_pcbs, dp_snext) {
 		struct dt_probe *dtp = dp->dp_dtp;
 
 		SMR_SLIST_INSERT_HEAD_LOCKED(&dtp->dtp_pcbs, dp, dp_pnext);
 		dtp->dtp_recording++;
 		dtp->dtp_prov->dtpv_recording++;
+
+		if (dp->dp_nsecs != 0) {
+			clockintr_bind(&dp->dp_clockintr, dp->dp_cpu, dt_clock,
+			    dp);
+			clockintr_schedule(&dp->dp_clockintr,
+			    now + dp->dp_nsecs);
+		}
 	}
 	rw_exit_write(&dt_lock);
 
@@ -511,6 +527,13 @@ dt_ioctl_record_stop(struct dt_softc *sc)
 	rw_enter_write(&dt_lock);
 	TAILQ_FOREACH(dp, &sc->ds_pcbs, dp_snext) {
 		struct dt_probe *dtp = dp->dp_dtp;
+
+		/*
+		 * Set an execution barrier to ensure the shared
+		 * reference to dp is inactive.
+		 */
+		if (dp->dp_nsecs != 0)
+			clockintr_unbind(&dp->dp_clockintr, CL_BARRIER);
 
 		dtp->dtp_recording--;
 		dtp->dtp_prov->dtpv_recording--;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.175 2023/07/31 04:01:07 guenther Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.183 2024/02/25 22:33:09 guenther Exp $	*/
 /* $NetBSD: cpu.c,v 1.1 2003/04/26 18:39:26 fvdl Exp $ */
 
 /*-
@@ -163,6 +163,7 @@ int cpu_apmi_edx = 0;		/* cpuid(0x80000007).edx */
 int ecpu_ecxfeature = 0;	/* cpuid(0x80000001).ecx */
 int cpu_meltdown = 0;
 int cpu_use_xsaves = 0;
+int need_retpoline = 1;		/* most systems need retpoline */
 
 void
 replacesmap(void)
@@ -187,7 +188,7 @@ replacemeltdown(void)
 {
 	static int replacedone = 0;
 	struct cpu_info *ci = &cpu_info_primary;
-	int swapgs_vuln = 0, ibrs = 0, s;
+	int swapgs_vuln = 0, ibrs = 0, s, ibpb = 0;
 
 	if (strcmp(cpu_vendor, "GenuineIntel") == 0) {
 		int family = ci->ci_family;
@@ -210,6 +211,8 @@ replacemeltdown(void)
 		} else if (ci->ci_feature_sefflags_edx & SEFF0EDX_IBRS) {
 			ibrs = 1;
 		}
+		if (ci->ci_feature_sefflags_edx & SEFF0EDX_IBRS)
+			ibpb = 1;
         } else if (strcmp(cpu_vendor, "AuthenticAMD") == 0 &&
             ci->ci_pnfeatset >= 0x80000008) {
 		if (ci->ci_feature_amdspec_ebx & CPUIDEBX_IBRS_ALWAYSON) {
@@ -218,6 +221,8 @@ replacemeltdown(void)
 		    (ci->ci_feature_amdspec_ebx & CPUIDEBX_IBRS_PREF)) {
 			ibrs = 1;
 		}
+		if (ci->ci_feature_amdspec_ebx & CPUIDEBX_IBPB)
+			ibpb = 1;
 	}
 
 	/* Enhanced IBRS: turn it on once on each CPU and don't touch again */
@@ -229,12 +234,19 @@ replacemeltdown(void)
 	replacedone = 1;
 
 	s = splhigh();
+
+	/* If we don't have IBRS/IBPB, then don't use IBPB */
+	if (ibpb == 0)
+		codepatch_nop(CPTAG_IBPB_NOP);
+
 	if (ibrs == 2 || (ci->ci_feature_sefflags_edx & SEFF0EDX_IBT)) {
 		extern const char _jmprax, _jmpr11, _jmpr13;
 		extern const short _jmprax_len, _jmpr11_len, _jmpr13_len;
+
 		codepatch_replace(CPTAG_RETPOLINE_RAX, &_jmprax, _jmprax_len);
 		codepatch_replace(CPTAG_RETPOLINE_R11, &_jmpr11, _jmpr11_len);
 		codepatch_replace(CPTAG_RETPOLINE_R13, &_jmpr13, _jmpr13_len);
+		need_retpoline = 0;
 	}
 
 	if (!cpu_meltdown)
@@ -641,10 +653,6 @@ cpu_attach(struct device *parent, struct device *self, void *aux)
 		atomic_setbits_int(&ci->ci_flags,
 		    CPUF_PRESENT | CPUF_SP | CPUF_PRIMARY);
 		cpu_intr_init(ci);
-#ifndef SMALL_KERNEL
-		cpu_ucode_apply(ci);
-#endif
-		cpu_tsx_disable(ci);
 		identifycpu(ci);
 		cpu_fix_msrs(ci);
 #ifdef MTRR
@@ -1023,10 +1031,11 @@ cpu_hatch(void *v)
 
 		identifycpu(ci);
 
-		/* Signal we're done */
-		atomic_clearbits_int(&ci->ci_flags, CPUF_IDENTIFY);
 		/* Prevent identifycpu() from running again */
 		atomic_setbits_int(&ci->ci_flags, CPUF_IDENTIFIED);
+
+		/* Signal we're done */
+		atomic_clearbits_int(&ci->ci_flags, CPUF_IDENTIFY);
 	}
 
 	/* These have to run after identifycpu() */ 
@@ -1074,14 +1083,11 @@ cpu_hatch(void *v)
 	s = splhigh();
 	lcr8(0);
 	intr_enable();
-
-	nanouptime(&ci->ci_schedstate.spc_runtime);
 	splx(s);
 
 	lapic_startclock();
 
-	SCHED_LOCK(s);
-	cpu_switchto(NULL, sched_chooseproc());
+	sched_toidle();
 }
 
 #if defined(DDB)
@@ -1178,10 +1184,10 @@ cpu_init_msrs(struct cpu_info *ci)
 {
 	wrmsr(MSR_STAR,
 	    ((uint64_t)GSEL(GCODE_SEL, SEL_KPL) << 32) |
-	    ((uint64_t)GSEL(GUCODE32_SEL, SEL_UPL) << 48));
+	    ((uint64_t)GSEL(GUDATA_SEL-1, SEL_UPL) << 48));
 	wrmsr(MSR_LSTAR, cpu_meltdown ? (uint64_t)Xsyscall_meltdown :
 	    (uint64_t)Xsyscall);
-	wrmsr(MSR_CSTAR, (uint64_t)Xsyscall32);
+	wrmsr(MSR_CSTAR, 0);
 	wrmsr(MSR_SFMASK, PSL_NT|PSL_T|PSL_I|PSL_C|PSL_D|PSL_AC);
 
 	wrmsr(MSR_FSBASE, 0);
@@ -1254,7 +1260,7 @@ cpu_fix_msrs(struct cpu_info *ci)
 #ifndef SMALL_KERNEL
 	if (ci->ci_feature_sefflags_edx & SEFF0EDX_IBT) {
 		msr = rdmsr(MSR_S_CET);
-		wrmsr(MSR_S_CET, msr | MSR_CET_ENDBR_EN);
+		wrmsr(MSR_S_CET, (msr & ~MSR_CET_NO_TRACK_EN) | MSR_CET_ENDBR_EN);
 		lcr4(rcr4() | CR4_CET);
 	}
 #endif

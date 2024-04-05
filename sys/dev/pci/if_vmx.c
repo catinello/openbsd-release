@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_vmx.c,v 1.78 2023/07/30 04:27:01 dlg Exp $	*/
+/*	$OpenBSD: if_vmx.c,v 1.82 2024/02/29 22:09:33 jan Exp $	*/
 
 /*
  * Copyright (c) 2013 Tsubai Masanari
@@ -18,6 +18,7 @@
 
 #include "bpfilter.h"
 #include "kstat.h"
+#include "vlan.h"
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -400,14 +401,18 @@ vmxnet3_attach(struct device *parent, struct device *self, void *aux)
 	ifp->if_watchdog = vmxnet3_watchdog;
 	ifp->if_hardmtu = VMXNET3_MAX_MTU;
 	ifp->if_capabilities = IFCAP_VLAN_MTU;
-#if 0
-	if (sc->sc_ds->upt_features & UPT1_F_CSUM)
+
+	if (sc->sc_ds->upt_features & UPT1_F_CSUM) {
 		ifp->if_capabilities |= IFCAP_CSUM_TCPv4 | IFCAP_CSUM_UDPv4;
-#endif
+		ifp->if_capabilities |= IFCAP_CSUM_TCPv6 | IFCAP_CSUM_UDPv6;
+	}
+
+#if NVLAN > 0
 	if (sc->sc_ds->upt_features & UPT1_F_VLAN)
 		ifp->if_capabilities |= IFCAP_VLAN_HWTAGGING;
+#endif
 
-	ifq_set_maxlen(&ifp->if_snd, NTXDESC);
+	ifq_init_maxlen(&ifp->if_snd, NTXDESC);
 
 	ifmedia_init(&sc->sc_media, IFM_IMASK, vmxnet3_media_change,
 	    vmxnet3_media_status);
@@ -503,7 +508,10 @@ vmxnet3_dma_init(struct vmxnet3_softc *sc)
 #endif
 	ds->vmxnet3_revision = 1;
 	ds->upt_version = 1;
-	ds->upt_features = UPT1_F_CSUM | UPT1_F_VLAN;
+	ds->upt_features = UPT1_F_CSUM;
+#if NVLAN > 0
+	ds->upt_features |= UPT1_F_VLAN;
+#endif
 	ds->driver_data = ~0ULL;
 	ds->driver_data_len = 0;
 	ds->queue_shared = qs_pa;
@@ -1117,11 +1125,13 @@ vmxnet3_rxintr(struct vmxnet3_softc *sc, struct vmxnet3_rxqueue *rq)
 		m->m_pkthdr.len = m->m_len = len;
 
 		vmxnet3_rx_csum(rxcd, m);
+#if NVLAN > 0
 		if (letoh32(rxcd->rxc_word2 & VMXNET3_RXC_VLAN)) {
 			m->m_flags |= M_VLANTAG;
 			m->m_pkthdr.ether_vtag = letoh32((rxcd->rxc_word2 >>
 			    VMXNET3_RXC_VLANTAG_S) & VMXNET3_RXC_VLANTAG_M);
 		}
+#endif
 		if (((letoh32(rxcd->rxc_word0) >> VMXNET3_RXC_RSSTYPE_S) &
 		    VMXNET3_RXC_RSSTYPE_M) != VMXNET3_RXC_RSSTYPE_NONE) {
 			m->m_pkthdr.ph_flowid = letoh32(rxcd->rxc_word1);
@@ -1391,6 +1401,55 @@ vmx_load_mbuf(bus_dma_tag_t dmat, bus_dmamap_t map, struct mbuf *m)
 }
 
 void
+vmxnet3_tx_offload(struct vmxnet3_txdesc *sop, struct mbuf *m)
+{
+	struct ether_extracted ext;
+	uint32_t offset = 0;
+	uint32_t hdrlen;
+
+	/*
+	 * VLAN Offload
+	 */
+
+#if NVLAN > 0
+	if (ISSET(m->m_flags, M_VLANTAG)) {
+		sop->tx_word3 |= htole32(VMXNET3_TX_VTAG_MODE);
+		sop->tx_word3 |= htole32((m->m_pkthdr.ether_vtag &
+		    VMXNET3_TX_VLANTAG_M) << VMXNET3_TX_VLANTAG_S);
+	}
+#endif
+
+	/*
+	 * Checksum Offload
+	 */
+
+	if (!ISSET(m->m_pkthdr.csum_flags, M_TCP_CSUM_OUT) &&
+	    !ISSET(m->m_pkthdr.csum_flags, M_UDP_CSUM_OUT))
+		return;
+
+	ether_extract_headers(m, &ext);
+
+	hdrlen = sizeof(*ext.eh);
+	if (ext.evh)
+		hdrlen = sizeof(*ext.evh);
+
+	if (ext.ip4 || ext.ip6)
+		hdrlen += ext.iphlen;
+
+	if (ext.tcp)
+		offset = hdrlen + offsetof(struct tcphdr, th_sum);
+	else if (ext.udp)
+		offset = hdrlen + offsetof(struct udphdr, uh_sum);
+
+	hdrlen &= VMXNET3_TX_HLEN_M;
+	offset &= VMXNET3_TX_OP_M;
+
+	sop->tx_word3 |= htole32(VMXNET3_OM_CSUM << VMXNET3_TX_OM_S);
+	sop->tx_word3 |= htole32(hdrlen << VMXNET3_TX_HLEN_S);
+	sop->tx_word2 |= htole32(offset << VMXNET3_TX_OP_S);
+}
+
+void
 vmxnet3_start(struct ifqueue *ifq)
 {
 	struct ifnet *ifp = ifq->ifq_if;
@@ -1462,11 +1521,7 @@ vmxnet3_start(struct ifqueue *ifq)
 		}
 		txd->tx_word3 = htole32(VMXNET3_TX_EOP | VMXNET3_TX_COMPREQ);
 
-		if (ISSET(m->m_flags, M_VLANTAG)) {
-			sop->tx_word3 |= htole32(VMXNET3_TX_VTAG_MODE);
-			sop->tx_word3 |= htole32((m->m_pkthdr.ether_vtag &
-			    VMXNET3_TX_VLANTAG_M) << VMXNET3_TX_VLANTAG_S);
-		}
+		vmxnet3_tx_offload(sop, m);
 
 		ring->prod = prod;
 		/* Change the ownership by flipping the "generation" bit */

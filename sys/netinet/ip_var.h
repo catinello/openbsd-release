@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip_var.h,v 1.109 2023/04/05 21:51:47 bluhm Exp $	*/
+/*	$OpenBSD: ip_var.h,v 1.114 2024/03/05 09:45:13 bluhm Exp $	*/
 /*	$NetBSD: ip_var.h,v 1.16 1996/02/13 23:43:20 christos Exp $	*/
 
 /*
@@ -87,6 +87,8 @@ struct	ipstat {
 	u_long	ips_inswcsum;		/* software checksummed on input */
 	u_long	ips_outswcsum;		/* software checksummed on output */
 	u_long	ips_notmember;		/* multicasts for unregistered groups */
+	u_long	ips_rtcachehit;		/* valid route found in cache */
+	u_long	ips_rtcachemiss;	/* route cache with new destination */
 	u_long	ips_wrongif;		/* packet received on wrong interface */
 	u_long	ips_idropped;		/* lost input due to nobufs, etc. */
 };
@@ -133,6 +135,8 @@ enum ipstat_counters {
 	ips_inswcsum,		/* software checksummed on input */
 	ips_outswcsum,		/* software checksummed on output */
 	ips_notmember,		/* multicasts for unregistered groups */
+	ips_rtcachehit,		/* valid route to destination found in cache */
+	ips_rtcachemiss,	/* route cache filled with new destination */
 	ips_wrongif,		/* packet received on wrong interface */
 	ips_idropped,		/* lost input packets due to nobufs, etc. */
 
@@ -223,6 +227,7 @@ extern const struct pr_usrreqs rip_usrreqs;
 
 extern struct rttimer_queue ip_mtudisc_timeout_q;
 extern struct pool ipqent_pool;
+struct rtentry;
 struct route;
 struct inpcb;
 
@@ -236,7 +241,7 @@ struct mbuf*
 int	 ip_mforward(struct mbuf *, struct ifnet *);
 int	 ip_optcopy(struct ip *, struct ip *);
 int	 ip_output(struct mbuf *, struct mbuf *, struct route *, int,
-	    struct ip_moptions *, struct inpcb *, u_int32_t);
+	    struct ip_moptions *, const u_char[], u_int32_t);
 u_int16_t
 	 ip_randomid(void);
 void	 ip_send(struct mbuf *);
@@ -256,10 +261,13 @@ void	 rip_init(void);
 int	 rip_input(struct mbuf **, int *, int, int);
 int	 rip_output(struct mbuf *, struct socket *, struct sockaddr *,
 	    struct mbuf *);
+struct mbuf *
+	 rip_chkhdr(struct mbuf *, struct mbuf *);
 int	 rip_attach(struct socket *, int, int);
 int	 rip_detach(struct socket *);
 void	 rip_lock(struct socket *);
 void	 rip_unlock(struct socket *);
+int	 rip_locked(struct socket *);
 int	 rip_bind(struct socket *, struct mbuf *, struct proc *);
 int	 rip_connect(struct socket *, struct mbuf *);
 int	 rip_disconnect(struct socket *);

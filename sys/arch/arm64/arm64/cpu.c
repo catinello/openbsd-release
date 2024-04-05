@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.98 2023/08/10 19:29:32 kettenis Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.108 2024/03/05 18:42:20 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2016 Dale Rahn <drahn@dalerahn.com>
@@ -17,6 +17,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include "kstat.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
@@ -25,6 +27,7 @@
 #include <sys/sysctl.h>
 #include <sys/task.h>
 #include <sys/user.h>
+#include <sys/kstat.h>
 
 #include <uvm/uvm.h>
 
@@ -82,6 +85,8 @@
 #define CPU_PART_CORTEX_A520	0xd80
 #define CPU_PART_CORTEX_A720	0xd81
 #define CPU_PART_CORTEX_X4	0xd82
+#define CPU_PART_NEOVERSE_V3	0xd84
+#define CPU_PART_NEOVERSE_N3	0xd8e
 
 /* Cavium */
 #define CPU_PART_THUNDERX_T88	0x0a1
@@ -154,8 +159,10 @@ struct cpu_cores cpu_cores_arm[] = {
 	{ CPU_PART_NEOVERSE_E1, "Neoverse E1" },
 	{ CPU_PART_NEOVERSE_N1, "Neoverse N1" },
 	{ CPU_PART_NEOVERSE_N2, "Neoverse N2" },
+	{ CPU_PART_NEOVERSE_N3, "Neoverse N3" },
 	{ CPU_PART_NEOVERSE_V1, "Neoverse V1" },
 	{ CPU_PART_NEOVERSE_V2, "Neoverse V2" },
+	{ CPU_PART_NEOVERSE_V3, "Neoverse V3" },
 	{ 0, NULL },
 };
 
@@ -249,10 +256,23 @@ void	cpu_psci_init(struct cpu_info *);
 
 void	cpu_flush_bp_noop(void);
 void	cpu_flush_bp_psci(void);
+void	cpu_serror_apple(void);
+
+#if NKSTAT > 0
+void	cpu_kstat_attach(struct cpu_info *ci);
+void	cpu_opp_kstat_attach(struct cpu_info *ci);
+#endif
 
 void
 cpu_identify(struct cpu_info *ci)
 {
+	static uint64_t prev_id_aa64isar0;
+	static uint64_t prev_id_aa64isar1;
+	static uint64_t prev_id_aa64isar2;
+	static uint64_t prev_id_aa64mmfr0;
+	static uint64_t prev_id_aa64mmfr1;
+	static uint64_t prev_id_aa64pfr0;
+	static uint64_t prev_id_aa64pfr1;
 	uint64_t midr, impl, part;
 	uint64_t clidr, id;
 	uint32_t ctr, ccsidr, sets, ways, line;
@@ -266,6 +286,7 @@ cpu_identify(struct cpu_info *ci)
 	midr = READ_SPECIALREG(midr_el1);
 	impl = CPU_IMPL(midr);
 	part = CPU_PART(midr);
+	ci->ci_midr = midr;
 
 	for (i = 0; cpu_implementers[i].name; i++) {
 		if (impl == cpu_implementers[i].id) {
@@ -390,7 +411,6 @@ cpu_identify(struct cpu_info *ci)
 	 * The architecture has been updated to explicitly tell us if
 	 * we're not vulnerable to regular Spectre.
 	 */
-
 	id = READ_SPECIALREG(id_aa64pfr0_el1);
 	if (ID_AA64PFR0_CSV2(id) >= ID_AA64PFR0_CSV2_IMPL)
 		ci->ci_flush_bp = cpu_flush_bp_noop;
@@ -399,7 +419,6 @@ cpu_identify(struct cpu_info *ci)
 	 * But we might still be vulnerable to Spectre-BHB.  If we know the
 	 * CPU, we can add a branchy loop that cleans the BHB.
 	 */
-
 	if (impl == CPU_IMPL_ARM) {
 		switch (part) {
 		case CPU_PART_CORTEX_A72:
@@ -445,13 +464,11 @@ cpu_identify(struct cpu_info *ci)
 #endif
 
 	/* Prefer CLRBHB to mitigate Spectre-BHB. */
-
 	id = READ_SPECIALREG(id_aa64isar2_el1);
 	if (ID_AA64ISAR2_CLRBHB(id) >= ID_AA64ISAR2_CLRBHB_IMPL)
 		ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_clrbhb;
 
 	/* ECBHB tells us Spectre-BHB is mitigated. */
-
 	id = READ_SPECIALREG(id_aa64mmfr1_el1);
 	if (ID_AA64MMFR1_ECBHB(id) >= ID_AA64MMFR1_ECBHB_IMPL)
 		ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_none;
@@ -460,12 +477,30 @@ cpu_identify(struct cpu_info *ci)
 	 * The architecture has been updated to explicitly tell us if
 	 * we're not vulnerable.
 	 */
-
 	id = READ_SPECIALREG(id_aa64pfr0_el1);
 	if (ID_AA64PFR0_CSV2(id) >= ID_AA64PFR0_CSV2_HCXT) {
 		ci->ci_flush_bp = cpu_flush_bp_noop;
 		ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_none;
 	}
+
+	/*
+	 * Apple CPUs provide detailed information for SError.
+	 */
+	if (impl == CPU_IMPL_APPLE)
+		ci->ci_serror = cpu_serror_apple;
+
+	/*
+	 * Skip printing CPU features if they are identical to the
+	 * previous CPU.
+	 */
+	if (READ_SPECIALREG(id_aa64isar0_el1) == prev_id_aa64isar0 &&
+	    READ_SPECIALREG(id_aa64isar1_el1) == prev_id_aa64isar1 &&
+	    READ_SPECIALREG(id_aa64isar2_el1) == prev_id_aa64isar2 &&
+	    READ_SPECIALREG(id_aa64mmfr0_el1) == prev_id_aa64mmfr0 &&
+	    READ_SPECIALREG(id_aa64mmfr1_el1) == prev_id_aa64mmfr1 &&
+	    READ_SPECIALREG(id_aa64pfr0_el1) == prev_id_aa64pfr0 &&
+	    READ_SPECIALREG(id_aa64pfr1_el1) == prev_id_aa64pfr1)
+		return;
 
 	/*
 	 * Print CPU features encoded in the ID registers.
@@ -751,7 +786,7 @@ cpu_identify(struct cpu_info *ci)
 	}
 
 	/*
-	 * ID_AA64PFR0
+	 * ID_AA64PFR1
 	 */
 	id = READ_SPECIALREG(id_aa64pfr1_el1);
 
@@ -766,6 +801,19 @@ cpu_identify(struct cpu_info *ci)
 	}
 	if (ID_AA64PFR1_SBSS(id) >= ID_AA64PFR1_SBSS_PSTATE_MSR)
 		printf("+MSR");
+
+	if (ID_AA64PFR1_MTE(id) >= ID_AA64PFR1_MTE_IMPL) {
+		printf("%sMTE", sep);
+		sep = ",";
+	}
+
+	prev_id_aa64isar0 = READ_SPECIALREG(id_aa64isar0_el1);
+	prev_id_aa64isar1 = READ_SPECIALREG(id_aa64isar1_el1);
+	prev_id_aa64isar2 = READ_SPECIALREG(id_aa64isar2_el1);
+	prev_id_aa64mmfr0 = READ_SPECIALREG(id_aa64mmfr0_el1);
+	prev_id_aa64mmfr1 = READ_SPECIALREG(id_aa64mmfr1_el1);
+	prev_id_aa64pfr0 = READ_SPECIALREG(id_aa64pfr0_el1);
+	prev_id_aa64pfr1 = READ_SPECIALREG(id_aa64pfr1_el1);
 
 #ifdef CPU_DEBUG
 	id = READ_SPECIALREG(id_aa64afr0_el1);
@@ -923,10 +971,12 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 		 * Lenovo X13s ships with broken EL2 firmware that
 		 * hangs the machine if we enable PAuth.
 		 */
-		if (hw_vendor && strcmp(hw_vendor, "LENOVO") == 0 &&
-		    hw_prod && strncmp(hw_prod, "21BX", 4) == 0) {
-			cpu_id_aa64isar1 &= ~ID_AA64ISAR1_APA_MASK;
-			cpu_id_aa64isar1 &= ~ID_AA64ISAR1_GPA_MASK;
+		if (hw_vendor && hw_prod && strcmp(hw_vendor, "LENOVO") == 0) {
+			if (strncmp(hw_prod, "21BX", 4) == 0 ||
+			    strncmp(hw_prod, "21BY", 4) == 0) {
+				cpu_id_aa64isar1 &= ~ID_AA64ISAR1_APA_MASK;
+				cpu_id_aa64isar1 &= ~ID_AA64ISAR1_GPA_MASK;
+			}
 		}
 
 		cpu_identify(ci);
@@ -939,6 +989,10 @@ cpu_attach(struct device *parent, struct device *dev, void *aux)
 		cpu_init();
 #ifdef MULTIPROCESSOR
 	}
+#endif
+
+#if NKSTAT > 0
+	cpu_kstat_attach(ci);
 #endif
 
 	opp = OF_getpropint(ci->ci_node, "operating-points-v2", 0);
@@ -988,6 +1042,13 @@ cpu_init(void)
 		WRITE_SPECIALREG(sctlr_el1, sctlr);
 	}
 
+	/* Enable strict BTI compatibility for PACIASP and PACIBSP. */
+	if (ID_AA64PFR1_BT(cpu_id_aa64pfr1) >= ID_AA64PFR1_BT_IMPL) {
+		sctlr = READ_SPECIALREG(sctlr_el1);
+		sctlr |= SCTLR_BT0 | SCTLR_BT1;
+		WRITE_SPECIALREG(sctlr_el1, sctlr);
+	}
+
 	/* Initialize debug registers. */
 	WRITE_SPECIALREG(mdscr_el1, DBG_MDSCR_TDCC);
 	WRITE_SPECIALREG(oslar_el1, 0);
@@ -1004,6 +1065,15 @@ cpu_flush_bp_psci(void)
 #if NPSCI > 0
 	psci_flush_bp();
 #endif
+}
+
+void
+cpu_serror_apple(void)
+{
+	__asm volatile("dsb sy; isb" ::: "memory");
+	printf("l2c_err_sts 0x%llx\n", READ_SPECIALREG(s3_3_c15_c8_0));
+	printf("l2c_err_adr 0x%llx\n", READ_SPECIALREG(s3_3_c15_c9_0));
+	printf("l2c_err_inf 0x%llx\n", READ_SPECIALREG(s3_3_c15_c10_0));
 }
 
 int
@@ -1176,15 +1246,12 @@ cpu_init_secondary(struct cpu_info *ci)
 	arm_intr_cpu_enable();
 	cpu_startclock();
 
-	nanouptime(&ci->ci_schedstate.spc_runtime);
-
 	atomic_setbits_int(&ci->ci_flags, CPUF_RUNNING);
 	__asm volatile("dsb sy; sev" ::: "memory");
 
 	spllower(IPL_NONE);
 
-	SCHED_LOCK(s);
-	cpu_switchto(NULL, sched_chooseproc());
+	sched_toidle();
 }
 
 void
@@ -1537,6 +1604,10 @@ cpu_opp_mountroot(struct device *self)
 		if (ot == NULL)
 			continue;
 
+#if NKSTAT > 0
+		cpu_opp_kstat_attach(ci);
+#endif
+
 		/* Skip if this table is shared and we're not the master. */
 		if (ot->ot_master && ot->ot_master != ci)
 			continue;
@@ -1820,3 +1891,154 @@ cpu_psci_init(struct cpu_info *ci)
 	ci->ci_psci_suspend_param =
 		OF_getpropint(node, "arm,psci-suspend-param", 0);
 }
+
+#if NKSTAT > 0
+
+struct cpu_kstats {
+	struct kstat_kv		ck_impl;
+	struct kstat_kv		ck_part;
+	struct kstat_kv		ck_rev;
+};
+
+void
+cpu_kstat_attach(struct cpu_info *ci)
+{
+	struct kstat *ks;
+	struct cpu_kstats *ck;
+	uint64_t impl, part;
+	const char *impl_name = NULL, *part_name = NULL;
+	const struct cpu_cores *coreselecter = cpu_cores_none;
+	int i;
+
+	ks = kstat_create(ci->ci_dev->dv_xname, 0, "mach", 0, KSTAT_T_KV, 0);
+	if (ks == NULL) {
+		printf("%s: unable to create cpu kstats\n",
+		    ci->ci_dev->dv_xname);
+		return;
+	}
+
+	ck = malloc(sizeof(*ck), M_DEVBUF, M_WAITOK);
+
+	impl = CPU_IMPL(ci->ci_midr);
+	part = CPU_PART(ci->ci_midr);
+
+	for (i = 0; cpu_implementers[i].name; i++) {
+		if (impl == cpu_implementers[i].id) {
+			impl_name = cpu_implementers[i].name;
+			coreselecter = cpu_implementers[i].corelist;
+			break;
+		}
+	}
+
+	if (impl_name) {
+		kstat_kv_init(&ck->ck_impl, "impl", KSTAT_KV_T_ISTR);
+		strlcpy(kstat_kv_istr(&ck->ck_impl), impl_name,
+		    sizeof(kstat_kv_istr(&ck->ck_impl)));
+	} else
+		kstat_kv_init(&ck->ck_impl, "impl", KSTAT_KV_T_NULL);
+
+	for (i = 0; coreselecter[i].name; i++) {
+		if (part == coreselecter[i].id) {
+			part_name = coreselecter[i].name;
+			break;
+		}
+	}
+
+	if (part_name) {
+		kstat_kv_init(&ck->ck_part, "part", KSTAT_KV_T_ISTR);
+		strlcpy(kstat_kv_istr(&ck->ck_part), part_name,
+		    sizeof(kstat_kv_istr(&ck->ck_part)));
+	} else
+		kstat_kv_init(&ck->ck_part, "part", KSTAT_KV_T_NULL);
+
+	kstat_kv_init(&ck->ck_rev, "rev", KSTAT_KV_T_ISTR);
+	snprintf(kstat_kv_istr(&ck->ck_rev), sizeof(kstat_kv_istr(&ck->ck_rev)),
+	    "r%llup%llu", CPU_VAR(ci->ci_midr), CPU_REV(ci->ci_midr));
+
+	ks->ks_softc = ci;
+	ks->ks_data = ck;
+	ks->ks_datalen = sizeof(*ck);
+	ks->ks_read = kstat_read_nop;
+
+	kstat_install(ks);
+
+	/* XXX should we have a ci->ci_kstat = ks? */
+}
+
+struct cpu_opp_kstats {
+	struct kstat_kv		coppk_freq;
+	struct kstat_kv		coppk_supply_v;
+};
+
+int
+cpu_opp_kstat_read(struct kstat *ks)
+{
+	struct cpu_info *ci = ks->ks_softc;
+	struct cpu_opp_kstats *coppk = ks->ks_data;
+
+	struct opp_table *ot = ci->ci_opp_table;
+	struct cpu_info *oci;
+	struct timespec now, diff;
+
+	/* rate limit */
+	getnanouptime(&now);
+	timespecsub(&now, &ks->ks_updated, &diff);
+	if (diff.tv_sec < 1)
+		return (0);
+
+	if (ot == NULL)
+		return (0);
+
+	oci = ot->ot_master;
+	if (oci == NULL)
+		oci = ci;
+
+	kstat_kv_freq(&coppk->coppk_freq) =
+	    clock_get_frequency(oci->ci_node, NULL);
+
+	if (oci->ci_cpu_supply) {
+		kstat_kv_volts(&coppk->coppk_supply_v) =
+		    regulator_get_voltage(oci->ci_cpu_supply);
+	}
+
+	ks->ks_updated = now;
+
+	return (0);
+}
+
+void
+cpu_opp_kstat_attach(struct cpu_info *ci)
+{
+	struct kstat *ks;
+	struct cpu_opp_kstats *coppk;
+	struct opp_table *ot = ci->ci_opp_table;
+	struct cpu_info *oci = ot->ot_master;
+
+	if (oci == NULL)
+		oci = ci;
+
+	ks = kstat_create(ci->ci_dev->dv_xname, 0, "dt-opp", 0,
+	    KSTAT_T_KV, 0);
+	if (ks == NULL) {
+		printf("%s: unable to create cpu dt-opp kstats\n",
+		    ci->ci_dev->dv_xname);
+		return;
+	}
+
+	coppk = malloc(sizeof(*coppk), M_DEVBUF, M_WAITOK);
+
+	kstat_kv_init(&coppk->coppk_freq, "freq", KSTAT_KV_T_FREQ);
+	kstat_kv_init(&coppk->coppk_supply_v, "supply",
+	    oci->ci_cpu_supply ? KSTAT_KV_T_VOLTS_DC : KSTAT_KV_T_NULL);
+
+	ks->ks_softc = oci;
+	ks->ks_data = coppk;
+	ks->ks_datalen = sizeof(*coppk);
+	ks->ks_read = cpu_opp_kstat_read;
+
+	kstat_install(ks);
+
+	/* XXX should we have a ci->ci_opp_kstat = ks? */
+}
+
+#endif /* NKSTAT > 0 */

@@ -1,4 +1,4 @@
-/*	$OpenBSD: filemode.c,v 1.35 2023/09/25 11:08:45 tb Exp $ */
+/*	$OpenBSD: filemode.c,v 1.38 2024/02/22 12:49:42 job Exp $ */
 /*
  * Copyright (c) 2019 Claudio Jeker <claudio@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -296,6 +296,7 @@ proc_parser_file(char *file, unsigned char *buf, size_t len)
 	struct mft *mft = NULL;
 	struct roa *roa = NULL;
 	struct rsc *rsc = NULL;
+	struct spl *spl = NULL;
 	struct tak *tak = NULL;
 	struct tal *tal = NULL;
 	char *aia = NULL, *aki = NULL;
@@ -422,6 +423,15 @@ proc_parser_file(char *file, unsigned char *buf, size_t len)
 		expires = &rsc->expires;
 		notafter = &rsc->notafter;
 		break;
+	case RTYPE_SPL:
+		spl = spl_parse(&x509, file, -1, buf, len);
+		if (spl == NULL)
+			break;
+		aia = spl->aia;
+		aki = spl->aki;
+		expires = &spl->expires;
+		notafter = &spl->notafter;
+		break;
 	case RTYPE_TAK:
 		tak = tak_parse(&x509, file, -1, buf, len);
 		if (tak == NULL)
@@ -464,9 +474,22 @@ proc_parser_file(char *file, unsigned char *buf, size_t len)
 			case RTYPE_RSC:
 				status = rsc->valid;
 				break;
+			case RTYPE_SPL:
+				status = spl->valid;
 			default:
 				break;
 			}
+		}
+		if (status && cert == NULL) {
+			struct cert *eecert;
+
+			eecert = cert_parse_ee_cert(file, a->cert->talid, x509);
+			if (eecert == NULL)
+				status = 0;
+			cert_free(eecert);
+		} else if (status) {
+			cert->talid = a->cert->talid;
+			constraints_validate(file, cert);
 		}
 	} else if (is_ta) {
 		if ((tal = find_tal(cert)) != NULL) {
@@ -511,6 +534,9 @@ proc_parser_file(char *file, unsigned char *buf, size_t len)
 			break;
 		case RTYPE_RSC:
 			rsc_print(x509, rsc);
+			break;
+		case RTYPE_SPL:
+			spl_print(x509, spl);
 			break;
 		case RTYPE_TAK:
 			tak_print(x509, tak);
@@ -648,6 +674,7 @@ proc_filemode(int fd)
 	OpenSSL_add_all_ciphers();
 	OpenSSL_add_all_digests();
 	x509_init_oid();
+	constraints_parse();
 
 	if ((ctx = X509_STORE_CTX_new()) == NULL)
 		err(1, "X509_STORE_CTX_new");

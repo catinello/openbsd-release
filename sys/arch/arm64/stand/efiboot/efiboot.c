@@ -1,4 +1,4 @@
-/*	$OpenBSD: efiboot.c,v 1.48 2023/05/12 16:43:00 kettenis Exp $	*/
+/*	$OpenBSD: efiboot.c,v 1.50 2024/02/23 21:52:12 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2015 YASUOKA Masahiko <yasuoka@yasuoka.net>
@@ -587,6 +587,8 @@ efi_dma_constraint(void)
 	    fdt_node_is_compatible(node, "rockchip,rk3588") ||
 	    fdt_node_is_compatible(node, "rockchip,rk3588s"))
 		dma_constraint[1] = htobe64(0xffffffff);
+	if (fdt_node_is_compatible(node, "lenovo,thinkpad-x13s"))
+		dma_constraint[1] = htobe64(0xffffffff);
 
 	/* Pass DMA constraint. */
 	node = fdt_find_node("/chosen");
@@ -1119,12 +1121,14 @@ efi_fdt(void)
 	if (hw_vendor == NULL || hw_prod == NULL)
 		return fdt_sys;
 
-	if (strcmp(hw_vendor, "LENOVO") == 0 &&
-	    strncmp(hw_prod, "21BX", 4) == 0) {
-		fdt_load_override(FW_PATH
-		    "qcom/sc8280xp-lenovo-thinkpad-x13s.dtb");
-		/* TODO: find a better mechanism */
-		cnset(ttydev("fb0"));
+	if (strcmp(hw_vendor, "LENOVO") == 0) {
+		if (strncmp(hw_prod, "21BX", 4) == 0 ||
+		    strncmp(hw_prod, "21BY", 4) == 0) {
+			fdt_load_override(FW_PATH
+			    "qcom/sc8280xp-lenovo-thinkpad-x13s.dtb");
+			/* TODO: find a better mechanism */
+			cnset(ttydev("fb0"));
+		}
 	}
 
 	return fdt_override ? fdt_override : fdt_sys;

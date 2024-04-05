@@ -1,4 +1,4 @@
-/* $OpenBSD: server-client.c,v 1.402 2023/09/02 20:03:10 nicm Exp $ */
+/* $OpenBSD: server-client.c,v 1.404 2024/01/16 13:09:11 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -1867,7 +1867,7 @@ server_client_key_callback(struct cmdq_item *item, void *data)
 	struct key_binding		*bd;
 	int				 xtimeout, flags;
 	struct cmd_find_state		 fs;
-	key_code			 key0;
+	key_code			 key0, prefix, prefix2;
 
 	/* Check the client is good to accept input. */
 	if (s == NULL || (c->flags & CLIENT_UNATTACHEDFLAGS))
@@ -1939,9 +1939,11 @@ table_changed:
 	 * The prefix always takes precedence and forces a switch to the prefix
 	 * table, unless we are already there.
 	 */
+	prefix = (key_code)options_get_number(s->options, "prefix");
+	prefix2 = (key_code)options_get_number(s->options, "prefix2");
 	key0 = (key & (KEYC_MASK_KEY|KEYC_MASK_MODIFIERS));
-	if ((key0 == (key_code)options_get_number(s->options, "prefix") ||
-	    key0 == (key_code)options_get_number(s->options, "prefix2")) &&
+	if ((key0 == (prefix & (KEYC_MASK_KEY|KEYC_MASK_MODIFIERS)) ||
+	    key0 == (prefix2 & (KEYC_MASK_KEY|KEYC_MASK_MODIFIERS))) &&
 	    strcmp(table->name, "prefix") != 0) {
 		server_client_set_key_table(c, "prefix");
 		server_status_client(c);
@@ -3000,14 +3002,14 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 	case MSG_IDENTIFY_STDIN:
 		if (datalen != 0)
 			fatalx("bad MSG_IDENTIFY_STDIN size");
-		c->fd = imsg->fd;
-		log_debug("client %p IDENTIFY_STDIN %d", c, imsg->fd);
+		c->fd = imsg_get_fd(imsg);
+		log_debug("client %p IDENTIFY_STDIN %d", c, c->fd);
 		break;
 	case MSG_IDENTIFY_STDOUT:
 		if (datalen != 0)
 			fatalx("bad MSG_IDENTIFY_STDOUT size");
-		c->out_fd = imsg->fd;
-		log_debug("client %p IDENTIFY_STDOUT %d", c, imsg->fd);
+		c->out_fd = imsg_get_fd(imsg);
+		log_debug("client %p IDENTIFY_STDOUT %d", c, c->out_fd);
 		break;
 	case MSG_IDENTIFY_ENVIRON:
 		if (datalen == 0 || data[datalen - 1] != '\0')

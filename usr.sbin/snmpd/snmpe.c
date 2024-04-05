@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpe.c,v 1.88 2023/03/08 04:43:15 guenther Exp $	*/
+/*	$OpenBSD: snmpe.c,v 1.94 2024/01/16 13:33:13 claudio Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008, 2012 Reyk Floeter <reyk@openbsd.org>
@@ -18,27 +18,27 @@
  */
 
 #include <sys/queue.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
-#include <sys/un.h>
+#include <sys/time.h>
 #include <sys/tree.h>
+#include <sys/types.h>
 
-#include <net/if.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 
+#include <ber.h>
+#include <event.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <imsg.h>
+#include <locale.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <errno.h>
-#include <event.h>
-#include <fcntl.h>
-#include <locale.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
-#include <pwd.h>
 
 #include "application.h"
+#include "log.h"
 #include "snmpd.h"
 #include "snmpe.h"
 #include "mib.h"
@@ -71,20 +71,9 @@ snmpe(struct privsep *ps, struct privsep_proc *p)
 {
 	struct snmpd		*env = ps->ps_env;
 	struct address		*h;
-#ifdef DEBUG
-	char		 buf[BUFSIZ];
-	struct oid	*oid;
-#endif
 
 	if ((setlocale(LC_CTYPE, "en_US.UTF-8")) == NULL)
 		fatal("setlocale(LC_CTYPE, \"en_US.UTF-8\")");
-
-#ifdef DEBUG
-	for (oid = NULL; (oid = smi_foreach(oid, 0)) != NULL;) {
-		smi_oid2string(&oid->o_id, buf, sizeof(buf), 0);
-		log_debug("oid %s", buf);
-	}
-#endif
 
 	appl();
 
@@ -149,7 +138,7 @@ snmpe_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
 	switch (imsg->hdr.type) {
 	case IMSG_AX_FD:
-		appl_agentx_backend(imsg->fd);
+		appl_agentx_backend(imsg_get_fd(imsg));
 		return 0;
 	default:
 		return -1;
@@ -565,7 +554,6 @@ snmpe_tryparse(int fd, struct snmp_message *msg)
 	if (snmpe_parse(msg) == -1) {
 		if (msg->sm_usmerr && MSG_REPORT(msg)) {
 			usm_make_report(msg);
-			snmpe_response(msg);
 			return;
 		} else
 			goto fail;
@@ -660,7 +648,6 @@ snmpe_writecb(int fd, short type, void *arg)
 		    msg->sm_datalen - reqlen);
 		nmsg->sm_datalen = msg->sm_datalen - reqlen;
 		snmp_msgfree(msg);
-		snmpe_prepare_read(nmsg, fd);
 		snmpe_tryparse(fd, nmsg);
 	} else {
 		snmp_msgfree(msg);
@@ -717,7 +704,6 @@ snmpe_recvmsg(int fd, short sig, void *arg)
 	if (snmpe_parse(msg) == -1) {
 		if (msg->sm_usmerr != 0 && MSG_REPORT(msg)) {
 			usm_make_report(msg);
-			snmpe_response(msg);
 			return;
 		} else {
 			snmp_msgfree(msg);
@@ -760,7 +746,6 @@ snmpe_send(struct snmp_message *msg, enum snmp_pdutype type, int32_t requestid,
 	msg->sm_errorindex = index;
 	msg->sm_varbindresp = varbindlist;
 
-	msg->sm_pdutype = SNMP_C_RESPONSE;
 	snmpe_response(msg);
 }
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ypbind.c,v 1.78 2023/03/08 04:43:15 guenther Exp $ */
+/*	$OpenBSD: ypbind.c,v 1.80 2024/01/23 14:13:55 deraadt Exp $ */
 
 /*
  * Copyright (c) 1992, 1993, 1996, 1997, 1998 Theo de Raadt <deraadt@openbsd.org>
@@ -156,8 +156,7 @@ ypbindproc_domain_2x(SVCXPRT *transp, domainname *argp, CLIENT *clnt)
 		if (ypdb == NULL)
 			return NULL;
 		memset(ypdb, 0, sizeof *ypdb);
-		strncpy(ypdb->dom_domain, *argp, sizeof ypdb->dom_domain-1);
-		ypdb->dom_domain[sizeof ypdb->dom_domain-1] = '\0';
+		strlcpy(ypdb->dom_domain, *argp, sizeof ypdb->dom_domain);
 		ypdb->dom_vers = YPVERS;
 		ypdb->dom_alive = 0;
 		ypdb->dom_lockfd = -1;
@@ -341,8 +340,7 @@ main(int argc, char *argv[])
 	DIR *dirp;
 	struct dirent *dent;
 
-	yp_get_default_domain(&domain);
-	if (domain[0] == '\0') {
+	if (yp_get_default_domain(&domain) != 0 || domain[0] == '\0') {
 		fprintf(stderr, "domainname not set. Aborting.\n");
 		exit(1);
 	}
@@ -488,8 +486,7 @@ main(int argc, char *argv[])
 	if (ypbindlist == NULL)
 		errx(1, "no memory");
 	memset(ypbindlist, 0, sizeof *ypbindlist);
-	strncpy(ypbindlist->dom_domain, domain, sizeof ypbindlist->dom_domain-1);
-	ypbindlist->dom_domain[sizeof (ypbindlist->dom_domain)-1] = '\0';
+	strlcpy(ypbindlist->dom_domain, domain, sizeof ypbindlist->dom_domain);
 	ypbindlist->dom_vers = YPVERS;
 	snprintf(ypbindlist->dom_servlist, sizeof ypbindlist->dom_servlist,
 	    "%s/%s", SERVERSDIR, ypbindlist->dom_domain);
@@ -961,8 +958,7 @@ rpc_received(char *dom, struct sockaddr_in *raddrp, int force)
 		if (ypdb == NULL)
 			return;
 		memset(ypdb, 0, sizeof *ypdb);
-		strncpy(ypdb->dom_domain, dom, sizeof ypdb->dom_domain-1);
-		ypdb->dom_domain[sizeof (ypdb->dom_domain)-1] = '\0';
+		strlcpy(ypdb->dom_domain, dom, sizeof ypdb->dom_domain);
 		ypdb->dom_lockfd = -1;
 		ypdb->dom_xid = unique_xid(ypdb);
 		ypdb->dom_pnext = ypbindlist;

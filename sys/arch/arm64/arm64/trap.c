@@ -1,4 +1,4 @@
-/* $OpenBSD: trap.c,v 1.46 2023/06/10 19:30:48 kettenis Exp $ */
+/* $OpenBSD: trap.c,v 1.48 2024/02/21 15:53:07 deraadt Exp $ */
 /*-
  * Copyright (c) 2014 Andrew Turner
  * All rights reserved.
@@ -286,7 +286,7 @@ do_el0_sync(struct trapframe *frame)
 	case EXCP_BRANCH_TGT:
 		curcpu()->ci_flush_bp();
 		sv.sival_ptr = (void *)frame->tf_elr;
-		trapsignal(p, SIGILL, esr, ILL_ILLOPC, sv);
+		trapsignal(p, SIGILL, esr, ILL_BTCFI, sv);
 		break;
 	case EXCP_FPAC:
 		curcpu()->ci_flush_bp();
@@ -338,10 +338,34 @@ do_el0_sync(struct trapframe *frame)
 	userret(p);
 }
 
+static void
+serror(struct trapframe *frame)
+{
+	struct cpu_info *ci = curcpu();
+	uint64_t esr, far;
+
+	esr = READ_SPECIALREG(esr_el1);
+	far = READ_SPECIALREG(far_el1);
+
+	printf("SError: %lx esr %llx far %0llx\n",
+	    frame->tf_elr, esr, far);
+
+	if (ci->ci_serror)
+		ci->ci_serror();
+}
+
 void
 do_el0_error(struct trapframe *frame)
 {
+	serror(frame);
 	panic("do_el0_error");
+}
+
+void
+do_el1h_error(struct trapframe *frame)
+{
+	serror(frame);
+	panic("do_el1h_error");
 }
 
 void

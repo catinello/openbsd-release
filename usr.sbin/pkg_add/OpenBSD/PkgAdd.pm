@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.143 2023/07/03 19:12:08 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.150 2024/01/02 10:25:48 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -139,7 +139,7 @@ our @ISA = qw(OpenBSD::AddDelete::State);
 sub handle_options($state)
 {
 	$state->SUPER::handle_options('druUzl:A:P:',
-	    '[-adcinqrsUuVvxz] [-A arch] [-B pkg-destdir] [-D name[=value]]',
+	    '[-acdinqrsUuVvxz] [-A arch] [-B pkg-destdir] [-D name[=value]]',
 	    '[-L localbase] [-l file] [-P type] pkg-name ...');
 
 	$state->{arch} = $state->opt('A');
@@ -307,7 +307,6 @@ sub check_security($set, $state, $plist, $h)
 	my ($error, $bad);
 	$state->run_quirks(
 		sub($quirks) {
-			return unless $quirks->can("check_security");
 			$bad = $quirks->check_security($plist->fullpkgpath);
 			if (defined $bad) {
 				require OpenBSD::PkgSpec;
@@ -360,7 +359,7 @@ sub find_kept_handle($set, $n, $state)
 		}
 	}
 	$set->check_security($state, $plist, $o);
-	if ($set->{quirks}) {
+	if ($plist->has('updatedb')) {
 		# The installed package has inst: for a location, we want
 		# the newer one (which is identical)
 		$n->location->{repository}->setup_cache($state->{setlist});
@@ -844,7 +843,7 @@ sub really_add($set, $state)
 		add_installed($pkgname);
 		delete $handle->{partial};
 		OpenBSD::PkgCfl::register($handle, $state);
-		if ($set->{quirks}) {
+		if ($plist->has('updatedb')) {
 			$handle->location->{repository}->setup_cache($state->{setlist});
 		}
 	}
@@ -1081,7 +1080,7 @@ sub may_grab_debug_for($class, $orig, $kept, $state)
 
 sub grab_debug_package($class, $d, $dbg, $state)
 {
-	my $o = $state->locator->find($dbg);
+	my $o = $state->locator->find($dbg, $state);
 	return if !defined $o;
 	require OpenBSD::Temp;
 	my ($fh, $name) = OpenBSD::Temp::permanent_file($d, "debug-pkg");
@@ -1112,6 +1111,16 @@ sub grab_debug_package($class, $d, $dbg, $state)
 	}
 }
 
+sub report_cantupdate($state, $cantupdate)
+{
+	if ($state->tracker->did_something) {
+		$state->say("Couldn't find updates for #1", 
+		    join(' ', sort @$cantupdate));
+	} else {
+		$state->say("Couldn't find any update");
+	}
+}
+
 sub inform_user_of_problems($state)
 {
 	my @cantupdate = $state->tracker->cant_list;
@@ -1120,10 +1129,8 @@ sub inform_user_of_problems($state)
 		    sub($quirks) {
 			$quirks->filter_obsolete(\@cantupdate, $state);
 		    });
-
-		$state->say("Couldn't find updates for #1", 
-		    join(' ', sort @cantupdate)) if @cantupdate > 0;
 		if (@cantupdate > 0) {
+			report_cantupdate($state, \@cantupdate);
 			$state->{bad}++;
 		}
 	}
@@ -1157,10 +1164,16 @@ sub quirk_set($state)
 
 sub do_quirks($self, $state)
 {
-	my $set = quirk_set($state);
-	$self->process_set($set, $state);
+	my $list = [quirk_set($state)];
+	$state->tracker->todo(@$list);
+	while (my $set = shift @$list) {
+		$state->status->what->set($set);
+		$set = $set->real_set;
+		next if $set->{finished};
+		$state->progress->set_header('Checking packages');
+		unshift(@$list, $self->process_set($set, $state));
+	}
 }
-
 
 sub process_parameters($self, $state)
 {

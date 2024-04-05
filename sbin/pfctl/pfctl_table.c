@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfctl_table.c,v 1.85 2022/11/21 07:27:10 sashan Exp $ */
+/*	$OpenBSD: pfctl_table.c,v 1.87 2024/01/15 07:23:32 sashan Exp $ */
 
 /*
  * Copyright (c) 2002 Cedric Berger
@@ -369,21 +369,21 @@ print_table(struct pfr_table *ta, int verbose, int debug)
 {
 	if (!debug && !(ta->pfrt_flags & PFR_TFLAG_ACTIVE))
 		return;
-	if (verbose) {
-		printf("%c%c%c%c%c%c%c\t%s",
+	if (verbose)
+		printf("%c%c%c%c%c%c%c\t",
 		    (ta->pfrt_flags & PFR_TFLAG_CONST) ? 'c' : '-',
 		    (ta->pfrt_flags & PFR_TFLAG_PERSIST) ? 'p' : '-',
 		    (ta->pfrt_flags & PFR_TFLAG_ACTIVE) ? 'a' : '-',
 		    (ta->pfrt_flags & PFR_TFLAG_INACTIVE) ? 'i' : '-',
 		    (ta->pfrt_flags & PFR_TFLAG_REFERENCED) ? 'r' : '-',
 		    (ta->pfrt_flags & PFR_TFLAG_REFDANCHOR) ? 'h' : '-',
-		    (ta->pfrt_flags & PFR_TFLAG_COUNTERS) ? 'C' : '-',
-		    ta->pfrt_name);
-		if (ta->pfrt_anchor[0])
-			printf("\t%s", ta->pfrt_anchor);
-		puts("");
-	} else
-		puts(ta->pfrt_name);
+		    (ta->pfrt_flags & PFR_TFLAG_COUNTERS) ? 'C' : '-');
+
+	printf("%s", ta->pfrt_name);
+	if (ta->pfrt_anchor[0] != '\0')
+		printf("@%s", ta->pfrt_anchor);
+
+	printf("\n");
 }
 
 void
@@ -495,7 +495,7 @@ print_astats(struct pfr_astats *as, int dns)
 	if (as->pfras_a.pfra_states)
 		printf("\tActive States:      %d\n", as->pfras_a.pfra_states);
 	if (as->pfras_a.pfra_type == PFRKE_COST)
-		printf("\tWeight:             %d\n", as->pfras_a.pfra_weight);	
+		printf("\tWeight:             %d\n", as->pfras_a.pfra_weight);
 	if (as->pfras_a.pfra_ifname[0])
 		printf("\tInterface:          %s\n", as->pfras_a.pfra_ifname);
 	if (as->pfras_a.pfra_fback == PFR_FB_NOCOUNT)

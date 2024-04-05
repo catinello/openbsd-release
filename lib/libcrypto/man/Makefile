@@ -1,4 +1,4 @@
-# $OpenBSD: Makefile,v 1.276 2023/09/29 08:57:49 tb Exp $
+# $OpenBSD: Makefile,v 1.286 2024/03/06 02:34:14 tb Exp $
 
 .include <bsd.own.mk>
 
@@ -11,7 +11,7 @@ MAN=	\
 	ASN1_NULL_new.3 \
 	ASN1_OBJECT_new.3 \
 	ASN1_PRINTABLE_type.3 \
-	ASN1_STRING_TABLE_add.3 \
+	ASN1_STRING_TABLE_get.3 \
 	ASN1_STRING_length.3 \
 	ASN1_STRING_new.3 \
 	ASN1_STRING_print_ex.3 \
@@ -29,7 +29,6 @@ MAN=	\
 	ASN1_mbstring_copy.3 \
 	ASN1_parse_dump.3 \
 	ASN1_put_object.3 \
-	ASN1_time_parse.3 \
 	ASRange_new.3 \
 	AUTHORITY_KEYID_new.3 \
 	BASIC_CONSTRAINTS_new.3 \
@@ -100,6 +99,7 @@ MAN=	\
 	CMS_get1_ReceiptRequest.3 \
 	CMS_sign.3 \
 	CMS_sign_receipt.3 \
+	CMS_signed_add1_attr.3 \
 	CMS_uncompress.3 \
 	CMS_verify.3 \
 	CMS_verify_receipt.3 \
@@ -123,7 +123,7 @@ MAN=	\
 	DSA_do_sign.3 \
 	DSA_dup_DH.3 \
 	DSA_generate_key.3 \
-	DSA_generate_parameters.3 \
+	DSA_generate_parameters_ex.3 \
 	DSA_get0_pqg.3 \
 	DSA_get_ex_new_index.3 \
 	DSA_meth_new.3 \
@@ -140,17 +140,7 @@ MAN=	\
 	EC_KEY_new.3 \
 	EC_POINT_add.3 \
 	EC_POINT_new.3 \
-	ENGINE_add.3 \
-	ENGINE_ctrl.3 \
-	ENGINE_get_default_RSA.3 \
-	ENGINE_init.3 \
 	ENGINE_new.3 \
-	ENGINE_register_RSA.3 \
-	ENGINE_register_all_RSA.3 \
-	ENGINE_set_RSA.3 \
-	ENGINE_set_default.3 \
-	ENGINE_set_flags.3 \
-	ENGINE_unregister_RSA.3 \
 	ERR.3 \
 	ERR_GET_LIB.3 \
 	ERR_asprintf_error_data.3 \
@@ -168,6 +158,7 @@ MAN=	\
 	EVP_BytesToKey.3 \
 	EVP_CIPHER_CTX_ctrl.3 \
 	EVP_CIPHER_CTX_get_cipher_data.3 \
+	EVP_CIPHER_CTX_init.3 \
 	EVP_CIPHER_CTX_set_flags.3 \
 	EVP_CIPHER_do_all.3 \
 	EVP_CIPHER_meth_new.3 \
@@ -178,7 +169,6 @@ MAN=	\
 	EVP_EncodeInit.3 \
 	EVP_EncryptInit.3 \
 	EVP_MD_CTX_ctrl.3 \
-	EVP_MD_meth_new.3 \
 	EVP_MD_nid.3 \
 	EVP_OpenInit.3 \
 	EVP_PKCS82PKEY.3 \
@@ -208,7 +198,6 @@ MAN=	\
 	EVP_SealInit.3 \
 	EVP_SignInit.3 \
 	EVP_VerifyInit.3 \
-	EVP_add_cipher.3 \
 	EVP_aes_128_cbc.3 \
 	EVP_camellia_128_cbc.3 \
 	EVP_chacha20.3 \
@@ -323,7 +312,6 @@ MAN=	\
 	X509_ATTRIBUTE_new.3 \
 	X509_ATTRIBUTE_set1_object.3 \
 	X509_CINF_new.3 \
-	X509_CRL_METHOD_new.3 \
 	X509_CRL_get0_by_serial.3 \
 	X509_CRL_new.3 \
 	X509_CRL_print.3 \
@@ -440,7 +428,6 @@ MAN=	\
 	i2d_CMS_bio_stream.3 \
 	i2d_PKCS7_bio_stream.3 \
 	lh_new.3 \
-	lh_stats.3 \
 	openssl.cnf.5 \
 	s2i_ASN1_INTEGER.3 \
 	x509v3.cnf.5

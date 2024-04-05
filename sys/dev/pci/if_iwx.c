@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_iwx.c,v 1.176 2023/08/26 09:05:34 stsp Exp $	*/
+/*	$OpenBSD: if_iwx.c,v 1.182 2024/02/26 18:00:09 stsp Exp $	*/
 
 /*
  * Copyright (c) 2014, 2016 genua gmbh <info@genua.de>
@@ -402,7 +402,6 @@ void	iwx_tx_update_byte_tbl(struct iwx_softc *, struct iwx_tx_ring *, int,
 	    uint16_t, uint16_t);
 int	iwx_tx(struct iwx_softc *, struct mbuf *, struct ieee80211_node *);
 int	iwx_flush_sta_tids(struct iwx_softc *, int, uint16_t);
-int	iwx_wait_tx_queues_empty(struct iwx_softc *);
 int	iwx_drain_sta(struct iwx_softc *sc, struct iwx_node *, int);
 int	iwx_flush_sta(struct iwx_softc *, struct iwx_node *);
 int	iwx_beacon_filter_send_cmd(struct iwx_softc *,
@@ -6086,13 +6085,12 @@ iwx_tx_fill_cmd(struct iwx_softc *sc, struct iwx_node *in,
 	} else if (sc->sc_rate_n_flags_version >= 2)
 		rate_flags |= IWX_RATE_MCS_LEGACY_OFDM_MSK;
 
-	rval = (rs->rs_rates[ni->ni_txrate] & IEEE80211_RATE_VAL);
 	if (sc->sc_rate_n_flags_version >= 2) {
 		if (rate_flags & IWX_RATE_MCS_LEGACY_OFDM_MSK) {
-			rate_flags |= (iwx_fw_rateidx_ofdm(rval) &
+			rate_flags |= (iwx_fw_rateidx_ofdm(rinfo->rate) &
 			    IWX_RATE_LEGACY_RATE_MSK);
 		} else {
-			rate_flags |= (iwx_fw_rateidx_cck(rval) &
+			rate_flags |= (iwx_fw_rateidx_cck(rinfo->rate) &
 			    IWX_RATE_LEGACY_RATE_MSK);
 		}
 	} else
@@ -6387,10 +6385,7 @@ iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids)
 	}
 
 	resp_len = iwx_rx_packet_payload_len(pkt);
-	/* Some firmware versions don't provide a response. */
-	if (resp_len == 0)
-		goto out;
-	else if (resp_len != sizeof(*resp)) {
+	if (resp_len != sizeof(*resp)) {
 		err = EIO;
 		goto out;
 	}
@@ -6430,28 +6425,6 @@ out:
 }
 
 #define IWX_FLUSH_WAIT_MS	2000
-
-int
-iwx_wait_tx_queues_empty(struct iwx_softc *sc)
-{
-	int i, err;
-
-	for (i = 0; i < nitems(sc->txq); i++) {
-		struct iwx_tx_ring *ring = &sc->txq[i];
-
-		if (i == IWX_DQA_CMD_QUEUE)
-			continue;
-
-		while (ring->queued > 0) {
-			err = tsleep_nsec(ring, 0, "iwxflush",
-			    MSEC_TO_NSEC(IWX_FLUSH_WAIT_MS));
-			if (err)
-				return err;
-		}
-	}
-
-	return 0;
-}
 
 int
 iwx_drain_sta(struct iwx_softc *sc, struct iwx_node* in, int drain)
@@ -6506,13 +6479,6 @@ iwx_flush_sta(struct iwx_softc *sc, struct iwx_node *in)
 	err = iwx_flush_sta_tids(sc, IWX_STATION_ID, 0xffff);
 	if (err) {
 		printf("%s: could not flush Tx path (error %d)\n",
-		    DEVNAME(sc), err);
-		goto done;
-	}
-
-	err = iwx_wait_tx_queues_empty(sc);
-	if (err) {
-		printf("%s: Could not empty Tx queues (error %d)\n",
 		    DEVNAME(sc), err);
 		goto done;
 	}
@@ -6977,6 +6943,7 @@ iwx_fill_probe_req(struct iwx_softc *sc, struct iwx_scan_probe_req *preq)
 				return ENOBUFS;
 			frm = ieee80211_add_vhtcaps(frm, ic);
 			remain -= frm - pos;
+			preq->band_data[1].len = htole16(frm - pos);
 		}
 	}
 
@@ -7561,7 +7528,7 @@ iwx_scan(struct iwx_softc *sc)
 	 * The current mode might have been fixed during association.
 	 * Ensure all channels get scanned.
 	 */
-	if (IFM_MODE(ic->ic_media.ifm_cur->ifm_media) == IFM_AUTO)
+	if (IFM_SUBTYPE(ic->ic_media.ifm_cur->ifm_media) == IFM_AUTO)
 		ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
 
 	sc->sc_flags |= IWX_FLAG_SCANNING;
@@ -10127,6 +10094,16 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
 		case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_RLC_CONFIG_CMD):
 			break;
 
+		/*
+		 * Ignore for now. The Linux driver only acts on this request
+		 * with 160Mhz channels in 11ax mode.
+		 */
+		case IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
+		    IWX_THERMAL_DUAL_CHAIN_REQUEST):
+			DPRINTF(("%s: thermal dual-chain request received\n",
+			    DEVNAME(sc)));
+			break;
+
 		/* undocumented notification from iwx-ty-a0-gf-a0-77 image */
 		case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, 0xf8):
 			break;
@@ -10718,7 +10695,7 @@ static const struct iwx_dev_info iwx_dev_info_table[] = {
 	_IWX_DEV_INFO(IWX_CFG_ANY, IWX_CFG_ANY,
 		      IWX_CFG_MAC_TYPE_SO, IWX_CFG_ANY,
 		      IWX_CFG_RF_TYPE_HR1, IWX_CFG_ANY,
-		      IWX_CFG_160, IWX_CFG_ANY, IWX_CFG_NO_CDB, IWX_CFG_ANY,
+		      IWX_CFG_NO_160, IWX_CFG_ANY, IWX_CFG_NO_CDB, IWX_CFG_ANY,
 		      iwx_cfg_so_a0_hr_b0), /* ax101 */
 	_IWX_DEV_INFO(IWX_CFG_ANY, IWX_CFG_ANY,
 		      IWX_CFG_MAC_TYPE_SO, IWX_CFG_ANY,
@@ -10735,7 +10712,7 @@ static const struct iwx_dev_info iwx_dev_info_table[] = {
 	_IWX_DEV_INFO(IWX_CFG_ANY, IWX_CFG_ANY,
 		      IWX_CFG_MAC_TYPE_SOF, IWX_CFG_ANY,
 		      IWX_CFG_RF_TYPE_HR1, IWX_CFG_ANY,
-		      IWX_CFG_160, IWX_CFG_ANY, IWX_CFG_NO_CDB, IWX_CFG_ANY,
+		      IWX_CFG_NO_160, IWX_CFG_ANY, IWX_CFG_NO_CDB, IWX_CFG_ANY,
 		      iwx_cfg_so_a0_hr_b0), /* AX101 */
 	_IWX_DEV_INFO(IWX_CFG_ANY, IWX_CFG_ANY,
 		      IWX_CFG_MAC_TYPE_SOF, IWX_CFG_ANY,

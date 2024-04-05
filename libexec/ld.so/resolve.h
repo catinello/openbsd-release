@@ -1,4 +1,4 @@
-/*	$OpenBSD: resolve.h,v 1.105 2023/08/15 06:26:34 guenther Exp $ */
+/*	$OpenBSD: resolve.h,v 1.107 2024/01/16 19:07:31 deraadt Exp $ */
 
 /*
  * Copyright (c) 1998 Per Fogelstrom, Opsycon AB
@@ -73,7 +73,7 @@ typedef struct elf_object elf_object_t;
 struct object_vector {
 	int		len;
 	int		alloc;
-	elf_object_t 	**vec;
+	elf_object_t	**vec;
 };
 void	object_vec_grow(struct object_vector *_vec, int _more);
 
@@ -245,6 +245,7 @@ struct elf_object {
 
 	struct range_vector imut;
 	struct range_vector mut;
+	int islibc;
 };
 
 struct dep_node {
@@ -339,6 +340,9 @@ void _dl_apply_immutable(elf_object_t *object);
 typedef void lock_cb(int);
 void	_dl_thread_kern_go(lock_cb *);
 lock_cb	*_dl_thread_kern_stop(void);
+
+int	_dl_islibc(Elf_Dyn *_dynp, Elf_Addr loff);
+void	_dl_pin(int, Elf_Phdr *, void *, size_t, void *, size_t);
 
 char	*_dl_getenv(const char *, char **) __boot;
 void	_dl_unsetenv(const char *, char **) __boot;

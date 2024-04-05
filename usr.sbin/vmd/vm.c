@@ -1,4 +1,4 @@
-/*	$OpenBSD: vm.c,v 1.94 2023/09/26 01:53:54 dv Exp $	*/
+/*	$OpenBSD: vm.c,v 1.98 2024/02/20 21:40:37 dv Exp $	*/
 
 /*
  * Copyright (c) 2015 Mike Larkin <mlarkin@openbsd.org>
@@ -221,12 +221,17 @@ static const struct vcpu_reg_state vcpu_init_flat16 = {
  * fd_vmm: file descriptor for communicating with vmm(4) device
  */
 void
-vm_main(int fd, int vmm_fd)
+vm_main(int fd, int fd_vmm)
 {
 	struct vm_create_params	*vcp = NULL;
 	struct vmd_vm		 vm;
 	size_t			 sz = 0;
 	int			 ret = 0;
+
+	/*
+	 * The vm process relies on global state. Set the fd for /dev/vmm.
+	 */
+	env->vmd_fd = fd_vmm;
 
 	/*
 	 * We aren't root, so we can't chroot(2). Use unveil(2) instead.
@@ -276,11 +281,6 @@ vm_main(int fd, int vmm_fd)
 			log_warnx("%s: failed to receive boot fd",
 			    vcp->vcp_name);
 			_exit(EINVAL);
-		}
-		if (fcntl(vm.vm_kernel, F_SETFL, O_NONBLOCK) == -1) {
-			ret = errno;
-			log_warn("failed to set nonblocking mode on boot fd");
-			_exit(ret);
 		}
 	}
 
@@ -596,7 +596,7 @@ vm_dispatch_vmm(int fd, short event, void *arg)
 			break;
 		case IMSG_VMDOP_SEND_VM_REQUEST:
 			vmr.vmr_id = vm->vm_vmid;
-			vmr.vmr_result = send_vm(imsg.fd, vm);
+			vmr.vmr_result = send_vm(imsg_get_fd(&imsg), vm);
 			imsg_compose_event(&vm->vm_iev,
 			    IMSG_VMDOP_SEND_VM_RESPONSE,
 			    imsg.hdr.peerid, imsg.hdr.pid, -1, &vmr,
@@ -1750,6 +1750,8 @@ vcpu_exit_inout(struct vm_run_params *vrp)
 	else if (vei->vei.vei_dir == VEI_DIR_IN)
 		set_return_data(vei, 0xFFFFFFFF);
 
+	vei->vrs.vrs_gprs[VCPU_REGS_RIP] += vei->vei.vei_insn_len;
+
 	if (intr != 0xFF)
 		vcpu_assert_pic_irq(vrp->vrp_vm_id, vrp->vrp_vcpu_id, intr);
 }
@@ -2434,38 +2436,46 @@ translate_gva(struct vm_exit* exit, uint64_t va, uint64_t* pa, int mode)
 	return (0);
 }
 
+void
+vm_pipe_init(struct vm_dev_pipe *p, void (*cb)(int, short, void *))
+{
+	vm_pipe_init2(p, cb, NULL);
+}
+
 /*
- * vm_pipe_init
+ * vm_pipe_init2
  *
  * Initialize a vm_dev_pipe, setting up its file descriptors and its
- * event structure with the given callback.
+ * event structure with the given callback and argument.
  *
  * Parameters:
  *  p: pointer to vm_dev_pipe struct to initizlize
  *  cb: callback to use for READ events on the read end of the pipe
+ *  arg: pointer to pass to the callback on event trigger
  */
 void
-vm_pipe_init(struct vm_dev_pipe *p, void (*cb)(int, short, void *))
+vm_pipe_init2(struct vm_dev_pipe *p, void (*cb)(int, short, void *), void *arg)
 {
 	int ret;
 	int fds[2];
 
 	memset(p, 0, sizeof(struct vm_dev_pipe));
 
-	ret = pipe(fds);
+	ret = pipe2(fds, O_CLOEXEC);
 	if (ret)
 		fatal("failed to create vm_dev_pipe pipe");
 
 	p->read = fds[0];
 	p->write = fds[1];
 
-	event_set(&p->read_ev, p->read, EV_READ | EV_PERSIST, cb, NULL);
+	event_set(&p->read_ev, p->read, EV_READ | EV_PERSIST, cb, arg);
 }
 
 /*
  * vm_pipe_send
  *
- * Send a message to an emulated device vie the provided vm_dev_pipe.
+ * Send a message to an emulated device vie the provided vm_dev_pipe. This
+ * relies on the fact sizeof(msg) < PIPE_BUF to ensure atomic writes.
  *
  * Parameters:
  *  p: pointer to initialized vm_dev_pipe
@@ -2484,7 +2494,8 @@ vm_pipe_send(struct vm_dev_pipe *p, enum pipe_msg_type msg)
  * vm_pipe_recv
  *
  * Receive a message for an emulated device via the provided vm_dev_pipe.
- * Returns the message value, otherwise will exit on failure.
+ * Returns the message value, otherwise will exit on failure. This relies on
+ * the fact sizeof(enum pipe_msg_type) < PIPE_BUF for atomic reads.
  *
  * Parameters:
  *  p: pointer to initialized vm_dev_pipe
@@ -2505,7 +2516,7 @@ vm_pipe_recv(struct vm_dev_pipe *p)
 }
 
 /*
- * Re-map the guest address space using the shared memory file descriptor.
+ * Re-map the guest address space using vmm(4)'s VMM_IOC_SHARE
  *
  * Returns 0 on success, non-zero in event of failure.
  */

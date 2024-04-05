@@ -1,4 +1,4 @@
-/*	$OpenBSD: patch.c,v 1.74 2023/07/19 13:26:20 tb Exp $	*/
+/*	$OpenBSD: patch.c,v 1.75 2023/10/25 20:05:43 bluhm Exp $	*/
 
 /*
  * patch - a program to apply diffs to original files

@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore.S,v 1.140 2023/07/31 04:01:07 guenther Exp $	*/
+/*	$OpenBSD: locore.S,v 1.146 2024/02/25 22:33:09 guenther Exp $	*/
 /*	$NetBSD: locore.S,v 1.13 2004/03/25 18:33:17 drochner Exp $	*/
 
 /*
@@ -176,16 +176,15 @@ sigcode:
 	movq	%rsp,%rdi
 	pushq	%rdi			/* fake return address */
 	movq	$SYS_sigreturn,%rax
+	.globl sigcodecall
+sigcodecall:
 	syscall
 	.globl	sigcoderet
 sigcoderet:
-	movq	$SYS_exit,%rax
-	syscall
-	_ALIGN_TRAPS
+	int3
 1:	JMP_RETPOLINE(rax)
 	.globl	esigcode
 esigcode:
-
 	.globl	sigfill
 sigfill:
 	int3
@@ -508,10 +507,6 @@ ENTRY(savectx)
 	lfence
 END(savectx)
 
-IDTVEC(syscall32)
-	sysret		/* go away please */
-END(Xsyscall32)
-
 /*
  * syscall insn entry.
  * Enter here with interrupts blocked; %rcx contains the caller's
@@ -595,6 +590,22 @@ GENTRY(Xsyscall)
 	jz	.Lsyscall_restore_fsbase
 
 .Lsyscall_restore_registers:
+	/*
+	 * If the pmap we're now on isn't the same as the one we
+	 * were on last time we were in userspace, then use IBPB
+	 * to prevent cross-process branch-target injection.
+	 */
+	CODEPATCH_START
+	movq	CPUVAR(PROC_PMAP),%rbx
+	cmpq	CPUVAR(USER_PMAP),%rbx
+	je	1f
+	xorl	%edx,%edx
+	movl	$PRED_CMD_IBPB,%eax
+	movl	$MSR_PRED_CMD,%ecx
+	wrmsr
+	movq	%rbx,CPUVAR(USER_PMAP)
+1:
+	CODEPATCH_END(CPTAG_IBPB_NOP)
 	call	pku_xonly
 	RET_STACK_REFILL_WITH_RCX
 
@@ -709,10 +720,7 @@ spl_lowered:
 #endif
 
 NENTRY(proc_trampoline)
-#ifdef MULTIPROCESSOR
-	call	proc_trampoline_mp
-#endif
-	movl	$IPL_NONE,CPUVAR(ILEVEL)
+	call	proc_trampoline_mi
 	movq	%r13,%rdi
 	movq	%r12,%rax
 	call	retpoline_rax
@@ -761,17 +769,33 @@ intr_user_exit_post_ast:
 	testl	$CPUPF_USERXSTATE,CPUVAR(PFLAGS)
 	jz	.Lintr_restore_xstate
 
+	/* Restore FS.base if it's not already in the CPU */
+	testl	$CPUPF_USERSEGS,CPUVAR(PFLAGS)
+	jz	.Lintr_restore_fsbase
+
+.Lintr_restore_registers:
 #ifdef DIAGNOSTIC
 	/* no more C calls after this, so check the SPL */
 	cmpl	$0,CPUVAR(ILEVEL)
 	jne	.Luser_spl_not_lowered
 #endif /* DIAGNOSTIC */
 
-	/* Restore FS.base if it's not already in the CPU */
-	testl	$CPUPF_USERSEGS,CPUVAR(PFLAGS)
-	jz	.Lintr_restore_fsbase
-
-.Lintr_restore_registers:
+	/*
+	 * If the pmap we're now on isn't the same as the one we
+	 * were on last time we were in userspace, then use IBPB
+	 * to prevent cross-process branch-target injection.
+	 */
+	CODEPATCH_START
+	movq	CPUVAR(PROC_PMAP),%rbx
+	cmpq	CPUVAR(USER_PMAP),%rbx
+	je	1f
+	xorl	%edx,%edx
+	movl	$PRED_CMD_IBPB,%eax
+	movl	$MSR_PRED_CMD,%ecx
+	wrmsr
+	movq	%rbx,CPUVAR(USER_PMAP)
+1:
+	CODEPATCH_END(CPTAG_IBPB_NOP)
 	call	pku_xonly
 	RET_STACK_REFILL_WITH_RCX
 

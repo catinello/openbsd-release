@@ -1,4 +1,4 @@
-/*	$OpenBSD: btrace.c,v 1.78 2023/09/15 10:59:02 claudio Exp $ */
+/*	$OpenBSD: btrace.c,v 1.89 2024/02/27 12:38:12 mpi Exp $ */
 
 /*
  * Copyright (c) 2019 - 2023 Martin Pieuchot <mpi@openbsd.org>
@@ -17,7 +17,6 @@
  */
 
 #include <sys/ioctl.h>
-#include <sys/exec_elf.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/queue.h>
@@ -71,10 +70,10 @@ struct dtioc_probe_info	*dtpi_get_by_value(const char *, const char *,
  * Main loop and rule evaluation.
  */
 void			 rules_do(int);
-void			 rules_setup(int);
-void			 rules_apply(int, struct dt_evt *);
+int			 rules_setup(int);
+int			 rules_apply(int, struct dt_evt *);
 void			 rules_teardown(int);
-void			 rule_eval(struct bt_rule *, struct dt_evt *);
+int			 rule_eval(struct bt_rule *, struct dt_evt *);
 void			 rule_printmaps(struct bt_rule *);
 
 /*
@@ -84,7 +83,7 @@ uint64_t		 builtin_nsecs(struct dt_evt *);
 const char		*builtin_kstack(struct dt_evt *);
 const char		*builtin_arg(struct dt_evt *, enum bt_argtype);
 struct bt_arg		*fn_str(struct bt_arg *, struct dt_evt *, char *);
-void			 stmt_eval(struct bt_stmt *, struct dt_evt *);
+int			 stmt_eval(struct bt_stmt *, struct dt_evt *);
 void			 stmt_bucketize(struct bt_stmt *, struct dt_evt *);
 void			 stmt_clear(struct bt_stmt *);
 void			 stmt_delete(struct bt_stmt *, struct dt_evt *);
@@ -405,6 +404,7 @@ void
 rules_do(int fd)
 {
 	struct sigaction sa;
+	int halt = 0;
 
 	memset(&sa, 0, sizeof(sa));
 	sigemptyset(&sa.sa_mask);
@@ -415,9 +415,9 @@ rules_do(int fd)
 	if (sigaction(SIGTERM, &sa, NULL))
 		err(1, "sigaction");
 
-	rules_setup(fd);
+	halt = rules_setup(fd);
 
-	while (!quit_pending && g_nprobes > 0) {
+	while (!quit_pending && !halt && g_nprobes > 0) {
 		static struct dt_evt devtbuf[64];
 		ssize_t rlen;
 		size_t i;
@@ -434,8 +434,11 @@ rules_do(int fd)
 		if ((rlen % sizeof(struct dt_evt)) != 0)
 			err(1, "incorrect read");
 
-		for (i = 0; i < rlen / sizeof(struct dt_evt); i++)
-			rules_apply(fd, &devtbuf[i]);
+		for (i = 0; i < rlen / sizeof(struct dt_evt); i++) {
+			halt = rules_apply(fd, &devtbuf[i]);
+			if (halt)
+				break;
+		}
 	}
 
 	rules_teardown(fd);
@@ -447,9 +450,9 @@ rules_do(int fd)
 		if (ioctl(fd, DTIOCGSTATS, &dtst))
 			warn("DTIOCGSTATS");
 
-		printf("%llu events read\n", dtst.dtst_readevt);
-		printf("%llu events dropped\n", dtst.dtst_dropevt);
-		printf("%llu events filtered\n", bt_filtered);
+		fprintf(stderr, "%llu events read\n", dtst.dtst_readevt);
+		fprintf(stderr, "%llu events dropped\n", dtst.dtst_dropevt);
+		fprintf(stderr, "%llu events filtered\n", bt_filtered);
 	}
 }
 
@@ -484,7 +487,7 @@ rules_action_scan(struct bt_stmt *bs)
 	return evtflags;
 }
 
-void
+int
 rules_setup(int fd)
 {
 	struct dtioc_probe_info *dtpi;
@@ -493,7 +496,7 @@ rules_setup(int fd)
 	struct bt_probe *bp;
 	struct bt_stmt *bs;
 	struct bt_arg *ba;
-	int dokstack = 0, on = 1;
+	int dokstack = 0, halt = 0, on = 1;
 	uint64_t evtflags;
 
 	TAILQ_FOREACH(r, &g_rules, br_next) {
@@ -553,7 +556,7 @@ rules_setup(int fd)
 	clock_gettime(CLOCK_REALTIME, &bt_devt.dtev_tsp);
 
 	if (rbegin)
-		rule_eval(rbegin, &bt_devt);
+		halt = rule_eval(rbegin, &bt_devt);
 
 	/* Enable all probes */
 	TAILQ_FOREACH(r, &g_rules, br_next) {
@@ -571,9 +574,14 @@ rules_setup(int fd)
 		if (ioctl(fd, DTIOCRECORD, &on))
 			err(1, "DTIOCRECORD");
 	}
+
+	return halt;
 }
 
-void
+/*
+ * Returns non-zero if the program should halt.
+ */
+int
 rules_apply(int fd, struct dt_evt *dtev)
 {
 	struct bt_rule *r;
@@ -586,9 +594,11 @@ rules_apply(int fd, struct dt_evt *dtev)
 				continue;
 
 			dtai_cache(fd, &dt_dtpis[dtev->dtev_pbn - 1]);
-			rule_eval(r, dtev);
+			if (rule_eval(r, dtev))
+				return 1;
 		}
 	}
+	return 0;
 }
 
 void
@@ -637,7 +647,10 @@ rules_teardown(int fd)
 		rule_printmaps(r);
 }
 
-void
+/*
+ * Returns non-zero if the program should halt.
+ */
+int
 rule_eval(struct bt_rule *r, struct dt_evt *dtev)
 {
 	struct bt_stmt *bs;
@@ -651,7 +664,7 @@ rule_eval(struct bt_rule *r, struct dt_evt *dtev)
 	if (r->br_filter != NULL && r->br_filter->bf_condition != NULL) {
 		if (stmt_test(r->br_filter->bf_condition, dtev) == false) {
 			bt_filtered++;
-			return;
+			return 0;
 		}
 	}
 
@@ -660,15 +673,19 @@ rule_eval(struct bt_rule *r, struct dt_evt *dtev)
 			struct bt_stmt *bbs = (struct bt_stmt *)bs->bs_var;
 
 			while (bbs != NULL) {
-				stmt_eval(bbs, dtev);
+				if (stmt_eval(bbs, dtev))
+					return 1;
 				bbs = SLIST_NEXT(bbs, bs_next);
 			}
 
 			continue;
 		}
 
-		stmt_eval(bs, dtev);
+		if (stmt_eval(bs, dtev))
+			return 1;
 	}
+
+	return 0;
 }
 
 void
@@ -780,13 +797,18 @@ const char *
 builtin_arg(struct dt_evt *dtev, enum bt_argtype dat)
 {
 	static char buf[sizeof("18446744073709551615")]; /* UINT64_MAX */
-	unsigned int argn;
+	struct dtioc_probe_info *dtpi;
 	struct dtioc_arg_info *dtai;
 	const char *argtype, *fmt;
+	unsigned int argn;
 	long value;
 
-	dtai = dt_args[dtev->dtev_pbn - 1];
 	argn = dat - B_AT_BI_ARG0;
+	dtpi = &dt_dtpis[dtev->dtev_pbn - 1];
+	if (dtpi == NULL || argn >= dtpi->dtpi_nargs)
+		return "0";
+
+	dtai = dt_args[dtev->dtev_pbn - 1];
 	argtype = dtai[argn].dtai_argtype;
 
 	if (strncmp(argtype, "int", DTNAMESIZE) == 0) {
@@ -802,9 +824,14 @@ builtin_arg(struct dt_evt *dtev, enum bt_argtype dat)
 	return buf;
 }
 
-void
+/*
+ * Returns non-zero if the program should halt.
+ */
+int
 stmt_eval(struct bt_stmt *bs, struct dt_evt *dtev)
 {
+	int halt = 0;
+
 	switch (bs->bs_act) {
 	case B_AC_BUCKETIZE:
 		stmt_bucketize(bs, dtev);
@@ -816,7 +843,7 @@ stmt_eval(struct bt_stmt *bs, struct dt_evt *dtev)
 		stmt_delete(bs, dtev);
 		break;
 	case B_AC_EXIT:
-		exit(0);
+		halt = 1;
 		break;
 	case B_AC_INSERT:
 		stmt_insert(bs, dtev);
@@ -842,6 +869,7 @@ stmt_eval(struct bt_stmt *bs, struct dt_evt *dtev)
 	default:
 		xabort("no handler for action type %d", bs->bs_act);
 	}
+	return halt;
 }
 
 /*
@@ -1061,6 +1089,7 @@ stmt_store(struct bt_stmt *bs, struct dt_evt *dtev)
 {
 	struct bt_arg *ba = SLIST_FIRST(&bs->bs_args);
 	struct bt_var *bvar, *bv = bs->bs_var;
+	struct map *map;
 
 	assert(SLIST_NEXT(ba, ba_next) == NULL);
 
@@ -1078,18 +1107,34 @@ stmt_store(struct bt_stmt *bs, struct dt_evt *dtev)
 		bv->bv_type = bvar->bv_type;
 		bv->bv_value = bvar->bv_value;
 		break;
+	case B_AT_MAP:
+		bvar = ba->ba_value;
+		map = (struct map *)bvar->bv_value;
+		/* Uninitialized map */
+		if (map == NULL)
+			bv->bv_value = 0;
+		else
+			bv->bv_value = map_get(map, ba2hash(ba->ba_key, dtev));
+		bv->bv_type = B_VT_LONG; /* XXX should we type map? */
+		break;
 	case B_AT_TUPLE:
 		bv->bv_value = baeval(ba, dtev);
 		bv->bv_type = B_VT_TUPLE;
 		break;
 	case B_AT_BI_PID:
 	case B_AT_BI_TID:
+	case B_AT_BI_CPU:
 	case B_AT_BI_NSECS:
+	case B_AT_BI_RETVAL:
 	case B_AT_BI_ARG0 ... B_AT_BI_ARG9:
 	case B_AT_OP_PLUS ... B_AT_OP_LOR:
 		bv->bv_value = baeval(ba, dtev);
 		bv->bv_type = B_VT_LONG;
 		break;
+	case B_AT_BI_COMM:
+	case B_AT_BI_KSTACK:
+	case B_AT_BI_USTACK:
+	case B_AT_BI_PROBE:
 	case B_AT_FN_STR:
 		bv->bv_value = baeval(ba, dtev);
 		bv->bv_type = B_VT_STR;
@@ -1416,6 +1461,9 @@ baexpr2long(struct bt_arg *ba, struct dt_evt *dtev)
 	case B_AT_OP_DIVIDE:
 		result = lval / rval;
 		break;
+	case B_AT_OP_MODULO:
+		result = lval % rval;
+		break;
 	case B_AT_OP_BAND:
 		result = lval & rval;
 		break;
@@ -1526,6 +1574,8 @@ ba_name(struct bt_arg *ba)
 		return "*";
 	case B_AT_OP_DIVIDE:
 		return "/";
+	case B_AT_OP_MODULO:
+		return "%";
 	case B_AT_OP_BAND:
 		return "&";
 	case B_AT_OP_XOR:
@@ -1590,6 +1640,9 @@ ba2long(struct bt_arg *ba, struct dt_evt *dtev)
 	long val;
 
 	switch (ba->ba_type) {
+	case B_AT_STR:
+		val = (*ba2str(ba, dtev) == '\0') ? 0 : 1;
+		break;
 	case B_AT_LONG:
 		val = (long)ba->ba_value;
 		break;
@@ -1603,7 +1656,7 @@ ba2long(struct bt_arg *ba, struct dt_evt *dtev)
 		if (bv->bv_value == NULL)
 			return 0;
 		val = ba2long(map_get((struct map *)bv->bv_value,
-		    ba2str(ba->ba_key, dtev)), dtev);
+		    ba2hash(ba->ba_key, dtev)), dtev);
 		break;
 	case B_AT_NIL:
 		val = 0L;
@@ -1739,7 +1792,7 @@ ba2str(struct bt_arg *ba, struct dt_evt *dtev)
 			break;
 		}
 		str = ba2str(map_get((struct map *)bv->bv_value,
-		    ba2str(ba->ba_key, dtev)), dtev);
+		    ba2hash(ba->ba_key, dtev)), dtev);
 		break;
 	case B_AT_VAR:
 		str = ba2str(ba_read(ba), dtev);
@@ -1764,6 +1817,58 @@ ba2str(struct bt_arg *ba, struct dt_evt *dtev)
 	return str;
 }
 
+int
+ba2flags(struct bt_arg *ba)
+{
+	int flags = 0;
+
+	assert(ba->ba_type != B_AT_MAP);
+	assert(ba->ba_type != B_AT_TUPLE);
+
+	switch (ba->ba_type) {
+	case B_AT_STR:
+	case B_AT_LONG:
+	case B_AT_TMEMBER:
+	case B_AT_VAR:
+	case B_AT_HIST:
+	case B_AT_NIL:
+		break;
+	case B_AT_BI_KSTACK:
+		flags |= DTEVT_KSTACK;
+		break;
+	case B_AT_BI_USTACK:
+		flags |= DTEVT_USTACK;
+		break;
+	case B_AT_BI_COMM:
+		flags |= DTEVT_EXECNAME;
+		break;
+	case B_AT_BI_CPU:
+	case B_AT_BI_PID:
+	case B_AT_BI_TID:
+	case B_AT_BI_NSECS:
+		break;
+	case B_AT_BI_ARG0 ... B_AT_BI_ARG9:
+		flags |= DTEVT_FUNCARGS;
+		break;
+	case B_AT_BI_RETVAL:
+	case B_AT_BI_PROBE:
+		break;
+	case B_AT_MF_COUNT:
+	case B_AT_MF_MAX:
+	case B_AT_MF_MIN:
+	case B_AT_MF_SUM:
+	case B_AT_FN_STR:
+		break;
+	case B_AT_OP_PLUS ... B_AT_OP_LOR:
+		flags |= ba2dtflags(ba->ba_value);
+		break;
+	default:
+		xabort("invalid argument type %d", ba->ba_type);
+	}
+
+	return flags;
+}
+
 /*
  * Return dt(4) flags indicating which data should be recorded by the
  * kernel, if any, for a given `ba'.
@@ -1780,51 +1885,15 @@ ba2dtflags(struct bt_arg *ba)
 
 	do {
 		if (ba->ba_type == B_AT_MAP)
-			bval = ba->ba_key;
-		else
-			bval = ba;
+			flags |= ba2flags(ba->ba_key);
+		else if (ba->ba_type == B_AT_TUPLE) {
+			bval = ba->ba_value;
+			do {
+				flags |= ba2flags(bval);
+			} while ((bval = SLIST_NEXT(bval, ba_next)) != NULL);
+		} else
+			flags |= ba2flags(ba);
 
-		switch (bval->ba_type) {
-		case B_AT_STR:
-		case B_AT_LONG:
-		case B_AT_TUPLE:
-		case B_AT_TMEMBER:
-		case B_AT_VAR:
-	    	case B_AT_HIST:
-		case B_AT_NIL:
-			break;
-		case B_AT_BI_KSTACK:
-			flags |= DTEVT_KSTACK;
-			break;
-		case B_AT_BI_USTACK:
-			flags |= DTEVT_USTACK;
-			break;
-		case B_AT_BI_COMM:
-			flags |= DTEVT_EXECNAME;
-			break;
-		case B_AT_BI_CPU:
-		case B_AT_BI_PID:
-		case B_AT_BI_TID:
-		case B_AT_BI_NSECS:
-			break;
-		case B_AT_BI_ARG0 ... B_AT_BI_ARG9:
-			flags |= DTEVT_FUNCARGS;
-			break;
-		case B_AT_BI_RETVAL:
-		case B_AT_BI_PROBE:
-			break;
-		case B_AT_MF_COUNT:
-		case B_AT_MF_MAX:
-		case B_AT_MF_MIN:
-		case B_AT_MF_SUM:
-		case B_AT_FN_STR:
-			break;
-		case B_AT_OP_PLUS ... B_AT_OP_LOR:
-			flags |= ba2dtflags(bval->ba_value);
-			break;
-		default:
-			xabort("invalid argument type %d", bval->ba_type);
-		}
 	} while ((ba = SLIST_NEXT(ba, ba_next)) != NULL);
 
 	--recursions;
@@ -1835,6 +1904,7 @@ ba2dtflags(struct bt_arg *ba)
 long
 bacmp(struct bt_arg *a, struct bt_arg *b)
 {
+	char astr[STRLEN];
 	long val;
 
 	if (a->ba_type != b->ba_type)
@@ -1844,9 +1914,12 @@ bacmp(struct bt_arg *a, struct bt_arg *b)
 	case B_AT_LONG:
 		return ba2long(a, NULL) - ba2long(b, NULL);
 	case B_AT_STR:
-		return strcmp(ba2str(a, NULL), ba2str(b, NULL));
+		strlcpy(astr, ba2str(a, NULL), sizeof(astr));
+		return strcmp(astr, ba2str(b, NULL));
 	case B_AT_TUPLE:
 		/* Compare two lists of arguments one by one. */
+		a = a->ba_value;
+		b = b->ba_value;
 		do {
 			val = bacmp(a, b);
 			if (val != 0)

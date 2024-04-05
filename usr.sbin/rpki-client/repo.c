@@ -1,4 +1,4 @@
-/*	$OpenBSD: repo.c,v 1.51 2023/07/20 05:18:31 claudio Exp $ */
+/*	$OpenBSD: repo.c,v 1.54 2024/02/26 15:40:33 job Exp $ */
 /*
  * Copyright (c) 2021 Claudio Jeker <claudio@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -1404,6 +1404,18 @@ repo_check_timeout(int timeout)
 }
 
 /*
+ * Update repo-specific stats when files are going to be moved
+ * from DIR_TEMP to DIR_VALID.
+ */
+void
+repostats_new_files_inc(struct repo *rp, const char *file)
+{
+	if (strncmp(file, ".rsync/", strlen(".rsync/")) == 0 ||
+	    strncmp(file, ".rrdp/", strlen(".rrdp/")) == 0)
+		rp->repostats.new_files++;
+}
+
+/*
  * Update stats object of repository depending on rtype and subtype.
  */
 void
@@ -1428,8 +1440,6 @@ repo_stat_inc(struct repo *rp, int talid, enum rtype type, enum stype subtype)
 			rp->stats[talid].mfts++;
 		if (subtype == STYPE_FAIL)
 			rp->stats[talid].mfts_fail++;
-		if (subtype == STYPE_STALE)
-			rp->stats[talid].mfts_stale++;
 		break;
 	case RTYPE_ROA:
 		switch (subtype) {
@@ -1477,6 +1487,30 @@ repo_stat_inc(struct repo *rp, int talid, enum rtype type, enum stype subtype)
 			break;
 		case STYPE_PROVIDERS:
 			rp->stats[talid].vaps_pas++;
+			break;
+		default:
+			break;
+		}
+		break;
+	case RTYPE_SPL:
+		switch (subtype) {
+		case STYPE_OK:
+			rp->stats[talid].spls++;
+			break;
+		case STYPE_FAIL:
+			rp->stats[talid].spls_fail++;
+			break;
+		case STYPE_INVALID:
+			rp->stats[talid].spls_invalid++;
+			break;
+		case STYPE_TOTAL:
+			rp->stats[talid].vsps++;
+			break;
+		case STYPE_UNIQUE:
+			rp->stats[talid].vsps_uniqs++;
+			break;
+		case STYPE_DEC_UNIQUE:
+			rp->stats[talid].vsps_uniqs--;
 			break;
 		default:
 			break;

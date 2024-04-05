@@ -1,4 +1,4 @@
-/*	$OpenBSD: bt_parse.y,v 1.53 2023/09/11 19:01:26 mpi Exp $	*/
+/*	$OpenBSD: bt_parse.y,v 1.59 2024/02/12 15:11:06 mpi Exp $	*/
 
 /*
  * Copyright (c) 2019-2023 Martin Pieuchot <mpi@openbsd.org>
@@ -34,6 +34,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <err.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -122,15 +123,15 @@ static int 	 beflag = 0;		/* BEGIN/END parsing context flag */
 /* Functions and Map operators */
 %token  <v.i>		F_DELETE F_PRINT
 %token	<v.i>		MFUNC FUNC0 FUNC1 FUNCN OP1 OP2 OP4 MOP0 MOP1
-%token	<v.string>	STRING CSTRING
+%token	<v.string>	STRING CSTRING GVAR LVAR
+%token	<v.arg>		PVAR PNUM
 %token	<v.number>	NUMBER
 
-%type	<v.string>	gvar lvar
 %type	<v.i>		beginend
 %type	<v.probe>	plist probe pname
 %type	<v.filter>	filter
 %type	<v.stmt>	action stmt stmtblck stmtlist block
-%type	<v.arg>		vargs mentry mpat pargs staticv
+%type	<v.arg>		vargs mentry mpat pargs
 %type	<v.arg>		expr term fterm variable factor func
 %%
 
@@ -157,18 +158,7 @@ pname	: STRING ':' STRING ':' STRING	{ $$ = bp_new($1, $3, $5, 0); }
 	| STRING ':' HZ ':' NUMBER	{ $$ = bp_new($1, "hz", NULL, $5); }
 	;
 
-staticv	: '$' NUMBER			{ $$ = get_varg($2); }
-	| '$' '#'			{ $$ = get_nargs(); }
-	;
-
-gvar	: '@' STRING			{ $$ = $2; }
-	| '@'				{ $$ = UNNAMED_MAP; }
-	;
-
-lvar	: '$' STRING			{ $$ = $2; }
-	;
-
-mentry	: gvar '[' vargs ']'		{ $$ = bm_find($1, $3); }
+mentry	: GVAR '[' vargs ']'		{ $$ = bm_find($1, $3); }
 	;
 
 mpat	: MOP0 '(' ')'			{ $$ = ba_new(NULL, $1); }
@@ -184,7 +174,7 @@ filter	: /* empty */			{ $$ = NULL; }
  * Give higher precedence to:
  *  1. && and ||
  *  2. ==, !=, <<, <, >=, >, +, =, &, ^, |
- *  3. * and /
+ *  3. *, /, %
  */
 expr	: expr OP_LAND term	{ $$ = ba_op(B_AT_OP_LAND, $1, $3); }
 	| expr OP_LOR term	{ $$ = ba_op(B_AT_OP_LOR, $1, $3); }
@@ -207,11 +197,12 @@ term	: term OP_EQ fterm	{ $$ = ba_op(B_AT_OP_EQ, $1, $3); }
 
 fterm	: fterm '*' factor	{ $$ = ba_op(B_AT_OP_MULT, $1, $3); }
 	| fterm '/' factor	{ $$ = ba_op(B_AT_OP_DIVIDE, $1, $3); }
+	| fterm '%' factor	{ $$ = ba_op(B_AT_OP_MODULO, $1, $3); }
 	| factor
 	;
 
-variable: lvar			{ $$ = bl_find($1); }
-	| gvar			{ $$ = bg_find($1); }
+variable: LVAR			{ $$ = bl_find($1); }
+	| GVAR			{ $$ = bg_find($1); }
 	| variable '.' NUMBER	{ $$ = bi_find($1, $3); }
 	;
 
@@ -220,14 +211,15 @@ factor : '(' expr ')'		{ $$ = $2; }
 	| NUMBER		{ $$ = ba_new($1, B_AT_LONG); }
 	| BUILTIN		{ $$ = ba_new(NULL, $1); }
 	| CSTRING		{ $$ = ba_new($1, B_AT_STR); }
-	| staticv
+	| PVAR
+	| PNUM
 	| variable
 	| mentry
 	| func
 	;
 
-func	: STR '(' staticv ')'		{ $$ = ba_new($3, B_AT_FN_STR); }
-	| STR '(' staticv ',' expr ')'	{ $$ = ba_op(B_AT_FN_STR, $3, $5); }
+func	: STR '(' PVAR ')'		{ $$ = ba_new($3, B_AT_FN_STR); }
+	| STR '(' PVAR ',' expr ')'	{ $$ = ba_op(B_AT_FN_STR, $3, $5); }
 	;
 
 vargs	: expr
@@ -235,7 +227,7 @@ vargs	: expr
 	;
 
 pargs	: expr
-	| gvar ',' expr			{ $$ = ba_append(bg_find($1), $3); }
+	| GVAR ',' expr			{ $$ = ba_append(bg_find($1), $3); }
 	;
 
 NL	: /* empty */
@@ -243,17 +235,17 @@ NL	: /* empty */
 	;
 
 stmt	: ';' NL			{ $$ = NULL; }
-	| gvar '=' expr			{ $$ = bg_store($1, $3); }
-	| lvar '=' expr			{ $$ = bl_store($1, $3); }
-	| gvar '[' vargs ']' '=' mpat	{ $$ = bm_insert($1, $3, $6); }
+	| GVAR '=' expr			{ $$ = bg_store($1, $3); }
+	| LVAR '=' expr			{ $$ = bl_store($1, $3); }
+	| GVAR '[' vargs ']' '=' mpat	{ $$ = bm_insert($1, $3, $6); }
 	| FUNCN '(' vargs ')'		{ $$ = bs_new($1, $3, NULL); }
 	| FUNC1 '(' expr ')'		{ $$ = bs_new($1, $3, NULL); }
 	| MFUNC '(' variable ')'	{ $$ = bs_new($1, $3, NULL); }
 	| FUNC0 '(' ')'			{ $$ = bs_new($1, NULL, NULL); }
 	| F_DELETE '(' mentry ')'	{ $$ = bm_op($1, $3, NULL); }
 	| F_PRINT '(' pargs ')'		{ $$ = bs_new($1, $3, NULL); }
-	| gvar '=' OP1 '(' expr ')'	{ $$ = bh_inc($1, $5, NULL); }
-	| gvar '=' OP4 '(' expr ',' vargs ')'	{ $$ = bh_inc($1, $5, $7); }
+	| GVAR '=' OP1 '(' expr ')'	{ $$ = bh_inc($1, $5, NULL); }
+	| GVAR '=' OP4 '(' expr ',' vargs ')'	{ $$ = bh_inc($1, $5, $7); }
 	;
 
 stmtblck: IF '(' expr ')' block			{ $$ = bt_new($3, $5); }
@@ -283,7 +275,7 @@ get_varg(int index)
 	const char *errstr = NULL;
 	long val;
 
-	if (0 < index && index <= nargs) {
+	if (1 <= index && index <= nargs) {
 		val = (long)strtonum(vargs[index-1], LONG_MIN, LONG_MAX,
 		    &errstr);
 		if (errstr == NULL)
@@ -619,6 +611,9 @@ bm_insert(const char *mname, struct bt_arg *mkey, struct bt_arg *mval)
 {
 	struct bt_arg *ba;
 
+	if (mkey->ba_type == B_AT_TUPLE)
+		yyerror("tuple cannot be used as map key");
+
 	ba = ba_new(bg_get(mname), B_AT_MAP);
 	ba->ba_key = mkey;
 
@@ -775,6 +770,19 @@ lungetc(void)
 	}
 }
 
+static inline int
+allowed_to_end_number(int x)
+{
+	return (isspace(x) || x == ')' || x == '/' || x == '{' || x == ';' ||
+	    x == ']' || x == ',' || x == '=');
+}
+
+static inline int
+allowed_in_string(int x)
+{
+	return (isalnum(x) || x == '_');
+}
+
 int
 yylex(void)
 {
@@ -870,6 +878,76 @@ again:
 	case ':':
 	case ';':
 		return c;
+	case '$':
+		c = lgetc();
+		if (c == '#') {
+			yylval.v.arg = get_nargs();
+			return PNUM;
+		} else if (isdigit(c)) {
+			do {
+				*p++ = c;
+				if (p == ebuf) {
+					yyerror("line too long");
+					return ERROR;
+				}
+			} while ((c = lgetc()) != EOF && isdigit(c));
+			lungetc();
+			*p = '\0';
+			if (c == EOF || allowed_to_end_number(c)) {
+				const char *errstr = NULL;
+				int num;
+
+				num = strtonum(buf, 1, INT_MAX, &errstr);
+				if (errstr) {
+					yyerror("'$%s' is %s", buf, errstr);
+					return ERROR;
+				}
+
+				yylval.v.arg = get_varg(num);
+				return PVAR;
+			}
+		} else if (isalpha(c)) {
+			do {
+				*p++ = c;
+				if (p == ebuf) {
+					yyerror("line too long");
+					return ERROR;
+				}
+			} while ((c = lgetc()) != EOF && allowed_in_string(c));
+			lungetc();
+			*p = '\0';
+			if ((yylval.v.string = strdup(buf)) == NULL)
+				err(1, "%s", __func__);
+			return LVAR;
+		}
+		yyerror("'$%s%c' is an invalid variable name", buf, c);
+		return ERROR;
+		break;
+	case '@':
+		c = lgetc();
+		/* check for unnamed map '@' */
+		if (isalpha(c)) {
+			do {
+				*p++ = c;
+				if (p == ebuf) {
+					yyerror("line too long");
+					return ERROR;
+				}
+			} while ((c = lgetc()) != EOF && allowed_in_string(c));
+			lungetc();
+			*p = '\0';
+			if ((yylval.v.string = strdup(buf)) == NULL)
+				err(1, "%s", __func__);
+			return GVAR;
+		} else if (allowed_to_end_number(c) || c == '[') {
+			lungetc();
+			*p = '\0';
+			yylval.v.string = UNNAMED_MAP;
+			return GVAR;
+		}
+		yyerror("'@%s%c' is an invalid variable name", buf, c);
+		return ERROR;
+		break;
 	case EOF:
 		return 0;
 	case '"':
@@ -896,7 +974,7 @@ again:
 			}
 			*p++ = c;
 			if (p == ebuf) {
-				yyerror("too long line");
+				yyerror("line too long");
 				return ERROR;
 			}
 		}
@@ -913,28 +991,28 @@ again:
 		break;
 	}
 
-#define allowed_to_end_number(x) \
-    (isspace(x) || x == ')' || x == '/' || x == '{' || x == ';' || x == ']' || x == ',')
-
 	/* parsing number */
 	if (isdigit(c)) {
 		do {
 			*p++ = c;
 			if (p == ebuf) {
-				yyerror("too long line");
+				yyerror("line too long");
 				return ERROR;
 			}
-		} while ((c = lgetc()) != EOF && isdigit(c));
+		} while ((c = lgetc()) != EOF &&
+		    (isxdigit(c) || c == 'x' || c == 'X'));
 		lungetc();
 		if (c == EOF || allowed_to_end_number(c)) {
-			const char *errstr = NULL;
-
 			*p = '\0';
-			yylval.v.number = strtonum(buf, LONG_MIN, LONG_MAX,
-			    &errstr);
-			if (errstr) {
-				yyerror("invalid number '%s' (%s)", buf,
-				    errstr);
+			errno = 0;
+			yylval.v.number = strtol(buf, NULL, 0);
+			if (errno == ERANGE) {
+				/*
+				 * Characters are already validated, so only
+				 * check ERANGE.
+				 */
+				yyerror("%sflow", (yylval.v.number == LONG_MIN)
+				    ? "under" : "over");
 				return ERROR;
 			}
 			return NUMBER;
@@ -947,15 +1025,13 @@ again:
 		}
 	}
 
-#define allowed_in_string(x) (isalnum(c) || c == '_')
-
 	/* parsing next word */
 	if (allowed_in_string(c)) {
 		struct keyword *kwp;
 		do {
 			*p++ = c;
 			if (p == ebuf) {
-				yyerror("too long line");
+				yyerror("line too long");
 				return ERROR;
 			}
 		} while ((c = lgetc()) != EOF && (allowed_in_string(c)));

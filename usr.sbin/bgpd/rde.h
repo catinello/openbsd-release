@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.296 2023/08/16 08:26:35 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.299 2024/01/24 14:51:12 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -92,6 +92,7 @@ struct rde_peer {
 	time_t				 staletime[AID_MAX];
 	uint32_t			 remote_bgpid; /* host byte order! */
 	uint32_t			 path_id_tx;
+	unsigned int			 local_if_scope;
 	enum peer_state			 state;
 	enum export_type		 export_type;
 	enum role			 role;
@@ -166,13 +167,6 @@ struct attr {
 	uint16_t			 len;
 	uint8_t				 flags;
 	uint8_t				 type;
-};
-
-struct mpattr {
-	void		*reach;
-	void		*unreach;
-	uint16_t	 reach_len;
-	uint16_t	 unreach_len;
 };
 
 struct rde_community {
@@ -340,7 +334,7 @@ void		mrt_dump_upcall(struct rib_entry *, void *);
 
 /* rde.c */
 void		 rde_update_err(struct rde_peer *, uint8_t , uint8_t,
-		    void *, uint16_t);
+		    struct ibuf *);
 void		 rde_update_log(const char *, uint16_t,
 		    const struct rde_peer *, const struct bgpd_addr *,
 		    const struct bgpd_addr *, uint8_t);
@@ -441,10 +435,9 @@ int	community_set(struct rde_community *, struct community *,
 void	community_delete(struct rde_community *, struct community *,
 	    struct rde_peer *);
 
-int	community_add(struct rde_community *, int, void *, size_t);
-int	community_large_add(struct rde_community *, int, void *, size_t);
-int	community_ext_add(struct rde_community *, int, int, void *, size_t);
-
+int	community_add(struct rde_community *, int, struct ibuf *);
+int	community_large_add(struct rde_community *, int, struct ibuf *);
+int	community_ext_add(struct rde_community *, int, int, struct ibuf *);
 int	community_writebuf(struct rde_community *, uint8_t, int, struct ibuf *);
 
 void			 communities_shutdown(void);

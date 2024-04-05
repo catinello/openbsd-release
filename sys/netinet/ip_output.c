@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip_output.c,v 1.390 2023/07/07 08:05:02 bluhm Exp $	*/
+/*	$OpenBSD: ip_output.c,v 1.396 2024/02/22 14:25:58 bluhm Exp $	*/
 /*	$NetBSD: ip_output.c,v 1.28 1996/02/13 23:43:07 christos Exp $	*/
 
 /*
@@ -84,7 +84,7 @@ void ip_mloopback(struct ifnet *, struct mbuf *, struct sockaddr_in *);
 static u_int16_t in_cksum_phdr(u_int32_t, u_int32_t, u_int32_t);
 void in_delayed_cksum(struct mbuf *);
 
-int ip_output_ipsec_lookup(struct mbuf *m, int hlen, struct inpcb *inp,
+int ip_output_ipsec_lookup(struct mbuf *m, int hlen, const u_char seclevel[],
     struct tdb **, int ipsecflowinfo);
 void ip_output_ipsec_pmtu_update(struct tdb *, struct route *, struct in_addr,
     int, int);
@@ -98,7 +98,7 @@ int ip_output_ipsec_send(struct tdb *, struct mbuf *, struct route *, int);
  */
 int
 ip_output(struct mbuf *m, struct mbuf *opt, struct route *ro, int flags,
-    struct ip_moptions *imo, struct inpcb *inp, u_int32_t ipsecflowinfo)
+    struct ip_moptions *imo, const u_char seclevel[], u_int32_t ipsecflowinfo)
 {
 	struct ip *ip;
 	struct ifnet *ifp = NULL;
@@ -114,11 +114,6 @@ ip_output(struct mbuf *m, struct mbuf *opt, struct route *ro, int flags,
 #endif
 
 	NET_ASSERT_LOCKED();
-
-#ifdef IPSEC
-	if (inp && (inp->inp_flags & INP_IPV6) != 0)
-		panic("ip_output: IPv6 pcb is passed");
-#endif /* IPSEC */
 
 #ifdef	DIAGNOSTIC
 	if ((m->m_flags & M_PKTHDR) == 0)
@@ -164,28 +159,15 @@ reroute:
 	 */
 	if (ro == NULL) {
 		ro = &iproute;
-		memset(ro, 0, sizeof(*ro));
+		ro->ro_rt = NULL;
 	}
-
-	dst = satosin(&ro->ro_dst);
 
 	/*
 	 * If there is a cached route, check that it is to the same
 	 * destination and is still up.  If not, free it and try again.
 	 */
-	if (!rtisvalid(ro->ro_rt) ||
-	    dst->sin_addr.s_addr != ip->ip_dst.s_addr ||
-	    ro->ro_tableid != m->m_pkthdr.ph_rtableid) {
-		rtfree(ro->ro_rt);
-		ro->ro_rt = NULL;
-	}
-
-	if (ro->ro_rt == NULL) {
-		dst->sin_family = AF_INET;
-		dst->sin_len = sizeof(*dst);
-		dst->sin_addr = ip->ip_dst;
-		ro->ro_tableid = m->m_pkthdr.ph_rtableid;
-	}
+	route_cache(ro, &ip->ip_dst, &ip->ip_src, m->m_pkthdr.ph_rtableid);
+	dst = &ro->ro_dstsin;
 
 	if ((IN_MULTICAST(ip->ip_dst.s_addr) ||
 	    (ip->ip_dst.s_addr == INADDR_BROADCAST)) &&
@@ -203,7 +185,7 @@ reroute:
 		struct in_ifaddr *ia;
 
 		if (ro->ro_rt == NULL)
-			ro->ro_rt = rtalloc_mpath(&ro->ro_dst,
+			ro->ro_rt = rtalloc_mpath(&ro->ro_dstsa,
 			    &ip->ip_src.s_addr, ro->ro_tableid);
 
 		if (ro->ro_rt == NULL) {
@@ -240,9 +222,9 @@ reroute:
 	}
 
 #ifdef IPSEC
-	if (ipsec_in_use || inp != NULL) {
+	if (ipsec_in_use || seclevel != NULL) {
 		/* Do we have any pending SAs to apply ? */
-		error = ip_output_ipsec_lookup(m, hlen, inp, &tdb,
+		error = ip_output_ipsec_lookup(m, hlen, seclevel, &tdb,
 		    ipsecflowinfo);
 		if (error) {
 			/* Should silently drop packet */
@@ -271,7 +253,7 @@ reroute:
 		 * still points to the address in "ro".  (It may have been
 		 * changed to point to a gateway address, above.)
 		 */
-		dst = satosin(&ro->ro_dst);
+		dst = &ro->ro_dstsin;
 
 		/*
 		 * See if the caller provided any multicast options
@@ -473,7 +455,7 @@ sendit:
 			rtfree(ro->ro_rt);
 			ro->ro_tableid = orig_rtableid;
 			ro->ro_rt = icmp_mtudisc_clone(
-			    satosin(&ro->ro_dst)->sin_addr, ro->ro_tableid, 0);
+			    ro->ro_dstsin.sin_addr, ro->ro_tableid, 0);
 		}
 #endif
 		/*
@@ -514,7 +496,7 @@ bad:
 
 #ifdef IPSEC
 int
-ip_output_ipsec_lookup(struct mbuf *m, int hlen, struct inpcb *inp,
+ip_output_ipsec_lookup(struct mbuf *m, int hlen, const u_char seclevel[],
     struct tdb **tdbout, int ipsecflowinfo)
 {
 	struct m_tag *mtag;
@@ -527,7 +509,7 @@ ip_output_ipsec_lookup(struct mbuf *m, int hlen, struct inpcb *inp,
 	if (ipsecflowinfo)
 		ids = ipsp_ids_lookup(ipsecflowinfo);
 	error = ipsp_spd_lookup(m, AF_INET, hlen, IPSP_DIRECTION_OUT,
-	    NULL, inp, &tdb, ids);
+	    NULL, seclevel, &tdb, ids);
 	ipsp_ids_free(ids);
 	if (error || tdb == NULL) {
 		*tdbout = NULL;
@@ -576,7 +558,8 @@ ip_output_ipsec_pmtu_update(struct tdb *tdb, struct route *ro,
 		rt->rt_mtu = tdb->tdb_mtu;
 		if (ro != NULL && ro->ro_rt != NULL) {
 			rtfree(ro->ro_rt);
-			ro->ro_rt = rtalloc(&ro->ro_dst, RT_RESOLVE, rtableid);
+			ro->ro_rt = rtalloc(&ro->ro_dstsa, RT_RESOLVE,
+			    rtableid);
 		}
 		if (rt_mtucloned)
 			rtfree(rt);
@@ -1082,17 +1065,7 @@ ip_ctloutput(int op, struct socket *so, int level, int optname,
 			if (rtableid != rtid && rtableid != 0 &&
 			    (error = suser(p)) != 0)
 				break;
-			/* table must exist */
-			if (!rtable_exists(rtid)) {
-				error = EINVAL;
-				break;
-			}
-			if (inp->inp_lport) {
-				error = EBUSY;
-				break;
-			}
-			inp->inp_rtableid = rtid;
-			in_pcbrehash(inp);
+			error = in_pcbset_rtableid(inp, rtid);
 			break;
 		case IP_PIPEX:
 			if (m != NULL && m->m_len == sizeof(int))

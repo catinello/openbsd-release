@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.245 2023/05/31 16:51:46 op Exp $	*/
+/*	$OpenBSD: mta.c,v 1.247 2024/01/03 08:11:15 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -809,11 +809,8 @@ mta_handle_envelope(struct envelope *evp, const char *smarthost)
 	if (strcmp(buf, e->dest))
 		e->rcpt = xstrdup(buf);
 	e->task = task;
-	if (evp->dsn_orcpt.user[0] && evp->dsn_orcpt.domain[0]) {
-		(void)snprintf(buf, sizeof buf, "%s@%s",
-	    	    evp->dsn_orcpt.user, evp->dsn_orcpt.domain);
-		e->dsn_orcpt = xstrdup(buf);
-	}
+	if (evp->dsn_orcpt[0] != '\0')
+		e->dsn_orcpt = xstrdup(evp->dsn_orcpt);
 	(void)strlcpy(e->dsn_envid, evp->dsn_envid,
 	    sizeof e->dsn_envid);
 	e->dsn_notify = evp->dsn_notify;
@@ -1087,6 +1084,10 @@ mta_on_mx(void *tag, void *arg, void *data)
 			relay->failstr = "Host not found";
 		else
 			relay->failstr = "No MX found for domain";
+		break;
+	case DNS_NULLMX:
+		relay->fail = IMSG_MTA_DELIVERY_PERMFAIL;
+		relay->failstr = "Domain does not accept mail";
 		break;
 	default:
 		fatalx("bad DNS lookup error code");

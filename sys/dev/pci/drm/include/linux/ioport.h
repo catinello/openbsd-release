@@ -5,6 +5,8 @@
 
 #include <linux/types.h>
 
+#define IORESOURCE_MEM	0x0001
+
 struct resource {
 	u_long	start;
 	u_long	end;
@@ -17,7 +19,7 @@ resource_size(const struct resource *r)
 }
 
 #define DEFINE_RES_MEM(_start, _size)		\
-	{					\
+(struct resource) {				\
 		.start = (_start),		\
 		.end = (_start) + (_size) - 1,	\
 	}

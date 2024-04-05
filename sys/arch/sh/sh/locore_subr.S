@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore_subr.S,v 1.16 2023/08/14 07:40:08 miod Exp $	*/
+/*	$OpenBSD: locore_subr.S,v 1.19 2023/12/12 07:37:21 deraadt Exp $	*/
 /*	$NetBSD: locore_subr.S,v 1.28 2006/01/23 22:52:09 uwe Exp $	*/
 
 /*
@@ -45,7 +45,7 @@
 
 #include "assym.h"
 
-#include <sys/syscall.h>	/* SYS_sigreturn, SYS_exit */
+#include <sys/syscall.h>	/* SYS_sigreturn */
 #include <sh/asm.h>
 #include <sh/locore.h>
 #include <sh/param.h>		/* UPAGES */
@@ -471,10 +471,15 @@ NENTRY(_cpu_spin)
  *	respectively. set by cpu_fork().
  */
 NENTRY(proc_trampoline)
+	mov.l	.L_proc_trampoline_mi, r1
+	jsr	@r1			/* proc_trampoline_mi() */
+	 nop
 	jsr	@r12
 	 mov	r11,	r4
 	__EXCEPTION_RETURN
 	/* NOTREACHED */
+.L_proc_trampoline_mi:
+	.long	proc_trampoline_mi
 	SET_ENTRY_SIZE(proc_trampoline)
 
 
@@ -492,16 +497,16 @@ NENTRY(proc_trampoline)
 NENTRY(sigcode)
 	mov	r15, r4			/* get pointer to sigcontext */
 	mov.l	.L_SYS_sigreturn, r0
+	.globl	sigcodecall
+sigcodecall:
 	trapa	#0x80			/* and call sigreturn() */
 	.globl	sigcoderet
 sigcoderet:
-	mov.l	.L_SYS_exit, r0
-	trapa	#0x80			/* exit if sigreturn fails */
+	sleep		/* privileged -> illegal? */
 	/* NOTREACHED */
 
 	.align	2
 .L_SYS_sigreturn:	.long	SYS_sigreturn
-.L_SYS_exit:		.long	SYS_exit
 
 /* LINTSTUB: Var: char esigcode[1] */
 .globl	esigcode

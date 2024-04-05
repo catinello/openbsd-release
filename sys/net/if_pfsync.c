@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_pfsync.c,v 1.322 2023/10/03 10:22:10 sthen Exp $	*/
+/*	$OpenBSD: if_pfsync.c,v 1.325 2024/02/13 12:22:09 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2002 Michael Shalayeff
@@ -69,6 +69,7 @@
 #include <net/if_types.h>
 #include <net/bpf.h>
 #include <net/netisr.h>
+#include <net/route.h>
 
 #include <netinet/in.h>
 #include <netinet/if_ether.h>

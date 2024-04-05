@@ -1,4 +1,4 @@
-/*	$OpenBSD: socketvar.h,v 1.120 2023/07/04 22:28:24 mvs Exp $	*/
+/*	$OpenBSD: socketvar.h,v 1.124 2024/02/12 22:48:27 mvs Exp $	*/
 /*	$NetBSD: socketvar.h,v 1.18 1996/02/09 18:25:38 christos Exp $	*/
 
 /*-
@@ -40,6 +40,7 @@
 #include <sys/sigio.h>				/* for struct sigio_ref */
 #include <sys/task.h>
 #include <sys/timeout.h>
+#include <sys/mutex.h>
 #include <sys/rwlock.h>
 #include <sys/refcnt.h>
 
@@ -105,6 +106,7 @@ struct socket {
  * Variables for socket buffering.
  */
 	struct	sockbuf {
+		struct mutex sb_mtx;
 /* The following fields are all zeroed on flush. */
 #define	sb_startzero	sb_cc
 		u_long	sb_cc;		/* actual chars in buffer */
@@ -132,6 +134,7 @@ struct socket {
 #define	SB_ASYNC	0x10		/* ASYNC I/O, need signals */
 #define	SB_SPLICE	0x20		/* buffer is splice source or drain */
 #define	SB_NOINTR	0x40		/* operations not interruptible */
+#define SB_MTXLOCK	0x80		/* use sb_mtx for sockbuf protection */
 
 	void	(*so_upcall)(struct socket *so, caddr_t arg, int waitf);
 	caddr_t	so_upcallarg;		/* Arg for above */
@@ -174,6 +177,7 @@ struct socket {
 #include <lib/libkern/libkern.h>
 
 void	soassertlocked(struct socket *);
+void	soassertlocked_readonly(struct socket *);
 
 static inline void
 soref(struct socket *so)
@@ -194,15 +198,38 @@ sorele(struct socket *so)
 #define isspliced(so)		((so)->so_sp && (so)->so_sp->ssp_socket)
 #define issplicedback(so)	((so)->so_sp && (so)->so_sp->ssp_soback)
 
+static inline void
+sb_mtx_lock(struct sockbuf *sb)
+{
+	if (sb->sb_flags & SB_MTXLOCK)
+		mtx_enter(&sb->sb_mtx);
+}
+
+static inline void
+sb_mtx_unlock(struct sockbuf *sb)
+{
+	if (sb->sb_flags & SB_MTXLOCK)
+		mtx_leave(&sb->sb_mtx);
+}
+
+void	sbmtxassertlocked(struct socket *so, struct sockbuf *);
+
 /*
  * Do we need to notify the other side when I/O is possible?
  */
 static inline int
 sb_notify(struct socket *so, struct sockbuf *sb)
 {
+	int rv;
+
 	soassertlocked(so);
-	return ((sb->sb_flags & (SB_WAIT|SB_ASYNC|SB_SPLICE)) != 0 ||
+
+	mtx_enter(&sb->sb_mtx);
+	rv = ((sb->sb_flags & (SB_WAIT|SB_ASYNC|SB_SPLICE)) != 0 ||
 	    !klist_empty(&sb->sb_klist));
+	mtx_leave(&sb->sb_mtx);
+
+	return rv;
 }
 
 /*
@@ -211,10 +238,12 @@ sb_notify(struct socket *so, struct sockbuf *sb)
  * still be negative (cc > hiwat or mbcnt > mbmax).  Should detect
  * overflow and return 0.
  */
+
 static inline long
 sbspace(struct socket *so, struct sockbuf *sb)
 {
-	soassertlocked(so);
+	soassertlocked_readonly(so);
+
 	return lmin(sb->sb_hiwat - sb->sb_cc, sb->sb_mbmax - sb->sb_mbcnt);
 }
 
@@ -230,7 +259,7 @@ sbspace(struct socket *so, struct sockbuf *sb)
 static inline int
 soreadable(struct socket *so)
 {
-	soassertlocked(so);
+	soassertlocked_readonly(so);
 	if (isspliced(so))
 		return 0;
 	return (so->so_rcv.sb_state & SS_CANTRCVMORE) || so->so_qlen ||
@@ -241,7 +270,7 @@ soreadable(struct socket *so)
 static inline int
 sowriteable(struct socket *so)
 {
-	soassertlocked(so);
+	soassertlocked_readonly(so);
 	return ((sbspace(so, &so->so_snd) >= so->so_snd.sb_lowat &&
 	    ((so->so_state & SS_ISCONNECTED) ||
 	    (so->so_proto->pr_flags & PR_CONNREQUIRED)==0)) ||
@@ -346,7 +375,7 @@ int	soconnect(struct socket *, struct mbuf *);
 int	soconnect2(struct socket *, struct socket *);
 int	socreate(int, struct socket **, int, int);
 int	sodisconnect(struct socket *);
-struct socket *soalloc(int);
+struct socket *soalloc(const struct protosw *, int);
 void	sofree(struct socket *, int);
 int	sogetopt(struct socket *, int, int, struct mbuf *);
 void	sohasoutofband(struct socket *);

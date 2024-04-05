@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_swap.c,v 1.166 2023/01/10 11:18:47 kettenis Exp $	*/
+/*	$OpenBSD: uvm_swap.c,v 1.169 2024/02/03 18:51:59 beck Exp $	*/
 /*	$NetBSD: uvm_swap.c,v 1.40 2000/11/17 11:39:39 mrg Exp $	*/
 
 /*
@@ -1277,7 +1277,6 @@ sw_reg_strategy(struct swapdev *sdp, struct buf *bp, int bn)
 		nbp->vb_buf.b_iodone   = sw_reg_iodone;
 		nbp->vb_buf.b_vp       = NULLVP;
 		nbp->vb_buf.b_vnbufs.le_next = NOLIST;
-		LIST_INIT(&nbp->vb_buf.b_dep);
 
 		/*
 		 * set b_dirtyoff/end and b_validoff/end.   this is
@@ -1516,8 +1515,30 @@ ReTry:	/* XXXMRG */
 }
 
 /*
- * uvm_swapisfull: return true if all of available swap is allocated
- * and in use.
+ * uvm_swapisfilled: return true if the amount of free space in swap is
+ * smaller than the size of a cluster.
+ *
+ * As long as some swap slots are being used by pages currently in memory,
+ * it is possible to reuse them.  Even if the swap space has been completly
+ * filled we do not consider it full.
+ */
+int
+uvm_swapisfilled(void)
+{
+	int result;
+
+	mtx_enter(&uvm_swap_data_lock);
+	KASSERT(uvmexp.swpginuse <= uvmexp.swpages);
+	result = (uvmexp.swpginuse + SWCLUSTPAGES) >= uvmexp.swpages;
+	mtx_leave(&uvm_swap_data_lock);
+
+	return result;
+}
+
+/*
+ * uvm_swapisfull: return true if the amount of pages only in swap
+ * accounts for more than 99% of the total swap space.
+ *
  */
 int
 uvm_swapisfull(void)
@@ -1526,7 +1547,7 @@ uvm_swapisfull(void)
 
 	mtx_enter(&uvm_swap_data_lock);
 	KASSERT(uvmexp.swpgonly <= uvmexp.swpages);
-	result = (uvmexp.swpgonly == uvmexp.swpages);
+	result = (uvmexp.swpgonly >= ((long)uvmexp.swpages * 99 / 100));
 	mtx_leave(&uvm_swap_data_lock);
 
 	return result;
@@ -1841,7 +1862,6 @@ uvm_swap_io(struct vm_page **pps, int startslot, int npages, int flags)
 		bp->b_data = (caddr_t)kva;
 	bp->b_bq = NULL;
 	bp->b_blkno = startblk;
-	LIST_INIT(&bp->b_dep);
 	s = splbio();
 	bp->b_vp = NULL;
 	buf_replacevnode(bp, swapdev_vp);

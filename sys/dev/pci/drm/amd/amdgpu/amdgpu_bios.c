@@ -29,6 +29,7 @@
 #include "amdgpu.h"
 #include "atom.h"
 
+#include <linux/device.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
@@ -111,9 +112,8 @@ static bool igp_read_bios_from_vram(struct amdgpu_device *adev)
 	adev->bios = NULL;
 	vram_base = pci_resource_start(adev->pdev, 0);
 	bios = ioremap_wc(vram_base, size);
-	if (!bios) {
+	if (!bios)
 		return false;
-	}
 
 	adev->bios = kmalloc(size, GFP_KERNEL);
 	if (!adev->bios) {
@@ -181,9 +181,8 @@ bool amdgpu_read_bios(struct amdgpu_device *adev)
 	adev->bios = NULL;
 	/* XXX: some cards may return 0 for rom size? ddx has a workaround */
 	bios = pci_map_rom(adev->pdev, &size);
-	if (!bios) {
+	if (!bios)
 		return false;
-	}
 
 	adev->bios = kzalloc(size, GFP_KERNEL);
 	if (adev->bios == NULL) {
@@ -255,14 +254,14 @@ static bool amdgpu_read_bios_from_rom(struct amdgpu_device *adev)
 	header[AMD_VBIOS_SIGNATURE_END] = 0;
 
 	if ((!AMD_IS_VALID_VBIOS(header)) ||
-	    0 != memcmp((char *)&header[AMD_VBIOS_SIGNATURE_OFFSET],
-			AMD_VBIOS_SIGNATURE,
-			strlen(AMD_VBIOS_SIGNATURE)))
+		memcmp((char *)&header[AMD_VBIOS_SIGNATURE_OFFSET],
+		       AMD_VBIOS_SIGNATURE,
+		       strlen(AMD_VBIOS_SIGNATURE)) != 0)
 		return false;
 
 	/* valid vbios, go on */
 	len = AMD_VBIOS_LENGTH(header);
-	len = roundup2(len, 4);
+	len = ALIGN(len, 4);
 	adev->bios = kmalloc(len, GFP_KERNEL);
 	if (!adev->bios) {
 		DRM_ERROR("no memory to allocate for BIOS\n");
@@ -381,7 +380,7 @@ static int amdgpu_atrm_call(acpi_handle atrm_handle, uint8_t *bios,
 
 	status = acpi_evaluate_object(atrm_handle, NULL, &atrm_arg, &buffer);
 	if (ACPI_FAILURE(status)) {
-		printk("failed to evaluate ATRM got %s\n", acpi_format_exception(status));
+		DRM_ERROR("failed to evaluate ATRM got %s\n", acpi_format_exception(status));
 		return -ENODEV;
 	}
 
@@ -404,6 +403,10 @@ static bool amdgpu_atrm_get_bios(struct amdgpu_device *adev)
 
 	/* ATRM is for the discrete card only */
 	if (adev->flags & AMD_IS_APU)
+		return false;
+
+	/* ATRM is for on-platform devices only */
+	if (dev_is_removable(&adev->pdev->dev))
 		return false;
 
 #ifdef notyet
@@ -494,7 +497,7 @@ static bool amdgpu_acpi_vfct_bios(struct amdgpu_device *adev)
 	struct acpi_table_header *hdr;
 	acpi_size tbl_size;
 	UEFI_ACPI_VFCT *vfct;
-	unsigned offset;
+	unsigned int offset;
 
 	if (!ACPI_SUCCESS(acpi_get_table("VFCT", 1, &hdr)))
 		return false;
@@ -593,7 +596,7 @@ bool amdgpu_get_bios(struct amdgpu_device *adev)
 	return false;
 
 success:
-	adev->is_atom_fw = (adev->asic_type >= CHIP_VEGA10) ? true : false;
+	adev->is_atom_fw = adev->asic_type >= CHIP_VEGA10;
 	return true;
 }
 
@@ -620,7 +623,7 @@ bool amdgpu_soc15_read_bios_from_rom(struct amdgpu_device *adev,
 		return false;
 
 	dw_ptr = (u32 *)bios;
-	length_dw = roundup2(length_bytes, 4) / 4;
+	length_dw = ALIGN(length_bytes, 4) / 4;
 
 	rom_index_offset =
 		adev->smuio.funcs->get_rom_index_offset(adev);

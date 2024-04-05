@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfvar.h,v 1.533 2023/07/06 04:55:05 dlg Exp $ */
+/*	$OpenBSD: pfvar.h,v 1.535 2024/01/01 22:16:51 bluhm Exp $ */
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier
@@ -1192,12 +1192,6 @@ enum pfi_kif_refs {
 #define SCNT_SRC_NODE_REMOVALS	2
 #define SCNT_MAX		3
 
-#define ACTION_SET(a, x) \
-	do { \
-		if ((a) != NULL) \
-			*(a) = (x); \
-	} while (0)
-
 #define REASON_SET(a, x) \
 	do { \
 		if ((void *)(a) != NULL) { \
@@ -1606,7 +1600,7 @@ extern void			 pf_calc_skip_steps(struct pf_rulequeue *);
 extern void			 pf_purge_expired_src_nodes(void);
 extern void			 pf_purge_expired_rules(void);
 extern void			 pf_remove_state(struct pf_state *);
-extern void			 pf_remove_divert_state(struct pf_state_key *);
+extern void			 pf_remove_divert_state(struct inpcb *);
 extern void			 pf_free_state(struct pf_state *);
 int				 pf_insert_src_node(struct pf_src_node **,
 				    struct pf_rule *, enum pf_sn_types,
@@ -1649,8 +1643,7 @@ void	pf_poolmask(struct pf_addr *, struct pf_addr*,
 	    struct pf_addr *, struct pf_addr *, sa_family_t);
 void	pf_addr_inc(struct pf_addr *, sa_family_t);
 
-void   *pf_pull_hdr(struct mbuf *, int, void *, int, u_short *, u_short *,
-	    sa_family_t);
+void   *pf_pull_hdr(struct mbuf *, int, void *, int, u_short *, sa_family_t);
 #define PF_HI (true)
 #define PF_LO (!PF_HI)
 #define PF_ALGNMNT(off) (((off) % 2) == 0 ? PF_HI : PF_LO)

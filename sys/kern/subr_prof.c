@@ -1,4 +1,4 @@
-/*	$OpenBSD: subr_prof.c,v 1.38 2023/09/10 03:08:05 cheloha Exp $	*/
+/*	$OpenBSD: subr_prof.c,v 1.41 2024/01/24 19:23:38 cheloha Exp $	*/
 /*	$NetBSD: subr_prof.c,v 1.12 1996/04/22 01:38:50 christos Exp $	*/
 
 /*-
@@ -44,7 +44,7 @@
 #include <sys/syscallargs.h>
 #include <sys/user.h>
 
-uint32_t profclock_period;
+uint64_t profclock_period;
 
 #if defined(GPROF) || defined(DDBPROF)
 #include <sys/malloc.h>
@@ -64,7 +64,7 @@ u_int gmon_cpu_count;		/* [K] number of CPUs with profiling enabled */
 
 extern char etext[];
 
-void gmonclock(struct clockintr *, void *, void *);
+void gmonclock(struct clockrequest *, void *, void *);
 
 void
 prof_init(void)
@@ -101,18 +101,15 @@ prof_init(void)
 
 	/* Allocate and initialize one profiling buffer per CPU. */
 	CPU_INFO_FOREACH(cii, ci) {
-		ci->ci_gmonclock = clockintr_establish(ci, gmonclock, NULL);
-		if (ci->ci_gmonclock == NULL) {
-			printf("%s: clockintr_establish gmonclock\n", __func__);
-			return;
-		}
-		clockintr_stagger(ci->ci_gmonclock, profclock_period,
-		    CPU_INFO_UNIT(ci), MAXCPUS);
 		cp = km_alloc(round_page(size), &kv_any, &kp_zero, &kd_nowait);
 		if (cp == NULL) {
 			printf("No memory for profiling.\n");
 			return;
 		}
+
+		clockintr_bind(&ci->ci_gmonclock, ci, gmonclock, NULL);
+		clockintr_stagger(&ci->ci_gmonclock, profclock_period,
+		    CPU_INFO_UNIT(ci), MAXCPUS);
 
 		p = (struct gmonparam *)cp;
 		cp += sizeof(*p);
@@ -159,7 +156,7 @@ prof_state_toggle(struct cpu_info *ci, int oldstate)
 		if (error == 0) {
 			if (++gmon_cpu_count == 1)
 				startprofclock(&process0);
-			clockintr_advance(ci->ci_gmonclock, profclock_period);
+			clockintr_advance(&ci->ci_gmonclock, profclock_period);
 		}
 		break;
 	default:
@@ -167,7 +164,7 @@ prof_state_toggle(struct cpu_info *ci, int oldstate)
 		gp->state = GMON_PROF_OFF;
 		/* FALLTHROUGH */
 	case GMON_PROF_OFF:
-		clockintr_cancel(ci->ci_gmonclock);
+		clockintr_cancel(&ci->ci_gmonclock);
 		if (--gmon_cpu_count == 0)
 			stopprofclock(&process0);
 #if !defined(GPROF)
@@ -236,14 +233,14 @@ sysctl_doprof(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
 }
 
 void
-gmonclock(struct clockintr *cl, void *cf, void *arg)
+gmonclock(struct clockrequest *cr, void *cf, void *arg)
 {
 	uint64_t count;
 	struct clockframe *frame = cf;
 	struct gmonparam *g = curcpu()->ci_gmon;
 	u_long i;
 
-	count = clockintr_advance(cl, profclock_period);
+	count = clockrequest_advance(cr, profclock_period);
 	if (count > ULONG_MAX)
 		count = ULONG_MAX;
 
@@ -307,13 +304,13 @@ sys_profil(struct proc *p, void *v, register_t *retval)
 }
 
 void
-profclock(struct clockintr *cl, void *cf, void *arg)
+profclock(struct clockrequest *cr, void *cf, void *arg)
 {
 	uint64_t count;
 	struct clockframe *frame = cf;
 	struct proc *p = curproc;
 
-	count = clockintr_advance(cl, profclock_period);
+	count = clockrequest_advance(cr, profclock_period);
 	if (count > ULONG_MAX)
 		count = ULONG_MAX;
 

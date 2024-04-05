@@ -1,4 +1,4 @@
-/*	$OpenBSD: frontend.c,v 1.42 2022/12/28 21:30:18 jmc Exp $	*/
+/*	$OpenBSD: frontend.c,v 1.44 2024/02/11 21:29:12 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2018 Florian Obser <florian@openbsd.org>
@@ -66,7 +66,6 @@
 #include <netinet6/nd6.h>
 #include <netinet6/in6_var.h>
 #include <netinet/ip6.h>
-#include <netinet6/ip6_var.h>
 #include <netinet/icmp6.h>
 
 #include <ctype.h>
@@ -339,7 +338,7 @@ frontend_dispatch_main(int fd, short event, void *bula)
 			if (iev_engine)
 				fatalx("%s: received unexpected imsg fd to "
 				    "frontend", __func__);
-			if ((fd = imsg.fd) == -1)
+			if ((fd = imsg_get_fd(&imsg)) == -1)
 				fatalx("%s: expected to receive imsg fd to "
 				   "frontend but didn't receive any",
 				   __func__);
@@ -465,7 +464,7 @@ frontend_dispatch_main(int fd, short event, void *bula)
 			nconf = NULL;
 			break;
 		case IMSG_ICMP6SOCK:
-			if ((icmp6sock = imsg.fd) == -1)
+			if ((icmp6sock = imsg_get_fd(&imsg)) == -1)
 				fatalx("%s: expected to receive imsg "
 				    "ICMPv6 fd but didn't receive any",
 				    __func__);
@@ -479,7 +478,7 @@ frontend_dispatch_main(int fd, short event, void *bula)
 			if (routesock != -1)
 				fatalx("%s: received unexpected routesock fd",
 				    __func__);
-			if ((routesock = imsg.fd) == -1)
+			if ((routesock = imsg_get_fd(&imsg)) == -1)
 				fatalx("%s: expected to receive imsg "
 				    "routesocket fd but didn't receive any",
 				    __func__);
@@ -490,7 +489,7 @@ frontend_dispatch_main(int fd, short event, void *bula)
 			frontend_startup();
 			break;
 		case IMSG_CONTROLFD:
-			if ((fd = imsg.fd) == -1)
+			if ((fd = imsg_get_fd(&imsg)) == -1)
 				fatalx("%s: expected to receive imsg "
 				    "control fd but didn't receive any",
 				    __func__);

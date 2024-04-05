@@ -1,4 +1,4 @@
-/*	$OpenBSD: icmp6.c,v 1.249 2023/09/16 09:33:27 mpi Exp $	*/
+/*	$OpenBSD: icmp6.c,v 1.251 2023/12/03 20:36:24 bluhm Exp $	*/
 /*	$KAME: icmp6.c,v 1.217 2001/06/20 15:03:29 jinmei Exp $	*/
 
 /*
@@ -910,7 +910,8 @@ icmp6_notify_error(struct mbuf *m, int off, int icmp6len, int code)
 			icmp6dst.sin6_addr = *finaldst;
 		icmp6dst.sin6_scope_id = in6_addr2scopeid(m->m_pkthdr.ph_ifidx,
 		    &icmp6dst.sin6_addr);
-		if (in6_embedscope(&icmp6dst.sin6_addr, &icmp6dst, NULL)) {
+		if (in6_embedscope(&icmp6dst.sin6_addr, &icmp6dst,
+		    NULL, NULL)) {
 			/* should be impossible */
 			nd6log((LOG_DEBUG,
 			    "icmp6_notify_error: in6_embedscope failed\n"));
@@ -927,7 +928,8 @@ icmp6_notify_error(struct mbuf *m, int off, int icmp6len, int code)
 		icmp6src.sin6_addr = eip6->ip6_src;
 		icmp6src.sin6_scope_id = in6_addr2scopeid(m->m_pkthdr.ph_ifidx,
 		    &icmp6src.sin6_addr);
-		if (in6_embedscope(&icmp6src.sin6_addr, &icmp6src, NULL)) {
+		if (in6_embedscope(&icmp6src.sin6_addr, &icmp6src,
+		    NULL, NULL)) {
 			/* should be impossible */
 			nd6log((LOG_DEBUG,
 			    "icmp6_notify_error: in6_embedscope failed\n"));
@@ -1691,7 +1693,7 @@ icmp6_ctloutput(int op, struct socket *so, int level, int optname,
     struct mbuf *m)
 {
 	int error = 0;
-	struct inpcb *in6p = sotoinpcb(so);
+	struct inpcb *inp = sotoinpcb(so);
 
 	if (level != IPPROTO_ICMPV6)
 		return EINVAL;
@@ -1708,11 +1710,11 @@ icmp6_ctloutput(int op, struct socket *so, int level, int optname,
 				break;
 			}
 			p = mtod(m, struct icmp6_filter *);
-			if (!p || !in6p->inp_icmp6filt) {
+			if (!p || !inp->inp_icmp6filt) {
 				error = EINVAL;
 				break;
 			}
-			bcopy(p, in6p->inp_icmp6filt,
+			bcopy(p, inp->inp_icmp6filt,
 				sizeof(struct icmp6_filter));
 			error = 0;
 			break;
@@ -1730,13 +1732,13 @@ icmp6_ctloutput(int op, struct socket *so, int level, int optname,
 		    {
 			struct icmp6_filter *p;
 
-			if (!in6p->inp_icmp6filt) {
+			if (!inp->inp_icmp6filt) {
 				error = EINVAL;
 				break;
 			}
 			m->m_len = sizeof(struct icmp6_filter);
 			p = mtod(m, struct icmp6_filter *);
-			bcopy(in6p->inp_icmp6filt, p,
+			bcopy(inp->inp_icmp6filt, p,
 				sizeof(struct icmp6_filter));
 			error = 0;
 			break;

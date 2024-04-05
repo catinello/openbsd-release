@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.128 2023/08/02 06:14:46 miod Exp $	*/
+/*	$OpenBSD: trap.c,v 1.135 2024/03/03 11:14:34 miod Exp $	*/
 /*
  * Copyright (c) 2004, Miodrag Vallat.
  * Copyright (c) 1998 Steve Murphree, Jr.
@@ -511,6 +511,15 @@ user_fault:
 	case T_FPEPFLT+T_USER:
 		m88100_fpu_precise_exception(frame);
 		goto userexit;
+	case T_FPEIFLT:
+		/*
+		 * Although the kernel does not use FPU instructions,
+		 * userland-triggered FPU imprecise exceptions may be
+		 * raised during exception processing, when the FPU gets
+		 * reenabled (i.e. immediately when returning to
+		 * m88100_fpu_enable).
+		 */
+		/* FALLTHROUGH */
 	case T_FPEIFLT+T_USER:
 		m88100_fpu_imprecise_exception(frame);
 		goto userexit;
@@ -864,7 +873,7 @@ m88110_user_fault:
 			access_type = PROT_EXEC;
 			fault_code = PROT_EXEC;
 #ifdef TRAPDEBUG
-			printf("User Instruction fault exip %x isr %x ilar %x\n",
+			printf("User Instruction fault exip %lx isr %lx ilar %lx\n",
 			    frame->tf_exip, frame->tf_isr, frame->tf_ilar);
 #endif
 		} else {
@@ -887,7 +896,7 @@ m88110_user_fault:
 				fault_code = PROT_WRITE;
 			}
 #ifdef TRAPDEBUG
-			printf("User Data access fault exip %x dsr %x dlar %x\n",
+			printf("User Data access fault exip %lx dsr %lx dlar %lx\n",
 			    frame->tf_exip, frame->tf_dsr, frame->tf_dlar);
 #endif
 		}
@@ -919,7 +928,7 @@ m88110_user_fault:
 					result = EFAULT;
 			} else {
 #ifdef TRAPDEBUG
-				printf("Unexpected Instruction fault isr %x\n",
+				printf("Unexpected Instruction fault isr %lx\n",
 				    frame->tf_isr);
 #endif
 				goto lose;
@@ -957,14 +966,14 @@ m88110_user_fault:
 				if (pmap_set_modify(map->pmap, va)) {
 #ifdef TRAPDEBUG
 					printf("Corrected userland write fault, pmap %p va %p\n",
-					    map->pmap, va);
+					    map->pmap, (void *)va);
 #endif
 					result = 0;
 				} else {
 					/* must be a real wp fault */
 #ifdef TRAPDEBUG
 					printf("Uncorrected userland write fault, pmap %p va %p\n",
-					    map->pmap, va);
+					    map->pmap, (void *)va);
 #endif
 					result = uvm_fault(map, va, 0, access_type);
 					if (result == EACCES)
@@ -972,7 +981,7 @@ m88110_user_fault:
 				}
 			} else {
 #ifdef TRAPDEBUG
-				printf("Unexpected Data access fault dsr %x\n",
+				printf("Unexpected Data access fault dsr %lx\n",
 				    frame->tf_dsr);
 #endif
 				goto lose;
@@ -1152,55 +1161,29 @@ error_fatal(struct trapframe *frame)
 void
 m88100_syscall(register_t code, struct trapframe *tf)
 {
-	int i, nap;
-	const struct sysent *callp;
+	const struct sysent *callp = sysent;
 	struct proc *p = curproc;
-	int error, indirect = -1;
-	register_t args[8] __aligned(8);
+	int error;
+	register_t *args;
 	register_t rval[2] __aligned(8);
-	register_t *ap;
 
 	uvmexp.syscalls++;
 
 	p->p_md.md_tf = tf;
 
-	/*
-	 * For 88k, all the arguments are passed in the registers (r2-r9),
-	 * and further arguments (if any) on stack.
-	 * For syscall, r2 has the actual code.
-	 */
-	ap = &tf->tf_r[2];
-	nap = 8; /* r2-r9 */
-
-	switch (code) {
-	case SYS_syscall:
-		indirect = code;
-		code = *ap++;
-		nap--;
-		break;
-	}
-
-	callp = sysent;
-	if (code < 0 || code >= SYS_MAXSYSCALL)
-		callp += SYS_syscall;
-	else
+	// XXX out of range stays on syscall0, which we assume is enosys
+	if (code > 0 && code < SYS_MAXSYSCALL)
 		callp += code;
 
-	i = callp->sy_argsize / sizeof(register_t);
-	if (i > sizeof(args) / sizeof(register_t))
-		panic("syscall nargs");
-	if (i > nap) {
-		bcopy((caddr_t)ap, (caddr_t)args, nap * sizeof(register_t));
-		if ((error = copyin((caddr_t)tf->tf_r[31], args + nap,
-		    (i - nap) * sizeof(register_t))))
-			goto bad;
-	} else
-		bcopy((caddr_t)ap, (caddr_t)args, i * sizeof(register_t));
+	/*
+	 * For 88k, all the arguments are passed in the registers (r2-r9).
+	 */
+	args = &tf->tf_r[2];
 
 	rval[0] = 0;
 	rval[1] = tf->tf_r[3];
 
-	error = mi_syscall(p, code, indirect, callp, args, rval);
+	error = mi_syscall(p, code, callp, args, rval);
 
 	/*
 	 * system call will look like:
@@ -1248,7 +1231,6 @@ m88100_syscall(register_t code, struct trapframe *tf)
 	case EJUSTRETURN:
 		break;
 	default:
-	bad:
 		tf->tf_r[2] = error;
 		tf->tf_epsr |= PSR_C;   /* fail */
 		tf->tf_snip = tf->tf_snip & ~NIP_E;
@@ -1265,49 +1247,24 @@ m88100_syscall(register_t code, struct trapframe *tf)
 void
 m88110_syscall(register_t code, struct trapframe *tf)
 {
-	int i, nap;
-	const struct sysent *callp;
+	const struct sysent *callp = sysent;
 	struct proc *p = curproc;
 	int error;
-	register_t args[8] __aligned(8);
 	register_t rval[2] __aligned(8);
-	register_t *ap;
+	register_t *args;
 
 	uvmexp.syscalls++;
 
 	p->p_md.md_tf = tf;
 
-	/*
-	 * For 88k, all the arguments are passed in the registers (r2-r9),
-	 * and further arguments (if any) on stack.
-	 * For syscall, r2 has the actual code.
-	 */
-	ap = &tf->tf_r[2];
-	nap = 8;	/* r2-r9 */
-
-	switch (code) {
-	case SYS_syscall:
-		code = *ap++;
-		nap--;
-		break;
-	}
-
-	callp = sysent;
-	if (code < 0 || code >= SYS_MAXSYSCALL)
-		callp += SYS_syscall;
-	else
+	// XXX out of range stays on syscall0, which we assume is enosys
+	if (code > 0 && code < SYS_MAXSYSCALL)
 		callp += code;
 
-	i = callp->sy_argsize / sizeof(register_t);
-	if (i > sizeof(args) / sizeof(register_t))
-		panic("syscall nargs");
-	if (i > nap) {
-		bcopy((caddr_t)ap, (caddr_t)args, nap * sizeof(register_t));
-		if ((error = copyin((caddr_t)tf->tf_r[31], args + nap,
-		    (i - nap) * sizeof(register_t))))
-			goto bad;
-	} else
-		bcopy((caddr_t)ap, (caddr_t)args, i * sizeof(register_t));
+	/*
+	 * For 88k, all the arguments are passed in the registers (r2-r9).
+	 */
+	args = &tf->tf_r[2];
 
 	rval[0] = 0;
 	rval[1] = tf->tf_r[3];
@@ -1360,7 +1317,6 @@ m88110_syscall(register_t code, struct trapframe *tf)
 		m88110_skip_insn(tf);
 		break;
 	default:
-	bad:
 		tf->tf_r[2] = error;
 		tf->tf_epsr |= PSR_C;   /* fail */
 		/* skip one instruction */

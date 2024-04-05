@@ -1,4 +1,4 @@
-/*	$OpenBSD: auth.c,v 1.22 2023/07/03 09:40:47 claudio Exp $ */
+/*	$OpenBSD: auth.c,v 1.23 2023/11/07 11:29:05 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>

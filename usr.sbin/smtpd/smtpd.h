@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.678 2023/09/29 18:30:14 op Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.683 2024/03/02 22:40:28 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -55,7 +55,7 @@
 #define SMTPD_QUEUE_EXPIRY	 (4 * 24 * 60 * 60)
 #define SMTPD_SOCKET		 "/var/run/smtpd.sock"
 #define	SMTPD_NAME		 "OpenSMTPD"
-#define	SMTPD_VERSION		 "7.4.0"
+#define	SMTPD_VERSION		 "7.5.0"
 #define SMTPD_SESSION_TIMEOUT	 300
 #define SMTPD_BACKLOG		 5
 
@@ -428,6 +428,7 @@ struct expandnode {
 	enum expand_type	type;
 	int			sameuser;
 	int			realuser;
+	uid_t			realuser_uid;
 	int			forwarded;
 	struct rule	       *rule;
 	struct expandnode      *parent;
@@ -467,6 +468,7 @@ struct maddrmap {
 #define DSN_NEVER   0x08
 
 #define	DSN_ENVID_LEN	100
+#define	DSN_ORCPT_LEN	500
 
 #define	SMTPD_ENVELOPE_VERSION		3
 struct envelope {
@@ -507,7 +509,7 @@ struct envelope {
 	time_t				nexttry;
 	time_t				lastbounce;
 
-	struct mailaddr			dsn_orcpt;
+	char				dsn_orcpt[DSN_ORCPT_LEN+1];
 	char				dsn_envid[DSN_ENVID_LEN+1];
 	uint8_t				dsn_notify;
 	enum dsn_ret			dsn_ret;
@@ -1026,6 +1028,8 @@ enum dns_error {
 	DNS_EINVAL,
 	DNS_ENONAME,
 	DNS_ENOTFOUND,
+	/* RFC 7505 */
+	DNS_NULLMX,
 };
 
 enum lka_resp_status {
@@ -1701,6 +1705,7 @@ int valid_localpart(const char *);
 int valid_domainpart(const char *);
 int valid_domainname(const char *);
 int valid_smtp_response(const char *);
+int valid_xtext(const char *);
 int secure_file(int, char *, char *, uid_t, int);
 int  lowercase(char *, const char *, size_t);
 void xlowercase(char *, const char *, size_t);
@@ -1735,6 +1740,9 @@ void log_trace_verbose(int);
 void log_trace0(const char *, ...)
     __attribute__((format (printf, 1, 2)));
 #define log_trace(m, ...)  do { if (tracing & (m)) log_trace0(__VA_ARGS__); } while (0)
+
+int parse_table_line(FILE *, char **, size_t *, int *,
+    char **, char **, int *);
 
 /* waitq.c */
 int  waitq_wait(void *, void (*)(void *, void *, void *), void *);

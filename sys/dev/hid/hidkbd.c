@@ -1,4 +1,4 @@
-/*	$OpenBSD: hidkbd.c,v 1.9 2023/07/09 08:02:13 tobhe Exp $	*/
+/*	$OpenBSD: hidkbd.c,v 1.12 2024/01/03 21:41:44 tobhe Exp $	*/
 /*      $NetBSD: ukbd.c,v 1.85 2003/03/11 16:44:00 augustss Exp $        */
 
 /*
@@ -126,9 +126,9 @@ static const struct hidkbd_translation apple_tb_trans[] = {
 static const struct hidkbd_translation apple_fn_trans[] = {
 	{ 40, 73 },	/* return -> insert */
 	{ 42, 76 },	/* backspace -> delete */
+	{ 58, 233 },	/* F1 -> screen brightness down */
+	{ 59, 232 },	/* F2 -> screen brightness up */
 #ifdef notyet
-	{ 58, 0 },	/* F1 -> screen brightness down */
-	{ 59, 0 },	/* F2 -> screen brightness up */
 	{ 60, 0 },	/* F3 */
 	{ 61, 0 },	/* F4 */
 	{ 62, 0 },	/* F5 -> keyboard backlight down */
@@ -138,11 +138,12 @@ static const struct hidkbd_translation apple_fn_trans[] = {
 	{ 66, 0 },	/* F9 -> audio next */
 #endif
 #ifdef __macppc__
-	{ 58, 233 },	/* F1 -> screen brightness down */
-	{ 59, 232 },	/* F2 -> screen brightness up */
 	{ 60, 127 },	/* F3 -> audio mute */
 	{ 61, 129 },	/* F4 -> audio lower */
 	{ 62, 128 },	/* F5 -> audio raise */
+	{ 65, 234 },	/* F8 -> backlight toggle */
+	{ 66, 236 },	/* F9 -> backlight lower */
+	{ 67, 235 },	/* F10 -> backlight raise */
 #else
 	{ 63, 102 },	/* F6 -> sleep */
 	{ 67, 127 },	/* F10 -> audio mute */
@@ -418,8 +419,11 @@ hidkbd_input(struct hidkbd *kbd, uint8_t *data, u_int len)
 		    &kbd->sc_var[i].loc);
 
 	/* extract keycodes */
-	memcpy(ud->keycode, data + kbd->sc_keycodeloc.pos / 8,
-	    kbd->sc_nkeycode);
+	if (kbd->sc_keycodeloc.pos / 8 + kbd->sc_nkeycode <= len)
+		memcpy(ud->keycode, data + kbd->sc_keycodeloc.pos / 8,
+		    kbd->sc_nkeycode);
+	else
+		memset(ud->keycode, 0, kbd->sc_nkeycode);
 
 	if (kbd->sc_debounce && !kbd->sc_polling) {
 		/*
@@ -569,6 +573,9 @@ hidkbd_decode(struct hidkbd *kbd, struct hidkbd_data *ud)
 			case 129:
 			case 232:
 			case 233:
+			case 234:
+			case 235:
+			case 236:
 				wskbd_input(kbd->sc_wskbddev,
 				    key & RELEASE ?  WSCONS_EVENT_KEY_UP :
 				      WSCONS_EVENT_KEY_DOWN, key & CODEMASK);

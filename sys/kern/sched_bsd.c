@@ -1,4 +1,4 @@
-/*	$OpenBSD: sched_bsd.c,v 1.87 2023/09/17 13:02:24 cheloha Exp $	*/
+/*	$OpenBSD: sched_bsd.c,v 1.90 2024/01/24 19:23:38 cheloha Exp $	*/
 /*	$NetBSD: kern_synch.c,v 1.37 1996/04/22 01:38:37 christos Exp $	*/
 
 /*-
@@ -54,7 +54,7 @@
 #include <sys/ktrace.h>
 #endif
 
-uint32_t roundrobin_period;	/* [I] roundrobin period (ns) */
+uint64_t roundrobin_period;	/* [I] roundrobin period (ns) */
 int	lbolt;			/* once a second sleep address */
 
 #ifdef MULTIPROCESSOR
@@ -83,13 +83,13 @@ struct loadavg averunnable;
  * Force switch among equal priority processes every 100ms.
  */
 void
-roundrobin(struct clockintr *cl, void *cf, void *arg)
+roundrobin(struct clockrequest *cr, void *cf, void *arg)
 {
 	uint64_t count;
 	struct cpu_info *ci = curcpu();
 	struct schedstate_percpu *spc = &ci->ci_schedstate;
 
-	count = clockintr_advance(cl, roundrobin_period);
+	count = clockrequest_advance(cr, roundrobin_period);
 
 	if (ci->ci_curproc != NULL) {
 		if (spc->spc_schedflags & SPCF_SEENRR || count >= 2) {
@@ -396,11 +396,11 @@ mi_switch(void)
 	/* Stop any optional clock interrupts. */
 	if (ISSET(spc->spc_schedflags, SPCF_ITIMER)) {
 		atomic_clearbits_int(&spc->spc_schedflags, SPCF_ITIMER);
-		clockintr_cancel(spc->spc_itimer);
+		clockintr_cancel(&spc->spc_itimer);
 	}
 	if (ISSET(spc->spc_schedflags, SPCF_PROFCLOCK)) {
 		atomic_clearbits_int(&spc->spc_schedflags, SPCF_PROFCLOCK);
-		clockintr_cancel(spc->spc_profclock);
+		clockintr_cancel(&spc->spc_profclock);
 	}
 
 	/*
@@ -451,11 +451,11 @@ mi_switch(void)
 	/* Start any optional clock interrupts needed by the thread. */
 	if (ISSET(p->p_p->ps_flags, PS_ITIMER)) {
 		atomic_setbits_int(&spc->spc_schedflags, SPCF_ITIMER);
-		clockintr_advance(spc->spc_itimer, hardclock_period);
+		clockintr_advance(&spc->spc_itimer, hardclock_period);
 	}
 	if (ISSET(p->p_p->ps_flags, PS_PROFIL)) {
 		atomic_setbits_int(&spc->spc_schedflags, SPCF_PROFCLOCK);
-		clockintr_advance(spc->spc_profclock, profclock_period);
+		clockintr_advance(&spc->spc_profclock, profclock_period);
 	}
 
 	nanouptime(&spc->spc_runtime);

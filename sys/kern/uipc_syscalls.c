@@ -1,4 +1,4 @@
-/*	$OpenBSD: uipc_syscalls.c,v 1.214 2023/09/23 09:17:21 jan Exp $	*/
+/*	$OpenBSD: uipc_syscalls.c,v 1.218 2024/03/01 14:15:01 bluhm Exp $	*/
 /*	$NetBSD: uipc_syscalls.c,v 1.19 1996/02/09 19:00:48 christos Exp $	*/
 
 /*
@@ -185,9 +185,9 @@ sys_bind(struct proc *p, void *v, register_t *retval)
 	if (KTRPOINT(p, KTR_STRUCT))
 		ktrsockaddr(p, mtod(nam, caddr_t), SCARG(uap, namelen));
 #endif
-	solock(so);
+	solock_shared(so);
 	error = sobind(so, nam, p);
-	sounlock(so);
+	sounlock_shared(so);
 	m_freem(nam);
 out:
 	FRELE(fp, p);
@@ -326,7 +326,7 @@ doaccept(struct proc *p, int sock, struct sockaddr *name, socklen_t *anamelen,
 	    : (flags & SOCK_NONBLOCK ? FNONBLOCK : 0);
 
 	/* connection has been removed from the listen queue */
-	knote_locked(&head->so_rcv.sb_klist, 0);
+	knote(&head->so_rcv.sb_klist, 0);
 
 	if (persocket)
 		sounlock(head);
@@ -409,7 +409,7 @@ sys_connect(struct proc *p, void *v, register_t *retval)
 	if (KTRPOINT(p, KTR_STRUCT))
 		ktrsockaddr(p, mtod(nam, caddr_t), SCARG(uap, namelen));
 #endif
-	solock(so);
+	solock_shared(so);
 	if (isdnssocket(so)) {
 		error = dns_portcheck(p, so, mtod(nam, void *), nam->m_len);
 		if (error)
@@ -443,7 +443,7 @@ bad:
 	if (!interrupted)
 		so->so_state &= ~SS_ISCONNECTING;
 unlock:
-	sounlock(so);
+	sounlock_shared(so);
 	m_freem(nam);
 out:
 	FRELE(fp, p);
@@ -1560,12 +1560,12 @@ sys_ypconnect(struct proc *p, void *v, register_t *retval)
 
 	if (p->p_p->ps_flags & PS_CHROOT)
 		return EACCES;
+	KERNEL_LOCK();
 	name = pool_get(&namei_pool, PR_WAITOK);
 	snprintf(name, MAXPATHLEN, "/var/yp/binding/%s.2", domainname);
 	NDINIT(&nid, 0, NOFOLLOW|LOCKLEAF|KERNELPATH, UIO_SYSSPACE, name, p);
 	nid.ni_pledge = PLEDGE_RPATH;
 
-	KERNEL_LOCK();
 	error = namei(&nid);
 	pool_put(&namei_pool, name);
 	if (error)

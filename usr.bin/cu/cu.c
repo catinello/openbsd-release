@@ -1,4 +1,4 @@
-/* $OpenBSD: cu.c,v 1.29 2023/10/02 14:48:11 krw Exp $ */
+/* $OpenBSD: cu.c,v 1.31 2024/02/10 15:29:04 deraadt Exp $ */
 
 /*
  * Copyright (c) 2012 Nicholas Marriott <nicm@openbsd.org>
@@ -488,13 +488,13 @@ get_ucomnames(void)
 	size = 0;
 	for (;;) {
 		if (sysctl(mib, 2, NULL, &size, NULL, 0) == -1 || size == 0)
-			err(1, "hw.ucomnames");
+			return NULL;
 		if ((names = realloc(names, size)) == NULL)
 			err(1, NULL);
 		if (sysctl(mib, 2, names, &size, NULL, 0) != -1)
 			break;
 		if (errno != ENOMEM)
-			err(1, "hw.ucomnames");
+			return NULL;
 	}
 	return names;
 }
@@ -507,7 +507,7 @@ find_ucom(const char *usbid, char *names)
 	if (names == NULL)
 		return NULL;
 
-	/* names is a comma separated list of "ucom<unit#>-<usb id>". */
+	/* names is a comma separated list of "ucom<unit#>:<usb id>". */
 	cua = NULL;
 	for (ucom = strsep(&names, ","); ucom; ucom = strsep(&names, ",")) {
 		if (*ucom == '\0' || strncasecmp(ucom, "ucom", 4))

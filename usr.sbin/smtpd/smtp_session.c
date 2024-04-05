@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.435 2023/06/23 18:32:28 op Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.442 2024/03/20 17:52:43 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -489,7 +489,7 @@ header_domain_append_callback(struct smtp_tx *tx, const char *hdr,
 				quote = !quote;
 			if (line[i] == ')' && !escape && !quote && comment)
 				comment--;
-			if (line[i] == '\\' && !escape && !comment && !quote)
+			if (line[i] == '\\' && !escape && !comment)
 				escape = 1;
 			else
 				escape = 0;
@@ -702,7 +702,7 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 	const char			*line, *helo;
 	uint64_t			 reqid, evpid;
 	uint32_t			 msgid;
-	int				 status, success;
+	int				 status, success, fd;
 	int                              filter_response;
 	const char                      *filter_param;
 	uint8_t                          i;
@@ -802,19 +802,20 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 		m_get_int(&m, &success);
 		m_end(&m);
 
+		fd = imsg_get_fd(imsg);
 		s = tree_xpop(&wait_queue_fd, reqid);
-		if (!success || imsg->fd == -1) {
-			if (imsg->fd != -1)
-				close(imsg->fd);
+		if (!success || fd == -1) {
+			if (fd != -1)
+				close(fd);
 			smtp_reply(s, "421 %s Temporary Error",
 			    esc_code(ESC_STATUS_TEMPFAIL, ESC_OTHER_MAIL_SYSTEM_STATUS));
 			smtp_enter_state(s, STATE_QUIT);
 			return;
 		}
 
-		log_debug("smtp: %p: fd %d from queue", s, imsg->fd);
+		log_debug("smtp: %p: fd %d from queue", s, fd);
 
-		if (smtp_message_fd(s->tx, imsg->fd)) {
+		if (smtp_message_fd(s->tx, fd)) {
 			if (!SESSION_DATA_FILTERED(s))
 				smtp_message_begin(s->tx);
 			else
@@ -828,19 +829,20 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 		m_get_int(&m, &success);
 		m_end(&m);
 
+		fd = imsg_get_fd(imsg);
 		s = tree_xpop(&wait_filter_fd, reqid);
-		if (!success || imsg->fd == -1) {
-			if (imsg->fd != -1)
-				close(imsg->fd);
+		if (!success || fd == -1) {
+			if (fd != -1)
+				close(fd);
 			smtp_reply(s, "421 %s Temporary Error",
 			    esc_code(ESC_STATUS_TEMPFAIL, ESC_OTHER_MAIL_SYSTEM_STATUS));
 			smtp_enter_state(s, STATE_QUIT);
 			return;
 		}
 
-		log_debug("smtp: %p: fd %d from lka", s, imsg->fd);
+		log_debug("smtp: %p: fd %d from lka", s, fd);
 
-		smtp_filter_fd(s->tx, imsg->fd);
+		smtp_filter_fd(s->tx, fd);
 		smtp_message_begin(s->tx);
 		return;
 
@@ -1339,7 +1341,7 @@ smtp_command(struct smtp_session *s, char *line)
 	 */
 	case CMD_QUIT:
 		if (!smtp_check_noparam(s, args))
-			break;		
+			break;
 		smtp_filter_phase(FILTER_QUIT, s, NULL);
 		break;
 
@@ -1351,13 +1353,13 @@ smtp_command(struct smtp_session *s, char *line)
 
 	case CMD_HELP:
 		if (!smtp_check_noparam(s, args))
-			break;		
+			break;
 		smtp_proceed_help(s, NULL);
 		break;
 
 	case CMD_WIZ:
 		if (!smtp_check_noparam(s, args))
-			break;		
+			break;
 		smtp_proceed_wiz(s, NULL);
 		break;
 
@@ -1528,7 +1530,7 @@ smtp_check_mail_from(struct smtp_session *s, const char *args)
 	struct mailaddr	sender;
 
 	(void)strlcpy(tmp, args, sizeof tmp);
-	copy = tmp;  
+	copy = tmp;
 
 	if (s->helo[0] == '\0' || s->tx) {
 		smtp_reply(s, "503 %s %s: Command not allowed at this point.",
@@ -1580,7 +1582,7 @@ smtp_check_rcpt_to(struct smtp_session *s, const char *args)
 	char tmp[SMTP_LINE_MAX];
 
 	(void)strlcpy(tmp, args, sizeof tmp);
-	copy = tmp; 
+	copy = tmp;
 
 	if (s->tx == NULL) {
 		smtp_reply(s, "503 %s %s: Command not allowed at this point.",
@@ -1838,7 +1840,7 @@ smtp_proceed_mail_from(struct smtp_session *s, const char *args)
 	char tmp[SMTP_LINE_MAX];
 
 	(void)strlcpy(tmp, args, sizeof tmp);
-	copy = tmp;  
+	copy = tmp;
 
        	if (!smtp_tx(s)) {
 		smtp_reply(s, "421 %s Temporary Error",
@@ -2279,7 +2281,7 @@ smtp_auth_failure_pause(struct smtp_session *s)
 	tv.tv_sec = 0;
 	tv.tv_usec = arc4random_uniform(1000000);
 	log_trace(TRACE_SMTP, "smtp: timing-attack protection triggered, "
-	    "will defer answer for %lu microseconds", tv.tv_usec);
+	    "will defer answer for %lu microseconds", (long)tv.tv_usec);
 	evtimer_set(&s->pause, smtp_auth_failure_resume, s);
 	evtimer_add(&s->pause, &tv);
 }
@@ -2347,7 +2349,7 @@ smtp_tx_mail_from(struct smtp_tx *tx, const char *line)
 	char tmp[SMTP_LINE_MAX];
 
 	(void)strlcpy(tmp, line, sizeof tmp);
-	copy = tmp;  
+	copy = tmp;
 
 	if (smtp_mailaddr(&tx->evp.sender, copy, 1, &copy,
 		tx->session->smtpname) == 0) {
@@ -2428,7 +2430,7 @@ smtp_tx_rcpt_to(struct smtp_tx *tx, const char *line)
 	char tmp[SMTP_LINE_MAX];
 
 	(void)strlcpy(tmp, line, sizeof tmp);
-	copy = tmp; 
+	copy = tmp;
 
 	if (tx->rcptcount >= env->sc_session_max_rcpt) {
 		smtp_reply(tx->session, "451 %s %s: Too many recipients",
@@ -2471,16 +2473,15 @@ smtp_tx_rcpt_to(struct smtp_tx *tx, const char *line)
 				    " combined with other options");
 				return;
 			}
-		} else if (ADVERTISE_EXT_DSN(tx->session) && strncasecmp(opt, "ORCPT=", 6) == 0) {
+		} else if (ADVERTISE_EXT_DSN(tx->session) &&
+		    strncasecmp(opt, "ORCPT=", 6) == 0) {
+			size_t len = sizeof(tx->evp.dsn_orcpt);
+
 			opt += 6;
 
-			if (strncasecmp(opt, "rfc822;", 7) == 0)
-				opt += 7;
-
-			if (!text_to_mailaddr(&tx->evp.dsn_orcpt, opt) ||
-			    !valid_localpart(tx->evp.dsn_orcpt.user) ||
-			    (strlen(tx->evp.dsn_orcpt.domain) != 0 &&
-			     !valid_domainpart(tx->evp.dsn_orcpt.domain))) {
+			if ((p = strchr(opt, ';')) == NULL ||
+			    !valid_xtext(p + 1) ||
+			    strlcpy(tx->evp.dsn_orcpt, opt, len) >= len) {
 				smtp_reply(tx->session,
 				    "553 ORCPT address syntax error");
 				return;
@@ -2624,7 +2625,7 @@ smtp_tx_dataline(struct smtp_tx *tx, const char *line)
 
 		case RFC5322_END_OF_HEADERS:
 			if (tx->session->listener->local ||
-			    tx->session->listener->port == 587) {
+			    tx->session->listener->port == htons(587)) {
 
 				if (!tx->has_date) {
 					log_debug("debug: %p: adding Date", tx);
@@ -2752,8 +2753,8 @@ smtp_message_begin(struct smtp_tx *tx)
 	log_debug("smtp: %p: message begin", s);
 
 	smtp_reply(s, "354 Enter mail, end with \".\""
-	    " on a line by itself");	
-	
+	    " on a line by itself");
+
 	if (s->junk || (s->tx && s->tx->junk))
 		m_printf(tx, "X-Spam: Yes\n");
 
@@ -2816,7 +2817,7 @@ smtp_message_end(struct smtp_tx *tx)
 	switch(tx->error) {
 	case TX_OK:
 		smtp_tx_commit(tx);
-		return;		
+		return;
 
 	case TX_ERROR_SIZE:
 		smtp_reply(s, "554 %s %s: Transaction failed, message too big",

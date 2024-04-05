@@ -1,4 +1,4 @@
-/*	$OpenBSD: pci.h,v 1.14 2023/09/13 12:31:49 jsg Exp $	*/
+/*	$OpenBSD: pci.h,v 1.16 2024/01/16 23:38:13 jsg Exp $	*/
 /*
  * Copyright (c) 2015 Mark Kettenis
  *
@@ -482,14 +482,46 @@ pci_set_power_state(struct pci_dev *dev, int state)
 	return 0;
 }
 
+struct pci_driver;
+
+static inline int
+pci_register_driver(struct pci_driver *pci_drv)
+{
+	return 0;
+}
+
 static inline void
 pci_unregister_driver(void *d)
 {
+}
+
+static inline u16
+pci_dev_id(struct pci_dev *dev)
+{
+	return dev->devfn | (dev->bus->number << 8);
+}
+
+static inline const struct pci_device_id *
+pci_match_id(const struct pci_device_id *ids, struct pci_dev *pdev)
+{
+	int i = 0;
+
+	for (i = 0; ids[i].vendor != 0; i++) {
+		if ((ids[i].vendor == pdev->vendor) &&
+		    (ids[i].device == pdev->device ||
+		     ids[i].device == PCI_ANY_ID) &&
+		    (ids[i].subvendor == PCI_ANY_ID) &&
+		    (ids[i].subdevice == PCI_ANY_ID))
+			return &ids[i];
+	}
+	return NULL;
 }
 
 #define PCI_CLASS_DISPLAY_VGA \
     ((PCI_CLASS_DISPLAY << 8) | PCI_SUBCLASS_DISPLAY_VGA)
 #define PCI_CLASS_DISPLAY_OTHER \
     ((PCI_CLASS_DISPLAY << 8) | PCI_SUBCLASS_DISPLAY_MISC)
+#define PCI_CLASS_ACCELERATOR_PROCESSING \
+    (PCI_CLASS_ACCELERATOR << 8)
 
 #endif /* _LINUX_PCI_H_ */

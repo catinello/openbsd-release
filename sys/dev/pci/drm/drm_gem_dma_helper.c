@@ -1,4 +1,4 @@
-/* $OpenBSD: drm_gem_dma_helper.c,v 1.1 2023/01/01 01:34:34 jsg Exp $ */
+/* $OpenBSD: drm_gem_dma_helper.c,v 1.3 2024/01/16 23:37:51 jsg Exp $ */
 /* $NetBSD: drm_gem_dma_helper.c,v 1.9 2019/11/05 23:29:28 jmcneill Exp $ */
 /*-
  * Copyright (c) 2015-2017 Jared McNeill <jmcneill@invisible.ca>
@@ -54,6 +54,7 @@ drm_gem_dma_create_internal(struct drm_device *ddev, size_t size,
 	obj->base.funcs = &drm_gem_dma_default_funcs;
 
 	if (sgt) {
+		STUB();
 #ifdef notyet
 		error = -drm_prime_sg_to_bus_dmamem(obj->dmat, obj->dmasegs, 1,
 		    &nsegs, sgt);
@@ -89,6 +90,7 @@ drm_gem_dma_create_internal(struct drm_device *ddev, size_t size,
 	if (error)
 		goto unload;
 
+	obj->dma_addr = obj->dmamap->dm_segs[0].ds_addr;
 	return obj;
 
 unload:
@@ -144,16 +146,13 @@ drm_gem_dma_free_object(struct drm_gem_object *gem_obj)
 }
 
 int
-drm_gem_dma_dumb_create(struct drm_file *file_priv, struct drm_device *ddev,
-    struct drm_mode_create_dumb *args)
+drm_gem_dma_dumb_create_internal(struct drm_file *file_priv,
+    struct drm_device *ddev, struct drm_mode_create_dumb *args)
 {
 	struct drm_gem_dma_object *obj;
 	uint32_t handle;
 	int error;
 
-	args->pitch = args->width * ((args->bpp + 7) / 8);
-	args->size = args->pitch * args->height;
-	args->size = roundup(args->size, PAGE_SIZE);
 	args->handle = 0;
 
 	obj = drm_gem_dma_create(ddev, args->size);
@@ -173,11 +172,21 @@ drm_gem_dma_dumb_create(struct drm_file *file_priv, struct drm_device *ddev,
 }
 
 int
+drm_gem_dma_dumb_create(struct drm_file *file_priv, struct drm_device *ddev,
+    struct drm_mode_create_dumb *args)
+{
+	args->pitch = args->width * ((args->bpp + 7) / 8);
+	args->size = args->pitch * args->height;
+	args->size = roundup(args->size, PAGE_SIZE);
+
+	return drm_gem_dma_dumb_create_internal(file_priv, ddev, args);
+}
+
+int
 drm_gem_dma_fault(struct drm_gem_object *gem_obj, struct uvm_faultinfo *ufi,
     off_t offset, vaddr_t vaddr, vm_page_t *pps, int npages, int centeridx,
     vm_prot_t access_type, int flags)
 {
-	struct vm_map_entry *entry = ufi->entry;
 	struct drm_gem_dma_object *obj = to_drm_gem_dma_obj(gem_obj);
 	struct uvm_object *uobj = &obj->base.uobj;
 	paddr_t paddr;
@@ -222,10 +231,10 @@ drm_gem_dma_fault(struct drm_gem_object *gem_obj, struct uvm_faultinfo *ufi,
 struct sg_table *
 drm_gem_dma_get_sg_table(struct drm_gem_object *gem_obj)
 {
-	struct drm_gem_dma_object *obj = to_drm_gem_dma_obj(gem_obj);
-
 	return NULL;
 #ifdef notyet
+	struct drm_gem_dma_object *obj = to_drm_gem_dma_obj(gem_obj);
+
 	return drm_prime_bus_dmamem_to_sg(obj->dmat, obj->dmasegs, 1);
 #endif
 }

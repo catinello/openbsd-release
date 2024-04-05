@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip_carp.c,v 1.358 2023/09/16 09:33:27 mpi Exp $	*/
+/*	$OpenBSD: ip_carp.c,v 1.361 2024/02/13 12:22:09 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2002 Michael Shalayeff. All rights reserved.
@@ -54,6 +54,7 @@
 #include <net/if_var.h>
 #include <net/if_types.h>
 #include <net/netisr.h>
+#include <net/route.h>
 
 #include <crypto/sha1.h>
 

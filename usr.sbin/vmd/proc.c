@@ -1,4 +1,4 @@
-/*	$OpenBSD: proc.c,v 1.21 2023/09/26 01:53:54 dv Exp $	*/
+/*	$OpenBSD: proc.c,v 1.23 2024/02/20 21:40:37 dv Exp $	*/
 
 /*
  * Copyright (c) 2010 - 2016 Reyk Floeter <reyk@openbsd.org>
@@ -661,7 +661,7 @@ proc_dispatch(int fd, short event, void *arg)
 		case IMSG_CTL_PROCFD:
 			IMSG_SIZE_CHECK(&imsg, &pf);
 			memcpy(&pf, imsg.data, sizeof(pf));
-			proc_accept(ps, imsg.fd, pf.pf_procid,
+			proc_accept(ps, imsg_get_fd(&imsg), pf.pf_procid,
 			    pf.pf_instance);
 			break;
 		default:
@@ -685,9 +685,14 @@ proc_dispatch_null(int fd, struct privsep_proc *p, struct imsg *imsg)
 /*
  * imsg helper functions
  */
-
 void
 imsg_event_add(struct imsgev *iev)
+{
+	imsg_event_add2(iev, NULL);
+}
+
+void
+imsg_event_add2(struct imsgev *iev, struct event_base *ev_base)
 {
 	if (iev->handler == NULL) {
 		imsg_flush(&iev->ibuf);
@@ -700,6 +705,8 @@ imsg_event_add(struct imsgev *iev)
 
 	event_del(&iev->ev);
 	event_set(&iev->ev, iev->ibuf.fd, iev->events, iev->handler, iev->data);
+	if (ev_base != NULL)
+		event_base_set(ev_base, &iev->ev);
 	event_add(&iev->ev, NULL);
 }
 
@@ -707,12 +714,20 @@ int
 imsg_compose_event(struct imsgev *iev, uint16_t type, uint32_t peerid,
     pid_t pid, int fd, void *data, uint16_t datalen)
 {
+	return imsg_compose_event2(iev, type, peerid, pid, fd, data, datalen,
+	    NULL);
+}
+
+int
+imsg_compose_event2(struct imsgev *iev, uint16_t type, uint32_t peerid,
+    pid_t pid, int fd, void *data, uint16_t datalen, struct event_base *ev_base)
+{
 	int	ret;
 
 	if ((ret = imsg_compose(&iev->ibuf, type, peerid,
 	    pid, fd, data, datalen)) == -1)
 		return (ret);
-	imsg_event_add(iev);
+	imsg_event_add2(iev, ev_base);
 	return (ret);
 }
 
@@ -792,7 +807,8 @@ proc_forward_imsg(struct privsep *ps, struct imsg *imsg,
     enum privsep_procid id, int n)
 {
 	return (proc_compose_imsg(ps, id, n, imsg->hdr.type,
-	    imsg->hdr.peerid, imsg->fd, imsg->data, IMSG_DATA_SIZE(imsg)));
+	    imsg->hdr.peerid, imsg_get_fd(imsg), imsg->data,
+	    IMSG_DATA_SIZE(imsg)));
 }
 
 struct imsgbuf *

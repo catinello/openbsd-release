@@ -1,4 +1,4 @@
-#	$OpenBSD: GENERIC,v 1.519 2023/09/25 15:36:35 deraadt Exp $
+#	$OpenBSD: GENERIC,v 1.522 2024/02/15 16:33:56 deraadt Exp $
 #
 # For further information on compiling OpenBSD kernels, see the config(8)
 # man page.
@@ -556,6 +556,7 @@ lii*	at pci?				# Attansic L2 Ethernet
 jme*	at pci?				# JMicron JMC250/JMC260 Ethernet
 bnxt*	at pci?				# Broadcom BCM573xx, BCM574xx
 ixl*	at pci?				# Intel Ethernet 700 Series
+dwqe*	at pci?				# Intel Elkhart Lake Ethernet
 mcx*	at pci?				# Mellanox ConnectX-4
 iavf*	at pci?				# Intel Ethernet Adaptive VF
 aq*	at pci?				# Aquantia aQtion Ethernet
@@ -582,6 +583,7 @@ wpi*	at pci?				# Intel PRO/Wireless 3945ABG
 iwn*	at pci?				# Intel WiFi Link 4965/5000/1000/6000
 iwm*	at pci?				# Intel WiFi Link 7xxx
 iwx*	at pci?				# Intel WiFi Link 22xxx
+qwx*	at pci?				# Qualcomm 802.11ax
 ral*	at pci?				# Ralink RT2500/RT2501/RT2600
 ral*	at cardbus?			# Ralink RT2500/RT2501/RT2600
 rtw*	at pci?				# Realtek 8180

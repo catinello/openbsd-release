@@ -1,4 +1,4 @@
-/*	$OpenBSD: exec_elf.h,v 1.101 2023/06/10 19:30:48 kettenis Exp $	*/
+/*	$OpenBSD: exec_elf.h,v 1.103 2024/01/17 22:22:25 kurt Exp $	*/
 /*
  * Copyright (c) 1995, 1996 Erik Theisen.  All rights reserved.
  *
@@ -482,6 +482,7 @@ typedef struct {
 #define PT_OPENBSD_RANDOMIZE	0x65a3dbe6	/* fill with random data */
 #define PT_OPENBSD_WXNEEDED	0x65a3dbe7	/* program performs W^X violations */
 #define PT_OPENBSD_NOBTCFI	0x65a3dbe8	/* no branch target CFI */
+#define PT_OPENBSD_SYSCALLS	0x65a3dbe9	/* syscall locations */
 #define PT_OPENBSD_BOOTDATA	0x65a41be6	/* section for boot arguments */
 
 /* Segment flags - p_flags */
@@ -494,6 +495,10 @@ typedef struct {
 					/*  specific segment flags */
 
 #define PF_OPENBSD_MUTABLE	0x08000000	/* Mutable */
+
+#ifdef	_KERNEL
+#define PF_ISVNODE	0x00100000	/* For coredump segments */
+#endif
 
 /* Dynamic structure */
 typedef struct {

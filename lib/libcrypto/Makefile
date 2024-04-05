@@ -1,4 +1,4 @@
-# $OpenBSD: Makefile,v 1.155 2023/08/09 09:32:22 tb Exp $
+# $OpenBSD: Makefile,v 1.174 2024/03/02 13:39:28 tb Exp $
 
 LIB=	crypto
 LIBREBUILD=y
@@ -40,17 +40,23 @@ CFLAGS+= -I${LCRYPTO_SRC}/evp
 CFLAGS+= -I${LCRYPTO_SRC}/hidden
 CFLAGS+= -I${LCRYPTO_SRC}/hmac
 CFLAGS+= -I${LCRYPTO_SRC}/kdf
+CFLAGS+= -I${LCRYPTO_SRC}/lhash
 CFLAGS+= -I${LCRYPTO_SRC}/modes
 CFLAGS+= -I${LCRYPTO_SRC}/ocsp
 CFLAGS+= -I${LCRYPTO_SRC}/pkcs12
 CFLAGS+= -I${LCRYPTO_SRC}/rsa
 CFLAGS+= -I${LCRYPTO_SRC}/sha
+CFLAGS+= -I${LCRYPTO_SRC}/stack
 CFLAGS+= -I${LCRYPTO_SRC}/ts
 CFLAGS+= -I${LCRYPTO_SRC}/x509
 
 VERSION_SCRIPT=	Symbols.map
 SYMBOL_LIST=	${.CURDIR}/Symbols.list
 SYMBOL_NAMESPACE=	${.CURDIR}/Symbols.namespace
+
+.if (${MACHINE_CPU} == "amd64") || (${MACHINE_CPU} == "i386")
+SYMBOL_LIST+=	${.CURDIR}/arch/${MACHINE_CPU}/Symbols.list
+.endif
 
 # crypto/
 SRCS+= cpt_err.c
@@ -92,7 +98,6 @@ SRCS+= a_time_posix.c
 SRCS+= a_time_tm.c
 SRCS+= a_type.c
 SRCS+= a_utf8.c
-SRCS+= ameth_lib.c
 SRCS+= asn1_err.c
 SRCS+= asn1_gen.c
 SRCS+= asn1_item.c
@@ -280,7 +285,6 @@ SRCS+= ofb64enc.c
 SRCS+= ofb_enc.c
 SRCS+= pcbc_enc.c
 SRCS+= qud_cksm.c
-SRCS+= rand_key.c
 SRCS+= set_key.c
 SRCS+= str2key.c
 SRCS+= xcbc_enc.c
@@ -345,11 +349,7 @@ SRCS+= err_prn.c
 SRCS+= bio_b64.c
 SRCS+= bio_enc.c
 SRCS+= bio_md.c
-SRCS+= c_all.c
-SRCS+= cipher_method_lib.c
-SRCS+= digest.c
 SRCS+= e_aes.c
-SRCS+= e_aes_cbc_hmac_sha1.c
 SRCS+= e_bf.c
 SRCS+= e_camellia.c
 SRCS+= e_cast.c
@@ -357,24 +357,21 @@ SRCS+= e_chacha.c
 SRCS+= e_chacha20poly1305.c
 SRCS+= e_des.c
 SRCS+= e_des3.c
-SRCS+= e_gost2814789.c
 SRCS+= e_idea.c
 SRCS+= e_null.c
 SRCS+= e_rc2.c
 SRCS+= e_rc4.c
-SRCS+= e_rc4_hmac_md5.c
 SRCS+= e_sm4.c
 SRCS+= e_xcbc_d.c
-SRCS+= encode.c
 SRCS+= evp_aead.c
-SRCS+= evp_enc.c
+SRCS+= evp_cipher.c
+SRCS+= evp_digest.c
+SRCS+= evp_encode.c
 SRCS+= evp_err.c
 SRCS+= evp_key.c
-SRCS+= evp_lib.c
+SRCS+= evp_names.c
 SRCS+= evp_pbe.c
 SRCS+= evp_pkey.c
-SRCS+= m_gost2814789.c
-SRCS+= m_gostr341194.c
 SRCS+= m_md4.c
 SRCS+= m_md5.c
 SRCS+= m_md5_sha1.c
@@ -384,37 +381,14 @@ SRCS+= m_sha1.c
 SRCS+= m_sha3.c
 SRCS+= m_sigver.c
 SRCS+= m_sm3.c
-SRCS+= m_streebog.c
 SRCS+= m_wp.c
-SRCS+= names.c
-SRCS+= p5_crpt.c
-SRCS+= p5_crpt2.c
-SRCS+= p_dec.c
-SRCS+= p_enc.c
+SRCS+= p_legacy.c
 SRCS+= p_lib.c
-SRCS+= p_open.c
-SRCS+= p_seal.c
 SRCS+= p_sign.c
 SRCS+= p_verify.c
 SRCS+= pmeth_fn.c
 SRCS+= pmeth_gn.c
 SRCS+= pmeth_lib.c
-
-# gost/
-SRCS+= gost2814789.c
-SRCS+= gost89_keywrap.c
-SRCS+= gost89_params.c
-SRCS+= gost89imit_ameth.c
-SRCS+= gost89imit_pmeth.c
-SRCS+= gost_asn1.c
-SRCS+= gost_err.c
-SRCS+= gostr341001.c
-SRCS+= gostr341001_ameth.c
-SRCS+= gostr341001_key.c
-SRCS+= gostr341001_params.c
-SRCS+= gostr341001_pmeth.c
-SRCS+= gostr341194.c
-SRCS+= streebog.c
 
 # hkdf/
 SRCS+= hkdf.c
@@ -436,7 +410,6 @@ SRCS+= hkdf_evp.c
 SRCS+= kdf_err.c
 
 # lhash/
-SRCS+= lh_stats.c
 SRCS+= lhash.c
 
 # md4/
@@ -455,7 +428,6 @@ SRCS+= ofb128.c
 SRCS+= xts128.c
 
 # objects/
-SRCS+= o_names.c
 SRCS+= obj_dat.c
 SRCS+= obj_err.c
 SRCS+= obj_lib.c
@@ -489,7 +461,6 @@ SRCS+= pvkfmt.c
 SRCS+= p12_add.c
 SRCS+= p12_asn.c
 SRCS+= p12_attr.c
-SRCS+= p12_crpt.c
 SRCS+= p12_crt.c
 SRCS+= p12_decr.c
 SRCS+= p12_init.c
@@ -712,6 +683,7 @@ HDRS=\
 	${LCRYPTO_SRC}/aes/aes.h \
 	${LCRYPTO_SRC}/asn1/asn1.h \
 	${LCRYPTO_SRC}/asn1/asn1t.h \
+	${LCRYPTO_SRC}/asn1/posix_time.h \
 	${LCRYPTO_SRC}/bf/blowfish.h \
 	${LCRYPTO_SRC}/bio/bio.h \
 	${LCRYPTO_SRC}/bn/bn.h \
@@ -736,7 +708,6 @@ HDRS=\
 	${LCRYPTO_SRC}/engine/engine.h \
 	${LCRYPTO_SRC}/err/err.h \
 	${LCRYPTO_SRC}/evp/evp.h \
-	${LCRYPTO_SRC}/gost/gost.h \
 	${LCRYPTO_SRC}/hkdf/hkdf.h \
 	${LCRYPTO_SRC}/hmac/hmac.h \
 	${LCRYPTO_SRC}/idea/idea.h \

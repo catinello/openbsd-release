@@ -1,4 +1,4 @@
-/*	$OpenBSD: print.c,v 1.43 2023/07/19 21:49:30 job Exp $ */
+/*	$OpenBSD: print.c,v 1.52 2024/02/26 10:02:37 job Exp $ */
 /*
  * Copyright (c) 2021 Claudio Jeker <claudio@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -50,6 +50,22 @@ pretty_key_id(const char *hex)
 }
 
 char *
+nid2str(int nid)
+{
+	static char buf[128];
+	const char *name;
+
+	if ((name = OBJ_nid2ln(nid)) == NULL)
+		name = OBJ_nid2sn(nid);
+	if (name == NULL)
+		name = "unknown";
+
+	snprintf(buf, sizeof(buf), "nid %d (%s)", nid, name);
+
+	return buf;
+}
+
+char *
 time2str(time_t t)
 {
 	static char buf[64];
@@ -67,29 +83,16 @@ void
 tal_print(const struct tal *p)
 {
 	char			*ski;
-	EVP_PKEY		*pk;
-	RSA			*r;
 	const unsigned char	*der;
-	unsigned char		*rder = NULL;
-	unsigned char		 md[SHA_DIGEST_LENGTH];
-	int			 rder_len;
+	X509_PUBKEY		*pubkey;
 	size_t			 i;
 
 	der = p->pkey;
-	pk = d2i_PUBKEY(NULL, &der, p->pkeysz);
-	if (pk == NULL)
-		errx(1, "d2i_PUBKEY failed in %s", __func__);
+	if ((pubkey = d2i_X509_PUBKEY(NULL, &der, p->pkeysz)) == NULL)
+		errx(1, "d2i_X509_PUBKEY failed");
 
-	r = EVP_PKEY_get0_RSA(pk);
-	if (r == NULL)
-		errx(1, "EVP_PKEY_get0_RSA failed in %s", __func__);
-	if ((rder_len = i2d_RSAPublicKey(r, &rder)) <= 0)
-		errx(1, "i2d_RSAPublicKey failed in %s", __func__);
-
-	if (!EVP_Digest(rder, rder_len, md, NULL, EVP_sha1(), NULL))
-		errx(1, "EVP_Digest failed in %s", __func__);
-
-	ski = hex_encode(md, SHA_DIGEST_LENGTH);
+	if ((ski = x509_pubkey_get_ski(pubkey, p->descr)) == NULL)
+		errx(1, "x509_pubkey_get_ski failed");
 
 	if (outformats & FORMAT_JSON) {
 		json_do_string("type", "tal");
@@ -110,8 +113,7 @@ tal_print(const struct tal *p)
 		}
 	}
 
-	EVP_PKEY_free(pk);
-	free(rder);
+	X509_PUBKEY_free(pubkey);
 	free(ski);
 }
 
@@ -327,7 +329,6 @@ crl_print(const struct crl *p)
 {
 	STACK_OF(X509_REVOKED)	*revlist;
 	X509_REVOKED *rev;
-	ASN1_INTEGER *crlnum;
 	X509_NAME *xissuer;
 	int i;
 	char *issuer, *serial;
@@ -341,28 +342,24 @@ crl_print(const struct crl *p)
 
 	xissuer = X509_CRL_get_issuer(p->x509_crl);
 	issuer = X509_NAME_oneline(xissuer, NULL, 0);
-	crlnum = X509_CRL_get_ext_d2i(p->x509_crl, NID_crl_number, NULL, NULL);
-	serial = x509_convert_seqnum(__func__, crlnum);
-	if (issuer != NULL && serial != NULL) {
+	if (issuer != NULL && p->number != NULL) {
 		if (outformats & FORMAT_JSON) {
 			json_do_string("crl_issuer", issuer);
-			json_do_string("crl_serial", serial);
+			json_do_string("crl_serial", p->number);
 		} else {
 			printf("CRL issuer:               %s\n", issuer);
-			printf("CRL serial number:        %s\n", serial);
+			printf("CRL serial number:        %s\n", p->number);
 		}
 	}
 	free(issuer);
-	free(serial);
-	ASN1_INTEGER_free(crlnum);
 
 	if (outformats & FORMAT_JSON) {
-		json_do_int("valid_since", p->lastupdate);
+		json_do_int("valid_since", p->thisupdate);
 		json_do_int("valid_until", p->nextupdate);
 		json_do_array("revoked_certs");
 	} else {
-		printf("CRL last update:          %s\n",
-		    time2str(p->lastupdate));
+		printf("CRL this update:          %s\n",
+		    time2str(p->thisupdate));
 		printf("CRL next update:          %s\n",
 		    time2str(p->nextupdate));
 		printf("Revoked Certificates:\n");
@@ -504,6 +501,60 @@ roa_print(const X509 *x, const struct roa *p)
 			if (i > 0)
 				printf("%26s", "");
 			printf("%s maxlen: %hhu\n", buf, p->ips[i].maxlength);
+		}
+	}
+	if (outformats & FORMAT_JSON)
+		json_do_end();
+}
+
+void
+spl_print(const X509 *x, const struct spl *s)
+{
+	char	 buf[128];
+	size_t	 i;
+
+	if (outformats & FORMAT_JSON) {
+		json_do_string("type", "spl");
+		json_do_string("ski", pretty_key_id(s->ski));
+		x509_print(x);
+		json_do_string("aki", pretty_key_id(s->aki));
+		json_do_string("aia", s->aia);
+		json_do_string("sia", s->sia);
+		if (s->signtime != 0)
+			json_do_int("signing_time", s->signtime);
+		json_do_int("valid_since", s->notbefore);
+		json_do_int("valid_until", s->notafter);
+		if (s->expires)
+			json_do_int("expires", s->expires);
+		json_do_int("asid", s->asid);
+	} else {
+		printf("Subject key identifier:   %s\n", pretty_key_id(s->ski));
+		x509_print(x);
+		printf("Authority key identifier: %s\n", pretty_key_id(s->aki));
+		printf("Authority info access:    %s\n", s->aia);
+		printf("Subject info access:      %s\n", s->sia);
+		if (s->signtime != 0)
+			printf("Signing time:             %s\n",
+			    time2str(s->signtime));
+		printf("SPL not before:           %s\n",
+		    time2str(s->notbefore));
+		printf("SPL not after:            %s\n", time2str(s->notafter));
+		printf("asID:                     %u\n", s->asid);
+		printf("Originated IP Prefixes:   ");
+	}
+
+	if (outformats & FORMAT_JSON)
+		json_do_array("prefixes");
+	for (i = 0; i < s->pfxsz; i++) {
+		ip_addr_print(&s->pfxs[i].prefix, s->pfxs[i].afi, buf,
+		    sizeof(buf));
+
+		if (outformats & FORMAT_JSON) {
+			json_do_string("prefix", buf);
+		} else {
+			if (i > 0)
+				printf("%26s", "");
+			printf("%s\n", buf);
 		}
 	}
 	if (outformats & FORMAT_JSON)
@@ -683,14 +734,17 @@ takey_print(char *name, const struct takey *t)
 			json_do_string("uri", t->uris[i]);
 		json_do_end();
 		json_do_string("spki", spki);
+		json_do_end();
 	} else {
 		printf("TAL derived from the '%s' Trust Anchor Key:\n\n", name);
 
 		for (i = 0; i < t->commentsz; i++)
 			printf("\t# %s\n", t->comments[i]);
-		printf("\n");
+		if (t->commentsz > 0)
+			printf("\n");
 		for (i = 0; i < t->urisz; i++)
-			printf("\t%s\n\t", t->uris[i]);
+			printf("\t%s\n", t->uris[i]);
+		printf("\n\t");
 		for (i = 0; i < strlen(spki); i++) {
 			printf("%c", spki[i]);
 			if ((++j % 64) == 0)

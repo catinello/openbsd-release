@@ -1,4 +1,4 @@
-/*	$OpenBSD: uipc_socket2.c,v 1.137 2023/07/04 22:28:24 mvs Exp $	*/
+/*	$OpenBSD: uipc_socket2.c,v 1.144 2024/02/12 22:48:27 mvs Exp $	*/
 /*	$NetBSD: uipc_socket2.c,v 1.11 1996/02/04 02:17:55 christos Exp $	*/
 
 /*
@@ -188,7 +188,7 @@ sonewconn(struct socket *head, int connstatus, int wait)
 		return (NULL);
 	if (head->so_qlen + head->so_q0len > head->so_qlimit * 3)
 		return (NULL);
-	so = soalloc(wait);
+	so = soalloc(head->so_proto, wait);
 	if (so == NULL)
 		return (NULL);
 	so->so_type = head->so_type;
@@ -216,10 +216,14 @@ sonewconn(struct socket *head, int connstatus, int wait)
 		goto fail;
 	so->so_snd.sb_wat = head->so_snd.sb_wat;
 	so->so_snd.sb_lowat = head->so_snd.sb_lowat;
+	mtx_enter(&head->so_snd.sb_mtx);
 	so->so_snd.sb_timeo_nsecs = head->so_snd.sb_timeo_nsecs;
+	mtx_leave(&head->so_snd.sb_mtx);
 	so->so_rcv.sb_wat = head->so_rcv.sb_wat;
 	so->so_rcv.sb_lowat = head->so_rcv.sb_lowat;
+	mtx_enter(&head->so_rcv.sb_mtx);
 	so->so_rcv.sb_timeo_nsecs = head->so_rcv.sb_timeo_nsecs;
+	mtx_leave(&head->so_rcv.sb_mtx);
 
 	sigio_copy(&so->so_sigio, &head->so_sigio);
 
@@ -368,7 +372,7 @@ solock_shared(struct socket *so)
 	case PF_INET6:
 		if (so->so_proto->pr_usrreqs->pru_lock != NULL) {
 			NET_LOCK_SHARED();
-			pru_lock(so);
+			rw_enter_write(&so->so_lock);
 		} else
 			NET_LOCK();
 		break;
@@ -427,7 +431,7 @@ sounlock_shared(struct socket *so)
 	case PF_INET:
 	case PF_INET6:
 		if (so->so_proto->pr_usrreqs->pru_unlock != NULL) {
-			pru_unlock(so);
+			rw_exit_write(&so->so_lock);
 			NET_UNLOCK_SHARED();
 		} else
 			NET_UNLOCK();
@@ -439,12 +443,33 @@ sounlock_shared(struct socket *so)
 }
 
 void
-soassertlocked(struct socket *so)
+soassertlocked_readonly(struct socket *so)
 {
 	switch (so->so_proto->pr_domain->dom_family) {
 	case PF_INET:
 	case PF_INET6:
 		NET_ASSERT_LOCKED();
+		break;
+	default:
+		rw_assert_wrlock(&so->so_lock);
+		break;
+	}
+}
+
+void
+soassertlocked(struct socket *so)
+{
+	switch (so->so_proto->pr_domain->dom_family) {
+	case PF_INET:
+	case PF_INET6:
+		if (rw_status(&netlock) == RW_READ) {
+			NET_ASSERT_LOCKED();
+
+			if (splassert_ctl > 0 && pru_locked(so) == 0 &&
+			    rw_status(&so->so_lock) != RW_WRITE)
+				splassert_fail(0, RW_WRITE, __func__);
+		} else
+			NET_ASSERT_LOCKED_EXCLUSIVE();
 		break;
 	default:
 		rw_assert_wrlock(&so->so_lock);
@@ -463,12 +488,12 @@ sosleep_nsec(struct socket *so, void *ident, int prio, const char *wmesg,
 	case PF_INET6:
 		if (so->so_proto->pr_usrreqs->pru_unlock != NULL &&
 		    rw_status(&netlock) == RW_READ) {
-			pru_unlock(so);
+			rw_exit_write(&so->so_lock);
 		}
 		ret = rwsleep_nsec(ident, &netlock, prio, wmesg, nsecs);
 		if (so->so_proto->pr_usrreqs->pru_lock != NULL &&
 		    rw_status(&netlock) == RW_READ) {
-			pru_lock(so);
+			rw_enter_write(&so->so_lock);
 		}
 		break;
 	default:
@@ -479,56 +504,84 @@ sosleep_nsec(struct socket *so, void *ident, int prio, const char *wmesg,
 	return ret;
 }
 
+void
+sbmtxassertlocked(struct socket *so, struct sockbuf *sb)
+{
+	if (sb->sb_flags & SB_MTXLOCK) {
+		if (splassert_ctl > 0 && mtx_owned(&sb->sb_mtx) == 0)
+			splassert_fail(0, RW_WRITE, __func__);
+	} else
+		soassertlocked(so);
+}
+
 /*
  * Wait for data to arrive at/drain from a socket buffer.
  */
 int
 sbwait(struct socket *so, struct sockbuf *sb)
 {
+	uint64_t timeo_nsecs;
 	int prio = (sb->sb_flags & SB_NOINTR) ? PSOCK : PSOCK | PCATCH;
 
 	soassertlocked(so);
 
+	mtx_enter(&sb->sb_mtx);
+	timeo_nsecs = sb->sb_timeo_nsecs;
 	sb->sb_flags |= SB_WAIT;
-	return sosleep_nsec(so, &sb->sb_cc, prio, "netio", sb->sb_timeo_nsecs);
+	mtx_leave(&sb->sb_mtx);
+
+	return sosleep_nsec(so, &sb->sb_cc, prio, "netio", timeo_nsecs);
 }
 
 int
 sblock(struct socket *so, struct sockbuf *sb, int flags)
 {
-	int error, prio = PSOCK;
+	int error = 0, prio = PSOCK;
 
 	soassertlocked(so);
 
+	mtx_enter(&sb->sb_mtx);
 	if ((sb->sb_flags & SB_LOCK) == 0) {
 		sb->sb_flags |= SB_LOCK;
-		return (0);
+		goto out;
 	}
-	if ((flags & SBL_WAIT) == 0)
-		return (EWOULDBLOCK);
+	if ((flags & SBL_WAIT) == 0) {
+		error = EWOULDBLOCK;
+		goto out;
+	}
 	if (!(flags & SBL_NOINTR || sb->sb_flags & SB_NOINTR))
 		prio |= PCATCH;
 
 	while (sb->sb_flags & SB_LOCK) {
 		sb->sb_flags |= SB_WANT;
+		mtx_leave(&sb->sb_mtx);
 		error = sosleep_nsec(so, &sb->sb_flags, prio, "netlck", INFSLP);
 		if (error)
 			return (error);
+		mtx_enter(&sb->sb_mtx);
 	}
 	sb->sb_flags |= SB_LOCK;
-	return (0);
+out:
+	mtx_leave(&sb->sb_mtx);
+
+	return (error);
 }
 
 void
 sbunlock(struct socket *so, struct sockbuf *sb)
 {
-	soassertlocked(so);
+	int dowakeup = 0;
 
+	mtx_enter(&sb->sb_mtx);
 	sb->sb_flags &= ~SB_LOCK;
 	if (sb->sb_flags & SB_WANT) {
 		sb->sb_flags &= ~SB_WANT;
-		wakeup(&sb->sb_flags);
+		dowakeup = 1;
 	}
+	mtx_leave(&sb->sb_mtx);
+
+	if (dowakeup)
+		wakeup(&sb->sb_flags);
 }
 
 /*
@@ -539,15 +592,24 @@ sbunlock(struct socket *so, struct sockbuf *sb)
 void
 sowakeup(struct socket *so, struct sockbuf *sb)
 {
-	soassertlocked(so);
+	int dowakeup = 0, dopgsigio = 0;
 
+	mtx_enter(&sb->sb_mtx);
 	if (sb->sb_flags & SB_WAIT) {
 		sb->sb_flags &= ~SB_WAIT;
-		wakeup(&sb->sb_cc);
+		dowakeup = 1;
 	}
 	if (sb->sb_flags & SB_ASYNC)
-		pgsigio(&so->so_sigio, SIGIO, 0);
+		dopgsigio = 1;
+
 	knote_locked(&sb->sb_klist, 0);
+	mtx_leave(&sb->sb_mtx);
+
+	if (dowakeup)
+		wakeup(&sb->sb_cc);
+
+	if (dopgsigio)
+		pgsigio(&so->so_sigio, SIGIO, 0);
 }
 
 /*
@@ -873,7 +935,7 @@ sbappendaddr(struct socket *so, struct sockbuf *sb, const struct sockaddr *asa,
 	struct mbuf *m, *n, *nlast;
 	int space = asa->sa_len;
 
-	soassertlocked(so);
+	sbmtxassertlocked(so, sb);
 
 	if (m0 && (m0->m_flags & M_PKTHDR) == 0)
 		panic("sbappendaddr");
@@ -920,7 +982,7 @@ sbappendcontrol(struct socket *so, struct sockbuf *sb, struct mbuf *m0,
     struct mbuf *control)
 {
 	struct mbuf *m, *mlast, *n;
-	int space = 0;
+	int eor = 0, space = 0;
 
 	if (control == NULL)
 		panic("sbappendcontrol");
@@ -930,8 +992,16 @@ sbappendcontrol(struct socket *so, struct sockbuf *sb, struct mbuf *m0,
 			break;
 	}
 	n = m;			/* save pointer to last control buffer */
-	for (m = m0; m; m = m->m_next)
+	for (m = m0; m; m = m->m_next) {
 		space += m->m_len;
+		eor |= m->m_flags & M_EOR;
+		if (eor) {
+			if (m->m_next == NULL)
+				m->m_flags |= M_EOR;
+			else
+				m->m_flags &= ~M_EOR;
+		}
+	}
 	if (space > sbspace(so, sb))
 		return (0);
 	n->m_next = m0;			/* concatenate data to control */

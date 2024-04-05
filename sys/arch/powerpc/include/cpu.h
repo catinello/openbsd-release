@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.75 2023/07/25 18:16:20 cheloha Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.77 2024/02/25 19:15:50 cheloha Exp $	*/
 /*	$NetBSD: cpu.h,v 1.1 1996/09/30 16:34:21 ws Exp $	*/
 
 /*
@@ -73,7 +73,7 @@ struct cpu_info {
 #define DISISAVE_LEN	4
 	register_t ci_disisave[DISISAVE_LEN];
 
-	struct clockintr_queue ci_queue;
+	struct clockqueue ci_queue;
 
 	volatile int    ci_ddb_paused;
 #define	CI_DDB_RUNNING	0
@@ -89,7 +89,7 @@ struct cpu_info {
 #endif
 #ifdef GPROF
 	struct gmonparam *ci_gmon;
-	struct clockintr *ci_gmonclock;
+	struct clockintr ci_gmonclock;
 #endif
 	char ci_panicbuf[512];
 };

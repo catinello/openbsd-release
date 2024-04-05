@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.102 2023/07/25 18:16:21 cheloha Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.104 2024/02/25 19:15:50 cheloha Exp $	*/
 /*	$NetBSD: cpu.h,v 1.28 2001/06/14 22:56:58 thorpej Exp $ */
 
 /*
@@ -130,7 +130,7 @@ struct cpu_info {
 	int			ci_want_resched;
 	int			ci_handled_intr_level;
 	void			*ci_intrpending[16][8];
-	struct clockintr_queue	ci_queue;
+	struct clockqueue	ci_queue;
 	struct intrhand		ci_tickintr;
 
 	volatile int		ci_ddb_paused;
@@ -165,7 +165,7 @@ struct cpu_info {
 #endif
 #ifdef GPROF
 	struct gmonparam *ci_gmon;
-	struct clockintr *ci_gmonclock;
+	struct clockintr ci_gmonclock;
 #endif
 	char			ci_panicbuf[512];
 };

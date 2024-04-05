@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.h,v 1.477 2023/08/30 08:16:28 claudio Exp $ */
+/*	$OpenBSD: bgpd.h,v 1.486 2024/02/19 10:15:35 job Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -197,14 +197,12 @@ struct bgpd_addr {
 		struct in_addr		v4;
 		struct in6_addr		v6;
 		/* maximum size for a prefix is 256 bits */
-	} ba;		    /* 128-bit address */
+	};		    /* 128-bit address */
 	uint64_t	rd;		/* route distinguisher for VPN addrs */
 	uint32_t	scope_id;	/* iface scope id for v6 */
 	uint8_t		aid;
 	uint8_t		labellen;	/* size of the labelstack */
 	uint8_t		labelstack[18];	/* max that makes sense */
-#define	v4	ba.v4
-#define	v6	ba.v6
 };
 
 #define	DEFAULT_LISTENER	0x01
@@ -562,6 +560,7 @@ struct rtr_config {
 
 struct ctl_show_rtr {
 	char			descr[PEER_DESCR_LEN];
+	char			state[PEER_DESCR_LEN];
 	struct bgpd_addr	remote_addr;
 	struct bgpd_addr	local_addr;
 	uint32_t		serial;
@@ -706,7 +705,8 @@ enum err_codes {
 	ERR_HOLDTIMEREXPIRED,
 	ERR_FSM,
 	ERR_CEASE,
-	ERR_RREFRESH
+	ERR_RREFRESH,
+	ERR_SENDHOLDTIMEREXPIRED,
 };
 
 enum suberr_update {
@@ -796,6 +796,7 @@ struct session_up {
 	struct bgpd_addr	remote_addr;
 	struct capabilities	capa;
 	uint32_t		remote_bgpid;
+	unsigned int		if_scope;
 	uint16_t		short_as;
 };
 
@@ -973,6 +974,11 @@ struct ctl_show_rib_request {
 	uint8_t			aid;
 };
 
+struct ctl_kroute_req {
+	int			flags;
+	sa_family_t		af;
+};
+
 enum filter_actions {
 	ACTION_NONE,
 	ACTION_ALLOW,
@@ -1146,9 +1152,9 @@ extern const struct ext_comm_pairs iana_ext_comms[];
 #define FLOWSPEC_TYPE_FLOW		13
 #define FLOWSPEC_TYPE_MAX		14
 
-#define FLOWSPEC_TCP_FLAG_STRING 	"FSRPAUEW"
-#define FLOWSPEC_FRAG_STRING4 		"DIFL"
-#define FLOWSPEC_FRAG_STRING6 		" IFL"
+#define FLOWSPEC_TCP_FLAG_STRING	"FSRPAUEW"
+#define FLOWSPEC_FRAG_STRING4		"DIFL"
+#define FLOWSPEC_FRAG_STRING6		" IFL"
 
 struct filter_prefix {
 	struct bgpd_addr	addr;
@@ -1439,6 +1445,7 @@ void		 kr_ifinfo(char *);
 void		 kr_net_reload(u_int, uint64_t, struct network_head *);
 int		 kr_reload(void);
 int		 get_mpe_config(const char *, u_int *, u_int *);
+uint8_t		 mask2prefixlen(sa_family_t, struct sockaddr *);
 
 /* log.c */
 void		 log_peer_info(const struct peer_config *, const char *, ...)
@@ -1534,27 +1541,26 @@ const char	*log_as(uint32_t);
 const char	*log_rd(uint64_t);
 const char	*log_ext_subtype(int, uint8_t);
 const char	*log_reason(const char *);
+const char	*log_aspath_error(int);
+const char	*log_roa(struct roa *);
+const char	*log_aspa(struct aspa_set *);
 const char	*log_rtr_error(enum rtr_error);
 const char	*log_policy(enum role);
-int		 aspath_snprint(char *, size_t, void *, uint16_t);
-int		 aspath_asprint(char **, void *, uint16_t);
-size_t		 aspath_strlen(void *, uint16_t);
+int		 aspath_asprint(char **, struct ibuf *);
 uint32_t	 aspath_extract(const void *, int);
-int		 aspath_verify(void *, uint16_t, int, int);
+int		 aspath_verify(struct ibuf *, int, int);
 #define		 AS_ERR_LEN	-1
 #define		 AS_ERR_TYPE	-2
 #define		 AS_ERR_BAD	-3
 #define		 AS_ERR_SOFT	-4
-u_char		*aspath_inflate(void *, uint16_t, uint16_t *);
+struct ibuf	*aspath_inflate(struct ibuf *);
 int		 extract_prefix(const u_char *, int, void *, uint8_t, uint8_t);
-int		 nlri_get_prefix(u_char *, uint16_t, struct bgpd_addr *,
-		    uint8_t *);
-int		 nlri_get_prefix6(u_char *, uint16_t, struct bgpd_addr *,
-		    uint8_t *);
-int		 nlri_get_vpn4(u_char *, uint16_t, struct bgpd_addr *,
-		    uint8_t *, int);
-int		 nlri_get_vpn6(u_char *, uint16_t, struct bgpd_addr *,
-		    uint8_t *, int);
+int		 nlri_get_prefix(struct ibuf *, struct bgpd_addr *, uint8_t *);
+int		 nlri_get_prefix6(struct ibuf *, struct bgpd_addr *, uint8_t *);
+int		 nlri_get_vpn4(struct ibuf *, struct bgpd_addr *, uint8_t *,
+		    int);
+int		 nlri_get_vpn6(struct ibuf *, struct bgpd_addr *, uint8_t *,
+		    int);
 int		 prefix_compare(const struct bgpd_addr *,
 		    const struct bgpd_addr *, int);
 void		 inet4applymask(struct in_addr *, const struct in_addr *, int);

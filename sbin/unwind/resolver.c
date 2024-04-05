@@ -1,4 +1,4 @@
-/*	$OpenBSD: resolver.c,v 1.162 2023/09/12 15:38:32 tb Exp $	*/
+/*	$OpenBSD: resolver.c,v 1.164 2024/02/25 10:13:09 florian Exp $	*/
 
 
 /*
@@ -236,6 +236,20 @@ static const char * const	 forward_transparent_zones[] = {
 	/* RFC1918 */
 	"10.in-addr.arpa. transparent",
 	"16.172.in-addr.arpa. transparent",
+	"17.172.in-addr.arpa. transparent",
+	"18.172.in-addr.arpa. transparent",
+	"19.172.in-addr.arpa. transparent",
+	"20.172.in-addr.arpa. transparent",
+	"21.172.in-addr.arpa. transparent",
+	"22.172.in-addr.arpa. transparent",
+	"23.172.in-addr.arpa. transparent",
+	"24.172.in-addr.arpa. transparent",
+	"25.172.in-addr.arpa. transparent",
+	"26.172.in-addr.arpa. transparent",
+	"27.172.in-addr.arpa. transparent",
+	"28.172.in-addr.arpa. transparent",
+	"29.172.in-addr.arpa. transparent",
+	"30.172.in-addr.arpa. transparent",
 	"31.172.in-addr.arpa. transparent",
 	"168.192.in-addr.arpa. transparent",
 
@@ -641,7 +655,7 @@ resolver_dispatch_main(int fd, short event, void *bula)
 				fatalx("%s: received unexpected imsg fd "
 				    "to resolver", __func__);
 
-			if ((fd = imsg.fd) == -1)
+			if ((fd = imsg_get_fd(&imsg)) == -1)
 				fatalx("%s: expected to receive imsg fd to "
 				   "resolver but didn't receive any", __func__);
 

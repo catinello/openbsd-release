@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_ix.c,v 1.204 2023/08/21 21:45:18 bluhm Exp $	*/
+/*	$OpenBSD: if_ix.c,v 1.211 2024/03/07 17:09:02 jan Exp $	*/
 
 /******************************************************************************
 
@@ -38,8 +38,8 @@
 #include <dev/pci/ixgbe_type.h>
 
 /*
- * Our TCP/IP Stack could not handle packets greater than MAXMCLBYTES.
- * This interface could not handle packets greater than IXGBE_TSO_SIZE.
+ * Our TCP/IP Stack is unable to handle packets greater than MAXMCLBYTES.
+ * This interface is unable to handle packets greater than IXGBE_TSO_SIZE.
  */
 CTASSERT(MAXMCLBYTES <= IXGBE_TSO_SIZE);
 
@@ -1918,7 +1918,7 @@ ixgbe_setup_interface(struct ix_softc *sc)
 	ifp->if_watchdog = ixgbe_watchdog;
 	ifp->if_hardmtu = IXGBE_MAX_FRAME_SIZE -
 	    ETHER_HDR_LEN - ETHER_CRC_LEN;
-	ifq_set_maxlen(&ifp->if_snd, sc->num_tx_desc - 1);
+	ifq_init_maxlen(&ifp->if_snd, sc->num_tx_desc - 1);
 
 	ifp->if_capabilities = IFCAP_VLAN_MTU;
 
@@ -1932,7 +1932,9 @@ ixgbe_setup_interface(struct ix_softc *sc)
 
 	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
 	if (sc->hw.mac.type != ixgbe_mac_82598EB) {
+#ifndef __sparc64__
 		ifp->if_xflags |= IFXF_LRO;
+#endif
 		ifp->if_capabilities |= IFCAP_LRO;
 	}
 
@@ -2494,16 +2496,12 @@ ixgbe_tx_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
 {
 	struct ether_extracted ext;
 	int offload = 0;
-	uint32_t ethlen, iphlen;
 
 	ether_extract_headers(mp, &ext);
-	ethlen = sizeof(*ext.eh);
 
-	*vlan_macip_lens |= (ethlen << IXGBE_ADVTXD_MACLEN_SHIFT);
+	*vlan_macip_lens |= (sizeof(*ext.eh) << IXGBE_ADVTXD_MACLEN_SHIFT);
 
 	if (ext.ip4) {
-		iphlen = ext.ip4->ip_hl << 2;
-
 		if (ISSET(mp->m_pkthdr.csum_flags, M_IPV4_CSUM_OUT)) {
 			*olinfo_status |= IXGBE_TXD_POPTS_IXSM << 8;
 			offload = 1;
@@ -2512,8 +2510,6 @@ ixgbe_tx_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
 		*type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_IPV4;
 #ifdef INET6
 	} else if (ext.ip6) {
-		iphlen = sizeof(*ext.ip6);
-
 		*type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_IPV6;
 #endif
 	} else {
@@ -2522,7 +2518,7 @@ ixgbe_tx_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
 		return offload;
 	}
 
-	*vlan_macip_lens |= iphlen;
+	*vlan_macip_lens |= ext.iphlen;
 
 	if (ext.tcp) {
 		*type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_L4T_TCP;
@@ -2542,13 +2538,13 @@ ixgbe_tx_offload(struct mbuf *mp, uint32_t *vlan_macip_lens,
 		if (ext.tcp) {
 			uint32_t hdrlen, thlen, paylen, outlen;
 
-			thlen = ext.tcp->th_off << 2;
+			thlen = ext.tcphlen;
 
 			outlen = mp->m_pkthdr.ph_mss;
 			*mss_l4len_idx |= outlen << IXGBE_ADVTXD_MSS_SHIFT;
 			*mss_l4len_idx |= thlen << IXGBE_ADVTXD_L4LEN_SHIFT;
 
-			hdrlen = ethlen + iphlen + thlen;
+			hdrlen = sizeof(*ext.eh) + ext.iphlen + thlen;
 			paylen = mp->m_pkthdr.len - hdrlen;
 			CLR(*olinfo_status, IXGBE_ADVTXD_PAYLEN_MASK
 			    << IXGBE_ADVTXD_PAYLEN_SHIFT);
@@ -3180,10 +3176,10 @@ ixgbe_rxeof(struct rx_ring *rxr)
 		if (staterr & IXGBE_RXDADV_ERR_FRAME_ERR_MASK) {
 			if (rxbuf->fmp) {
 				m_freem(rxbuf->fmp);
-				rxbuf->fmp = NULL;
+			} else {
+				m_freem(mp);
 			}
-
-			m_freem(mp);
+			rxbuf->fmp = NULL;
 			rxbuf->buf = NULL;
 			goto next_desc;
 		}
@@ -3230,6 +3226,8 @@ ixgbe_rxeof(struct rx_ring *rxr)
 			sendmp = mp;
 			sendmp->m_pkthdr.len = 0;
 			sendmp->m_pkthdr.ph_mss = 0;
+		} else {
+			mp->m_flags &= ~M_PKTHDR;
 		}
 		sendmp->m_pkthdr.len += mp->m_len;
 		/*
@@ -3266,22 +3264,24 @@ ixgbe_rxeof(struct rx_ring *rxr)
 
 			if (pkts > 1) {
 				struct ether_extracted ext;
-				uint32_t hdrlen, paylen;
+				uint32_t paylen;
 
-				/* Calculate header size. */
+				/*
+				 * Calculate the payload size:
+				 *
+				 * The packet length returned by the NIC
+				 * (sendmp->m_pkthdr.len) can contain
+				 * padding, which we don't want to count
+				 * in to the payload size.  Therefore, we
+				 * calculate the real payload size based
+				 * on the total ip length field (ext.iplen).
+				 */
 				ether_extract_headers(sendmp, &ext);
-				hdrlen = sizeof(*ext.eh);
-#if NVLAN > 0
-				if (ISSET(sendmp->m_flags, M_VLANTAG) ||
-				    ext.evh)
-					hdrlen += ETHER_VLAN_ENCAP_LEN;
-#endif
-				if (ext.ip4)
-					hdrlen += ext.ip4->ip_hl << 2;
-				if (ext.ip6)
-					hdrlen += sizeof(*ext.ip6);
+				paylen = ext.iplen;
+				if (ext.ip4 || ext.ip6)
+					paylen -= ext.iphlen;
 				if (ext.tcp) {
-					hdrlen += ext.tcp->th_off << 2;
+					paylen -= ext.tcphlen;
 					tcpstat_inc(tcps_inhwlro);
 					tcpstat_add(tcps_inpktlro, pkts);
 				} else {
@@ -3293,8 +3293,6 @@ ixgbe_rxeof(struct rx_ring *rxr)
 				 * mark it as TSO, set a correct mss,
 				 * and recalculate the TCP checksum.
 				 */
-				paylen = sendmp->m_pkthdr.len > hdrlen ?
-				    sendmp->m_pkthdr.len - hdrlen : 0;
 				if (ext.tcp && paylen >= pkts) {
 					SET(sendmp->m_pkthdr.csum_flags,
 					    M_TCP_TSO);

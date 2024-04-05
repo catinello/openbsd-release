@@ -1,4 +1,4 @@
-/*	$OpenBSD: aplpcie.c,v 1.17 2023/09/21 20:26:17 kettenis Exp $	*/
+/*	$OpenBSD: aplpcie.c,v 1.19 2024/02/03 10:37:25 kettenis Exp $	*/
 /*
  * Copyright (c) 2021 Mark Kettenis <kettenis@openbsd.org>
  *
@@ -74,10 +74,13 @@
 #define  PCIE_PORT_RID2SID_VALID	(1U << 31)
 #define  PCIE_PORT_RID2SID_SID_SHIFT	16
 #define  PCIE_PORT_RID2SID_RID_MASK	0x0000ffff
+#define  PCIE_PORT_MAX_RID2SID		64
 
 #define PCIE_T6020_PORT_MSI_DOORBELL_LO	0x016c
 #define PCIE_T6020_PORT_MSI_DOORBELL_HI	0x0170
 #define PCIE_T6020_PORT_PERST		0x082c
+#define PCIE_T6020_PORT_RID2SID(idx)	(0x3000 + (idx) * 4)
+#define  PCIE_T6020_PORT_MAX_RID2SID	512
 #define PCIE_T6020_PORT_MSI_MAP(idx)	(0x3800 + (idx) * 4)
 #define  PCIE_T6020_PORT_MSI_MAP_ENABLE	(1U << 31)
 
@@ -402,6 +405,7 @@ aplpcie_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_pc.pc_intr_v = sc;
 	sc->sc_pc.pc_intr_map = aplpcie_intr_map;
 	sc->sc_pc.pc_intr_map_msi = _pci_intr_map_msi;
+	sc->sc_pc.pc_intr_map_msivec = _pci_intr_map_msivec;
 	sc->sc_pc.pc_intr_map_msix = _pci_intr_map_msix;
 	sc->sc_pc.pc_intr_string = aplpcie_intr_string;
 	sc->sc_pc.pc_intr_establish = aplpcie_intr_establish;
@@ -472,7 +476,7 @@ aplpcie_init_port(struct aplpcie_softc *sc, int node)
 	/*
 	 * Clear stream ID mappings.
 	 */
-	for (idx = 0; idx < 16; idx++)
+	for (idx = 0; idx < PCIE_PORT_MAX_RID2SID; idx++)
 		PWRITE4(sc, port, PCIE_PORT_RID2SID(idx), 0);
 
 	/* Check if the link is already up. */
@@ -565,7 +569,7 @@ aplpcie_t6020_init_port(struct aplpcie_softc *sc, int node)
 	uint32_t *reset_gpio;
 	int pwren_gpiolen, reset_gpiolen;
 	uint32_t stat;
-	int msi, port, timo;
+	int idx, msi, port, timo;
 
 	if (OF_getprop(node, "status", status, sizeof(status)) > 0 &&
 	    strcmp(status, "disabled") == 0)
@@ -595,6 +599,12 @@ aplpcie_t6020_init_port(struct aplpcie_softc *sc, int node)
 	    sc->sc_msi_doorbell);
 	PWRITE4(sc, port, PCIE_T6020_PORT_MSI_DOORBELL_HI,
 	    sc->sc_msi_doorbell >> 32);
+
+	/*
+	 * Clear stream ID mappings.
+	 */
+	for (idx = 0; idx < PCIE_T6020_PORT_MAX_RID2SID; idx++)
+		PWRITE4(sc, port, PCIE_T6020_PORT_RID2SID(idx), 0);
 
 	/* Check if the link is already up. */
 	stat = PREAD4(sc, port, PCIE_PORT_LINK_STAT);
@@ -783,12 +793,75 @@ aplpcie_find_port(struct aplpcie_softc *sc, int bus)
 }
 
 int
+aplpcie_map_rid(struct aplpcie_softc *sc, int port, uint16_t rid, uint32_t sid)
+{
+	uint32_t reg;
+	int idx;
+
+	for (idx = 0; idx < PCIE_PORT_MAX_RID2SID; idx++) {
+		reg = PREAD4(sc, port, PCIE_PORT_RID2SID(idx));
+
+		/* If already mapped, we're done. */
+		if ((reg & PCIE_PORT_RID2SID_RID_MASK) == rid)
+			return 0;
+
+		/* Is this an empty slot? */
+		if (reg & PCIE_PORT_RID2SID_VALID)
+			continue;
+
+		/* Map using this slot. */
+		reg = (sid << PCIE_PORT_RID2SID_SID_SHIFT) | rid |
+		    PCIE_PORT_RID2SID_VALID;
+		PWRITE4(sc, port, PCIE_PORT_RID2SID(idx), reg);
+
+		/* Read back to check the slot is implemented. */
+		if (PREAD4(sc, port, PCIE_PORT_RID2SID(idx)) != reg)
+			return ENODEV;
+		return 0;
+	}
+
+	return ENODEV;
+}
+
+int
+aplpcie_t6020_map_rid(struct aplpcie_softc *sc, int port, uint16_t rid,
+    uint32_t sid)
+{
+	uint32_t reg;
+	int idx;
+
+	for (idx = 0; idx < PCIE_T6020_PORT_MAX_RID2SID; idx++) {
+		reg = PREAD4(sc, port, PCIE_T6020_PORT_RID2SID(idx));
+
+		/* If already mapped, we're done. */
+		if ((reg & PCIE_PORT_RID2SID_RID_MASK) == rid)
+			return 0;
+
+		/* Is this an empty slot? */
+		if (reg & PCIE_PORT_RID2SID_VALID)
+			continue;
+
+		/* Map using this slot. */
+		reg = (sid << PCIE_PORT_RID2SID_SID_SHIFT) | rid |
+		    PCIE_PORT_RID2SID_VALID;
+		PWRITE4(sc, port, PCIE_T6020_PORT_RID2SID(idx), reg);
+
+		/* Read back to check the slot is implemented. */
+		if (PREAD4(sc, port, PCIE_T6020_PORT_RID2SID(idx)) != reg)
+			return ENODEV;
+		return 0;
+	}
+
+	return ENODEV;
+}
+
+int
 aplpcie_probe_device_hook(void *v, struct pci_attach_args *pa)
 {
 	struct aplpcie_softc *sc = v;
-	uint32_t phandle, reg, sid;
+	uint32_t phandle, sid;
 	uint16_t rid;
-	int idx, port;
+	int error, port;
 
 	rid = pci_requester_id(pa->pa_pc, pa->pa_tag);
 	pa->pa_dmat = iommu_device_map_pci(sc->sc_node, rid, pa->pa_dmat);
@@ -807,26 +880,19 @@ aplpcie_probe_device_hook(void *v, struct pci_attach_args *pa)
 	if (port == -1)
 		return EINVAL;
 
-	for (idx = 0; idx < 16; idx++) {
-		reg = PREAD4(sc, port, PCIE_PORT_RID2SID(idx));
-
-		/* If already mapped, we're done. */
-		if ((reg & PCIE_PORT_RID2SID_RID_MASK) == rid)
-			return 0;
-
-		/* Is this an empty slot? */
-		if (reg & PCIE_PORT_RID2SID_VALID)
-			continue;
-
-		/* Map using this slot. */
-		reg = (sid << PCIE_PORT_RID2SID_SID_SHIFT) | rid |
-		    PCIE_PORT_RID2SID_VALID;
-		PWRITE4(sc, port, PCIE_PORT_RID2SID(idx), reg);
-		return 0;
+	if (OF_is_compatible(sc->sc_node, "apple,t6020-pcie"))
+		error = aplpcie_t6020_map_rid(sc, port, rid, sid);
+	else
+		error = aplpcie_map_rid(sc, port, rid, sid);
+	if (error) {
+		printf("%s: out of stream ID mapping slots\n",
+		    sc->sc_dev.dv_xname);
 	}
 
-	printf("%s: out of stream ID mapping slots\n",
-		    sc->sc_dev.dv_xname);
+	/*
+	 * Not all PCI devices do DMA, so don't return an error if we
+	 * ran out of stream ID mapping slots.
+	 */
 	return 0;
 }
 
@@ -874,6 +940,7 @@ aplpcie_intr_establish(void *v, pci_intr_handle_t ih, int level,
 	if (ih.ih_type != PCI_INTX) {
 		uint64_t addr, data;
 
+		addr = data = 0;
 		cookie = fdt_intr_establish_msi_cpu(sc->sc_node, &addr,
 		    &data, level, ci, func, arg, name);
 		if (cookie == NULL)

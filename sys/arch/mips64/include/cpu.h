@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.144 2023/08/23 01:55:47 cheloha Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.146 2024/02/25 19:15:50 cheloha Exp $	*/
 
 /*-
  * Copyright (c) 1992, 1993
@@ -180,7 +180,7 @@ struct cpu_info {
 	uint32_t	ci_softpending;		/* pending soft interrupts */
 	int		ci_clock_started;
 	volatile int	ci_clock_deferred;	/* clock interrupt postponed */
-	struct clockintr_queue
+	struct clockqueue
 			ci_queue;
 
 	struct pmap	*ci_curpmap;
@@ -200,7 +200,7 @@ struct cpu_info {
 #endif
 #ifdef GPROF
 	struct gmonparam *ci_gmon;
-	struct clockintr *ci_gmonclock;
+	struct clockintr ci_gmonclock;
 #endif
 	char		ci_panicbuf[512];
 };

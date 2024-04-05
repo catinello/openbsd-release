@@ -1,4 +1,4 @@
-/*	$OpenBSD: kdump.c,v 1.158 2023/08/21 01:37:56 visa Exp $	*/
+/*	$OpenBSD: kdump.c,v 1.161 2023/12/15 15:12:08 deraadt Exp $	*/
 
 /*-
  * Copyright (c) 1988, 1993
@@ -88,6 +88,7 @@ int needtid, tail, basecol;
 char *tracefile = DEF_TRACEFILE;
 struct ktr_header ktr_header;
 pid_t pid_opt = -1;
+const char *program;
 char* utracefilter;
 
 #define eqs(s1, s2)	(strcmp((s1), (s2)) == 0)
@@ -132,6 +133,7 @@ static void ktrsysret(struct ktr_sysret *, size_t);
 static void ktruser(struct ktr_user *, size_t);
 static void ktrexec(const char*, size_t);
 static void ktrpledge(struct ktr_pledge *, size_t);
+static void ktrpinsyscall(struct ktr_pinsyscall *, size_t);
 static void usage(void);
 static void ioctldecode(int);
 static void ptracedecode(int);
@@ -169,7 +171,7 @@ main(int argc, char *argv[])
 			screenwidth = 80;
 	}
 
-	while ((ch = getopt(argc, argv, "f:dHlm:np:RTt:u:xX")) != -1)
+	while ((ch = getopt(argc, argv, "f:dHlm:nP:p:RTt:u:xX")) != -1)
 		switch (ch) {
 		case 'f':
 			tracefile = optarg;
@@ -190,6 +192,9 @@ main(int argc, char *argv[])
 			break;
 		case 'n':
 			fancy = 0;
+			break;
+		case 'P':
+			program = optarg;
 			break;
 		case 'p':
 			pid_opt = strtonum(optarg, 1, INT_MAX, &errstr);
@@ -252,6 +257,9 @@ main(int argc, char *argv[])
 		silent = 0;
 		if (pid_opt != -1 && pid_opt != ktr_header.ktr_pid)
 			silent = 1;
+		if (program != NULL &&
+		    strcmp(ktr_header.ktr_comm, program) != 0)
+			silent = 1;
 		if (utracefilter == NULL && silent == 0 &&
 		    trpoints & (1<<ktr_header.ktr_type))
 			dumpheader(&ktr_header);
@@ -301,6 +309,9 @@ main(int argc, char *argv[])
 			break;
 		case KTR_PLEDGE:
 			ktrpledge(m, ktrlen);
+			break;
+		case KTR_PINSYSCALL:
+			ktrpinsyscall(m, ktrlen);
 			break;
 		default:
 			printf("\n");
@@ -361,6 +372,9 @@ dumpheader(struct ktr_header *kth)
 		break;
 	case KTR_PLEDGE:
 		type = "PLDG";
+		break;
+	case KTR_PINSYSCALL:
+		type = "PINS";
 		break;
 	default:
 		/* htobe32() not guaranteed to work as case label */
@@ -926,9 +940,7 @@ ktrsyscall(struct ktr_syscall *ktr, size_t ktrlen)
 	narg = ktr->ktr_argsize / sizeof(register_t);
 	sep = '\0';
 
-	if (ktr->ktr_code & KTRC_CODE_SYSCALL)
-		(void)printf("(via syscall) ");
-	code = ktr->ktr_code & KTRC_CODE_MASK;
+	code = ktr->ktr_code;
 	if (code >= SYS_MAXSYSCALL || code < 0)
 		(void)printf("[%d]", code);
 	else
@@ -1485,13 +1497,34 @@ ktrpledge(struct ktr_pledge *pledge, size_t len)
 }
 
 static void
+ktrpinsyscall(struct ktr_pinsyscall *pinsyscall, size_t len)
+{
+	const char *name = "";
+	int i;
+
+	if (len < sizeof(struct ktr_pinsyscall))
+		errx(1, "invalid ktr pinsyscall length %zu", len);
+
+	if (pinsyscall->syscall >= SYS_MAXSYSCALL || pinsyscall->syscall < 0)
+		(void)printf("[%d]", pinsyscall->syscall);
+	else
+		(void)printf("%s", syscallnames[pinsyscall->syscall]);
+	(void)printf(", addr %lx, errno %d", pinsyscall->addr,
+	    pinsyscall->error);
+	(void)printf(", errno %d", pinsyscall->error);
+	if (fancy)
+		(void)printf(" %s", strerror(pinsyscall->error));
+	printf("\n");
+}
+
+static void
 usage(void)
 {
 
 	extern char *__progname;
 	fprintf(stderr, "usage: %s "
-	    "[-dHlnRTXx] [-f file] [-m maxdata] [-p pid] [-t trstr] "
-	    "[-u label]\n", __progname);
+	    "[-dHlnRTXx] [-f file] [-m maxdata] [-P program] [-p pid] "
+	    "[-t trstr]\n\t[-u label]\n", __progname);
 	exit(1);
 }
 

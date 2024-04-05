@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore.S,v 1.45 2023/08/21 01:35:43 guenther Exp $	*/
+/*	$OpenBSD: locore.S,v 1.48 2023/12/12 07:37:21 deraadt Exp $	*/
 
 /*
  * Copyright (c) 2020 Mark Kettenis <kettenis@openbsd.org>
@@ -31,20 +31,20 @@
 	.rodata
 
 	.globl sigcode
-	.globl sigcoderet
 sigcode:
 	addi	%r1, %r1, -32
 	mtctr	%r12
 	bctrl
 	addi	%r3, %r1, 32+SF_SC
 	li	%r0, SYS_sigreturn
+	.globl	sigcodecall
+sigcodecall:
 	sc
+	.globl sigcoderet
 sigcoderet:
-	li	%r0, SYS_exit
-	sc
 	.globl esigcode
 esigcode:
-
+	/* FALLTHROUGH */
 	.globl sigfill
 sigfill:
 	.long	0
@@ -370,11 +370,7 @@ copystr:
 	.globl proc_trampoline
 	.type proc_trampoline, @function
 proc_trampoline:
-#ifdef MULTIPROCESSOR
-	bl	proc_trampoline_mp
-#endif
-	li	%r3, IPL_NONE
-	bl	splx
+	bl	proc_trampoline_mi
 	mr	%r12, %r31
 	mr	%r3, %r30
 	mtctr	%r12

@@ -1,4 +1,4 @@
-/*	$OpenBSD: mutex.h,v 1.18 2019/04/23 13:35:12 visa Exp $	*/
+/*	$OpenBSD: mutex.h,v 1.20 2024/02/03 22:50:09 mvs Exp $	*/
 
 /*
  * Copyright (c) 2004 Artur Grabowski <art@openbsd.org>
@@ -84,8 +84,8 @@ void __mtx_init(struct mutex *, int);
 		panic("mutex %p held in %s", (mtx), __func__);		\
 } while (0)
 #else
-#define MUTEX_ASSERT_LOCKED(mtx) do { } while (0)
-#define MUTEX_ASSERT_UNLOCKED(mtx) do { } while (0)
+#define MUTEX_ASSERT_LOCKED(mtx) do { (void)(mtx); } while (0)
+#define MUTEX_ASSERT_UNLOCKED(mtx) do { (void)(mtx); } while (0)
 #endif
 
 #define MUTEX_LOCK_OBJECT(mtx)	(&(mtx)->mtx_lock_obj)
@@ -126,6 +126,9 @@ int	mtx_enter_try(struct mutex *);
 void	mtx_leave(struct mutex *);
 
 #define mtx_init(m, ipl)	mtx_init_flags(m, ipl, NULL, 0)
+
+#define mtx_owned(mtx) \
+	(((mtx)->mtx_owner == curcpu()) || panicstr || db_active)
 
 #ifdef WITNESS
 

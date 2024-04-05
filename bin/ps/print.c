@@ -1,4 +1,4 @@
-/*	$OpenBSD: print.c,v 1.86 2023/03/08 14:47:02 tobhe Exp $	*/
+/*	$OpenBSD: print.c,v 1.88 2024/01/28 19:05:33 deraadt Exp $	*/
 /*	$NetBSD: print.c,v 1.27 1995/09/29 21:58:12 cgd Exp $	*/
 
 /*-

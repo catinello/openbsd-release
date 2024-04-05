@@ -1,4 +1,4 @@
-/*	$OpenBSD: crl.c,v 1.27 2023/06/29 10:28:25 tb Exp $ */
+/*	$OpenBSD: crl.c,v 1.32 2024/02/01 15:11:38 tb Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -32,7 +32,7 @@ crl_parse(const char *fn, const unsigned char *der, size_t len)
 	const X509_ALGOR	*palg;
 	const ASN1_OBJECT	*cobj;
 	const ASN1_TIME		*at;
-	int			 nid, rc = 0;
+	int			 count, nid, rc = 0;
 
 	/* just fail for empty buffers, the warning was printed elsewhere */
 	if (der == NULL)
@@ -62,15 +62,31 @@ crl_parse(const char *fn, const unsigned char *der, size_t len)
 		goto out;
 	}
 	X509_ALGOR_get0(&cobj, NULL, NULL, palg);
-	if ((nid = OBJ_obj2nid(cobj)) != NID_sha256WithRSAEncryption) {
+	nid = OBJ_obj2nid(cobj);
+	if (nid == NID_ecdsa_with_SHA256) {
+		if (verbose)
+			warnx("%s: P-256 support is experimental", fn);
+	} else if (nid != NID_sha256WithRSAEncryption) {
 		warnx("%s: RFC 7935: wrong signature algorithm %s, want %s",
-		    fn, OBJ_nid2ln(nid),
-		    OBJ_nid2ln(NID_sha256WithRSAEncryption));
+		    fn, nid2str(nid), LN_sha256WithRSAEncryption);
 		goto out;
 	}
 
+	/*
+	 * RFC 6487, section 5: AKI and crlNumber MUST be present, no other
+	 * CRL extensions are allowed.
+	 */
 	if ((crl->aki = x509_crl_get_aki(crl->x509_crl, fn)) == NULL) {
-		warnx("x509_crl_get_aki failed");
+		warnx("%s: x509_crl_get_aki failed", fn);
+		goto out;
+	}
+	if ((crl->number = x509_crl_get_number(crl->x509_crl, fn)) == NULL) {
+		warnx("%s: x509_crl_get_number failed", fn);
+		goto out;
+	}
+	if ((count = X509_CRL_get_ext_count(crl->x509_crl)) != 2) {
+		warnx("%s: RFC 6487 section 5: unexpected number of extensions "
+		    "%d != 2", fn, count);
 		goto out;
 	}
 
@@ -79,7 +95,7 @@ crl_parse(const char *fn, const unsigned char *der, size_t len)
 		warnx("%s: X509_CRL_get0_lastUpdate failed", fn);
 		goto out;
 	}
-	if (!x509_get_time(at, &crl->lastupdate)) {
+	if (!x509_get_time(at, &crl->thisupdate)) {
 		warnx("%s: ASN1_TIME_to_tm failed", fn);
 		goto out;
 	}
@@ -137,6 +153,7 @@ crl_free(struct crl *crl)
 	if (crl == NULL)
 		return;
 	free(crl->aki);
+	free(crl->number);
 	X509_CRL_free(crl->x509_crl);
 	free(crl);
 }

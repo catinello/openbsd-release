@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_var.h,v 1.171 2023/09/04 23:00:36 bluhm Exp $	*/
+/*	$OpenBSD: tcp_var.h,v 1.176 2024/02/13 12:22:09 bluhm Exp $	*/
 /*	$NetBSD: tcp_var.h,v 1.17 1996/02/13 23:44:24 christos Exp $	*/
 
 /*
@@ -43,7 +43,7 @@
 
 struct sackblk {
 	tcp_seq start;		/* start seq no. of sack block */
-	tcp_seq end; 		/* end seq no. */
+	tcp_seq end;		/* end seq no. */
 };
 
 struct sackhole {
@@ -225,6 +225,15 @@ struct tcp_opt_info {
  * Data for the TCP compressed state engine.
  */
 
+/*
+ * Locks used to protect global data and struct members:
+ *	I	immutable after creation
+ *	N	net lock
+ *	S	syn_cache_mtx		tcp syn cache global mutex
+ */
+
+extern struct mutex syn_cache_mtx;
+
 #define	TCP_SYN_HASH_SIZE	293
 #define	TCP_SYN_BUCKET_SIZE	35
 
@@ -235,63 +244,55 @@ union syn_cache_sa {
 };
 
 struct syn_cache {
-	TAILQ_ENTRY(syn_cache) sc_bucketq;	/* link on bucket list */
+	TAILQ_ENTRY(syn_cache) sc_bucketq;	/* [S] link on bucket list */
 	struct refcnt sc_refcnt;		/* ref count list and timer */
 	struct timeout sc_timer;		/* rexmt timer */
-	union {					/* cached route */
-		struct route route4;
-#ifdef INET6
-		struct route_in6 route6;
-#endif
-	} sc_route_u;
-#define sc_route4	sc_route_u.route4
-#ifdef INET6
-#define sc_route6	sc_route_u.route6
-#endif
-	long sc_win;				/* advertised window */
-	struct syn_cache_head *sc_buckethead;	/* our bucket index */
-	struct syn_cache_set *sc_set;		/* our syn cache set */
-	u_int64_t sc_timestamp;			/* timestamp from SYN */
-	u_int32_t sc_hash;
-	u_int32_t sc_modulate;			/* our timestamp modulator */
-	union syn_cache_sa sc_src;
-	union syn_cache_sa sc_dst;
-	tcp_seq sc_irs;
-	tcp_seq sc_iss;
-	u_int sc_rtableid;
-	u_int sc_rxtcur;			/* current rxt timeout */
-	u_int sc_rxttot;			/* total time spend on queues */
-	u_short sc_rxtshift;			/* for computing backoff */
-	u_short sc_flags;
+	struct route sc_route;			/* [N] cached route */
+	long sc_win;				/* [I] advertised window */
+	struct syn_cache_head *sc_buckethead;	/* [S] our bucket index */
+	struct syn_cache_set *sc_set;		/* [S] our syn cache set */
+	u_int64_t sc_timestamp;		/* [N] timestamp from SYN */
+	u_int32_t sc_hash;		/* [S] */
+	u_int32_t sc_modulate;		/* [I] our timestamp modulator */
+	union syn_cache_sa sc_src;	/* [I] */
+	union syn_cache_sa sc_dst;	/* [I] */
+	tcp_seq sc_irs;			/* [I] */
+	tcp_seq sc_iss;			/* [I] */
+	u_int sc_rtableid;		/* [I] */
+	u_int sc_rxtcur;		/* [S] current rxt timeout */
+	u_int sc_rxttot;		/* [S] total time spend on queues */
+	u_int sc_rxtshift;		/* [S] for computing backoff */
+	u_int sc_dynflags;		/* [S] flags accessed with mutex */
+#define SCF_UNREACH	0x0001U		/* we've had an unreach error */
+#define SCF_DEAD	0x0002U		/* this entry to be released */
 
-#define	SCF_UNREACH		0x0001		/* we've had an unreach error */
-#define	SCF_TIMESTAMP		0x0002		/* peer will do timestamps */
-#define	SCF_DEAD		0x0004		/* this entry to be released */
-#define	SCF_SACK_PERMIT		0x0008		/* permit sack */
-#define	SCF_ECN_PERMIT		0x0010		/* permit ecn */
-#define	SCF_SIGNATURE		0x0020		/* enforce tcp signatures */
+	u_short sc_fixflags;		/* [I] set during initialization */
+#define SCF_TIMESTAMP	0x0010U		/* peer will do timestamps */
+#define SCF_SACK_PERMIT	0x0020U		/* permit sack */
+#define SCF_ECN_PERMIT	0x0040U		/* permit ecn */
+#define SCF_SIGNATURE	0x0080U		/* enforce tcp signatures */
 
-	struct mbuf *sc_ipopts;			/* IP options */
-	u_int16_t sc_peermaxseg;
-	u_int16_t sc_ourmaxseg;
-	u_int     sc_request_r_scale	: 4,
-		  sc_requested_s_scale	: 4;
+	struct mbuf *sc_ipopts;			/* [N] IP options */
+	u_int16_t sc_peermaxseg;		/* [I] */
+	u_int16_t sc_ourmaxseg;			/* [I] */
+	u_int     sc_request_r_scale	: 4,	/* [I] */
+		  sc_requested_s_scale	: 4;	/* [I] */
 
-	struct tcpcb *sc_tp;			/* tcb for listening socket */
-	LIST_ENTRY(syn_cache) sc_tpq;		/* list of entries by same tp */
+	struct tcpcb *sc_tp;		/* [S] tcb for listening socket */
+	LIST_ENTRY(syn_cache) sc_tpq;	/* [S] list of entries by same tp */
 };
 
 struct syn_cache_head {
-	TAILQ_HEAD(, syn_cache) sch_bucket;	/* bucket entries */
-	u_short sch_length;			/* # entries in bucket */
+	TAILQ_HEAD(, syn_cache) sch_bucket;	/* [S] bucket entries */
+	u_short sch_length;			/* [S] # entries in bucket */
 };
 
 struct syn_cache_set {
-	struct		syn_cache_head *scs_buckethead;
-	long		scs_use;
-	int		scs_size;
-	int		scs_count;
-	u_int32_t	scs_random[5];
+	struct		syn_cache_head *scs_buckethead;	/* [S] */
+	long		scs_use;	/* [S] */
+	int		scs_size;	/* [S] current size of hash table */
+	int		scs_count;	/* [S] */
+	u_int32_t	scs_random[5];	/* [S] */
 };
 
 #endif /* _KERNEL */
@@ -324,7 +325,8 @@ struct syn_cache_set {
  * is the same as the multiplier for rttvar.
  */
 #define	TCP_REXMTVAL(tp) \
-	((((tp)->t_srtt >> TCP_RTT_SHIFT) + (tp)->t_rttvar) >> TCP_RTT_BASE_SHIFT)
+	((((tp)->t_srtt >> TCP_RTT_SHIFT) + (tp)->t_rttvar) \
+	    >> TCP_RTT_BASE_SHIFT)
 
 /*
  * TCP statistics.
@@ -396,8 +398,8 @@ struct	tcpstat {
 
 	u_int32_t tcps_rcvbadsig;	/* rcvd bad/missing TCP signatures */
 	u_int64_t tcps_rcvgoodsig;	/* rcvd good TCP signatures */
-	u_int32_t tcps_inswcsum;	/* input software-checksummed packets */
-	u_int32_t tcps_outswcsum;	/* output software-checksummed packets */
+	u_int32_t tcps_inswcsum;	/* input software-checksummed pkts */
+	u_int32_t tcps_outswcsum;	/* output software-checksummed pkts */
 
 	/* ECN stats */
 	u_int32_t tcps_ecn_accepts;	/* ecn connections accepted */
@@ -455,8 +457,8 @@ struct	tcpstat {
  * Names for TCP sysctl objects.
  */
 
-#define	TCPCTL_RFC1323		1 /* enable/disable RFC1323 timestamps/scaling */
-#define	TCPCTL_KEEPINITTIME	2 /* TCPT_KEEP value */
+#define TCPCTL_RFC1323		1 /* enable RFC1323 timestamps/scaling */
+#define TCPCTL_KEEPINITTIME	2 /* TCPT_KEEP value */
 #define TCPCTL_KEEPIDLE		3 /* allow tcp_keepidle to be changed */
 #define TCPCTL_KEEPINTVL	4 /* allow tcp_keepintvl to be changed */
 #define TCPCTL_SLOWHZ		5 /* return kernel idea of PR_SLOWHZ */
@@ -493,23 +495,23 @@ struct	tcpstat {
 	{ "baddynamic", CTLTYPE_STRUCT }, \
 	{ NULL,	0 }, \
 	{ NULL,	0 }, \
-	{ "ident", 	CTLTYPE_STRUCT }, \
+	{ "ident",	CTLTYPE_STRUCT }, \
 	{ "sack",	CTLTYPE_INT }, \
 	{ "mssdflt",	CTLTYPE_INT }, \
 	{ "rstppslimit",	CTLTYPE_INT }, \
 	{ "ackonpush",	CTLTYPE_INT }, \
-	{ "ecn", 	CTLTYPE_INT }, \
-	{ "syncachelimit", 	CTLTYPE_INT }, \
-	{ "synbucketlimit", 	CTLTYPE_INT }, \
-	{ "rfc3390", 	CTLTYPE_INT }, \
-	{ "reasslimit", 	CTLTYPE_INT }, \
-	{ "drop", 	CTLTYPE_STRUCT }, \
-	{ "sackholelimit", 	CTLTYPE_INT }, \
+	{ "ecn",	CTLTYPE_INT }, \
+	{ "syncachelimit",	CTLTYPE_INT }, \
+	{ "synbucketlimit",	CTLTYPE_INT }, \
+	{ "rfc3390",	CTLTYPE_INT }, \
+	{ "reasslimit",	CTLTYPE_INT }, \
+	{ "drop",	CTLTYPE_STRUCT }, \
+	{ "sackholelimit",	CTLTYPE_INT }, \
 	{ "stats",	CTLTYPE_STRUCT }, \
 	{ "always_keepalive",	CTLTYPE_INT }, \
-	{ "synuselimit", 	CTLTYPE_INT }, \
+	{ "synuselimit",	CTLTYPE_INT }, \
 	{ "rootonly",	CTLTYPE_STRUCT }, \
-	{ "synhashsize", 	CTLTYPE_INT }, \
+	{ "synhashsize",	CTLTYPE_INT }, \
 	{ "tso",	CTLTYPE_INT }, \
 }
 
@@ -676,7 +678,7 @@ extern	const struct pr_usrreqs tcp6_usrreqs;
 extern	struct pool tcpcb_pool;
 extern	struct inpcbtable tcbtable;	/* head of queue of active tcpcb's */
 extern	int tcp_do_rfc1323;	/* enabled/disabled? */
-extern	int tcptv_keep_init;	/* time to keep alive the initial SYN packet */
+extern	int tcptv_keep_init;	/* [N] time to keep alive initial SYN packet */
 extern	int tcp_mssdflt;	/* default maximum segment size */
 extern	int tcp_rst_ppslim;	/* maximum outgoing RST packet per second */
 extern	int tcp_ack_on_push;	/* ACK immediately on PUSH */
@@ -788,7 +790,7 @@ int	tcp_signature(struct tdb *, int, struct mbuf *, struct tcphdr *,
 #endif /* TCP_SIGNATURE */
 void     tcp_set_iss_tsm(struct tcpcb *);
 
-void	 syn_cache_unreach(struct sockaddr *, struct sockaddr *,
+void	 syn_cache_unreach(const struct sockaddr *, const struct sockaddr *,
 	   struct tcphdr *, u_int);
 void	 syn_cache_init(void);
 void	 syn_cache_cleanup(struct tcpcb *);

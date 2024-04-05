@@ -1,4 +1,4 @@
-/* $OpenBSD: locore.s,v 1.51 2023/01/31 15:18:51 deraadt Exp $ */
+/* $OpenBSD: locore.s,v 1.55 2024/02/14 20:44:54 miod Exp $ */
 /* $NetBSD: locore.s,v 1.94 2001/04/26 03:10:44 ross Exp $ */
 
 /*-
@@ -201,11 +201,15 @@ NESTED(sigcode,0,0,ra,0,0)
 	jsr	ra, (t12)		/* call the signal handler (t12==pv) */
 	ldq	a0, 0(sp)		/* get the sigcontext pointer */
 	lda	sp, 16(sp)
-	CALLSYS_NOERROR(sigreturn)	/* and call sigreturn() with it. */
+	ldiq	v0, SYS_sigreturn	/* and call sigreturn() with it. */
+	.globl	sigcodecall
+sigcodecall:
+	call_pal PAL_OSF1_callsys
 	.globl  sigcoderet
 sigcoderet:
 	mov	v0, a0			/* if that failed, get error code */
-	CALLSYS_NOERROR(exit)		/* and call exit() with it. */
+	ldiq	v0, SYS_exit		/* and call exit() with it. */
+	call_pal PAL_OSF1_callsys
 XNESTED(esigcode,0)
 	END(sigcode)
 
@@ -776,9 +780,7 @@ LEAF(cpu_idle_leave, 0)
  * by the s2 register.
  */
 LEAF(proc_trampoline, 0)
-#if defined(MULTIPROCESSOR)
-	CALL(proc_trampoline_mp)
-#endif
+	CALL(proc_trampoline_mi)
 	mov	s0, pv
 	mov	s1, ra
 	mov	s2, a0
@@ -946,7 +948,6 @@ NESTED(copyout, 3, 16, ra, IM_RA|IM_S0, 0)
 	stq	ra, (16-8)(sp)			/* save ra		     */
 	stq	s0, (16-16)(sp)			/* save s0		     */
 	/* Note: GET_CURPROC clobbers v0, t0, t8...t11. */
-	GET_CURPROC
 	GET_CURPROC
 	ldq	t0, 0(v0)
 	ldq	s0, P_ADDR(t0)

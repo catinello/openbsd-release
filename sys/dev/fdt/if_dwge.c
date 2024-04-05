@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_dwge.c,v 1.19 2023/08/15 08:27:30 miod Exp $	*/
+/*	$OpenBSD: if_dwge.c,v 1.22 2024/02/08 20:50:34 kettenis Exp $	*/
 /*
  * Copyright (c) 2008, 2019 Mark Kettenis <kettenis@openbsd.org>
  * Copyright (c) 2017 Patrick Wildt <patrick@blueri.se>
@@ -214,6 +214,7 @@ struct dwge_desc {
 #define RDES0_OE		(1 << 11)
 #define RDES0_SAF		(1 << 13)
 #define RDES0_DE		(1 << 14)
+#define RDES0_ES		(1 << 15)
 #define RDES0_FL_MASK		0x3fff
 #define RDES0_FL_SHIFT		16
 #define RDES0_AFM		(1 << 30)
@@ -449,7 +450,9 @@ dwge_attach(struct device *parent, struct device *self, void *aux)
 	 * defragmenting mbufs before transmitting them fixes the
 	 * issue.
 	 */
-	if (OF_is_compatible(faa->fa_node, "starfive,jh7100-gmac"))
+	/* XXX drop "starfive,jh7100-gmac" in the future */
+	if (OF_is_compatible(faa->fa_node, "starfive,jh7100-gmac") ||
+	    OF_is_compatible(faa->fa_node, "starfive,jh7100-dwmac"))
 		sc->sc_defrag = 1;
 
 	/* Power up PHY. */
@@ -512,7 +515,7 @@ dwge_attach(struct device *parent, struct device *self, void *aux)
 	ifp->if_ioctl = dwge_ioctl;
 	ifp->if_qstart = dwge_start;
 	ifp->if_watchdog = dwge_watchdog;
-	ifq_set_maxlen(&ifp->if_snd, DWGE_NTXDESC - 1);
+	ifq_init_maxlen(&ifp->if_snd, DWGE_NTXDESC - 1);
 	bcopy(sc->sc_dev.dv_xname, ifp->if_xname, IFNAMSIZ);
 
 	ifp->if_capabilities = IFCAP_VLAN_MTU;
@@ -1097,15 +1100,20 @@ dwge_rx_proc(struct dwge_softc *sc)
 		    len, BUS_DMASYNC_POSTREAD);
 		bus_dmamap_unload(sc->sc_dmat, rxb->tb_map);
 
-		/* Strip off CRC. */
-		len -= ETHER_CRC_LEN;
-		KASSERT(len > 0);
-
 		m = rxb->tb_m;
 		rxb->tb_m = NULL;
-		m->m_pkthdr.len = m->m_len = len;
+		if (rxd->sd_status & RDES0_ES) {
+			ifp->if_ierrors++;
+			m_freem(m);
+		} else {
+			/* Strip off CRC. */
+			len -= ETHER_CRC_LEN;
+			KASSERT(len > 0);
 
-		ml_enqueue(&ml, m);
+			m->m_pkthdr.len = m->m_len = len;
+
+			ml_enqueue(&ml, m);
+		}
 
 		put++;
 		if (sc->sc_rx_cons == (DWGE_NRXDESC - 1))

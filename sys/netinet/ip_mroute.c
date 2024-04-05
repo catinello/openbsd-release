@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip_mroute.c,v 1.139 2023/06/14 14:30:08 mvs Exp $	*/
+/*	$OpenBSD: ip_mroute.c,v 1.141 2024/02/11 18:14:26 mvs Exp $	*/
 /*	$NetBSD: ip_mroute.c,v 1.85 2004/04/26 01:31:57 matt Exp $	*/
 
 /*
@@ -1048,11 +1048,17 @@ del_mfc(struct socket *so, struct mbuf *m)
 }
 
 int
-socket_send(struct socket *s, struct mbuf *mm, struct sockaddr_in *src)
+socket_send(struct socket *so, struct mbuf *mm, struct sockaddr_in *src)
 {
-	if (s != NULL) {
-		if (sbappendaddr(s, &s->so_rcv, sintosa(src), mm, NULL) != 0) {
-			sorwakeup(s);
+	if (so != NULL) {
+		int ret;
+
+		mtx_enter(&so->so_rcv.sb_mtx);
+		ret = sbappendaddr(so, &so->so_rcv, sintosa(src), mm, NULL);
+		mtx_leave(&so->so_rcv.sb_mtx);
+
+		if (ret != 0) {
+			sorwakeup(so);
 			return (0);
 		}
 	}

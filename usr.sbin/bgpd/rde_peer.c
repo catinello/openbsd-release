@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_peer.c,v 1.32 2023/04/19 13:23:33 claudio Exp $ */
+/*	$OpenBSD: rde_peer.c,v 1.35 2024/02/03 09:26:52 jsg Exp $ */
 
 /*
  * Copyright (c) 2019 Claudio Jeker <claudio@openbsd.org>
@@ -47,7 +47,7 @@ peer_has_as4byte(struct rde_peer *peer)
 int
 peer_has_add_path(struct rde_peer *peer, uint8_t aid, int mode)
 {
-	if (aid > AID_MAX)
+	if (aid >= AID_MAX)
 		return 0;
 	if (aid == AID_UNSPEC) {
 		/* check if at capability is set for at least one AID */
@@ -430,6 +430,7 @@ peer_up(struct rde_peer *peer, struct session_up *sup)
 	peer->remote_addr = sup->remote_addr;
 	peer->local_v4_addr = sup->local_v4_addr;
 	peer->local_v6_addr = sup->local_v6_addr;
+	peer->local_if_scope = sup->if_scope;
 	memcpy(&peer->capa, &sup->capa, sizeof(peer->capa));
 
 	/* clear eor markers depending on GR flags */
@@ -602,7 +603,7 @@ static void
 imsg_move(struct imsg *dst, struct imsg *src)
 {
 	*dst = *src;
-	src->data = NULL;	/* allocation was moved */
+	memset(src, 0, sizeof(*src));
 }
 
 /*

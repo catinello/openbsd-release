@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_igc.c,v 1.13 2023/04/28 10:18:57 bluhm Exp $	*/
+/*	$OpenBSD: if_igc.c,v 1.18 2024/02/23 01:06:18 kevlo Exp $	*/
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
@@ -786,7 +786,7 @@ igc_setup_interface(struct igc_softc *sc)
 	ifp->if_watchdog = igc_watchdog;
 	ifp->if_hardmtu = sc->hw.mac.max_frame_size - ETHER_HDR_LEN -
 	    ETHER_CRC_LEN;
-	ifq_set_maxlen(&ifp->if_snd, sc->num_tx_desc - 1);
+	ifq_init_maxlen(&ifp->if_snd, sc->num_tx_desc - 1);
 
 	ifp->if_capabilities = IFCAP_VLAN_MTU;
 
@@ -1491,6 +1491,23 @@ igc_media_status(struct ifnet *ifp, struct ifmediareq *ifmr)
 		ifmr->ifm_active |= IFM_FDX;
 	else
 		ifmr->ifm_active |= IFM_HDX;
+
+	switch (sc->hw.fc.current_mode) {
+	case igc_fc_tx_pause:
+		ifmr->ifm_active |= IFM_FLOW | IFM_ETH_TXPAUSE;
+		break;
+	case igc_fc_rx_pause:
+		ifmr->ifm_active |= IFM_FLOW | IFM_ETH_RXPAUSE;
+		break;
+	case igc_fc_full:
+		ifmr->ifm_active |= IFM_FLOW | IFM_ETH_RXPAUSE |
+		    IFM_ETH_TXPAUSE;
+		break;
+	default:
+		ifmr->ifm_active &= ~(IFM_FLOW | IFM_ETH_RXPAUSE |
+		    IFM_ETH_TXPAUSE);
+		break;
+	}
 }
 
 /*********************************************************************
@@ -1523,16 +1540,16 @@ igc_media_change(struct ifnet *ifp)
 		sc->hw.phy.autoneg_advertised = ADVERTISE_1000_FULL;
 		break;
 	case IFM_100_TX:
-		if ((ifm->ifm_media & IFM_GMASK) == IFM_HDX)
-			sc->hw.phy.autoneg_advertised = ADVERTISE_100_HALF;
-		else
+		if ((ifm->ifm_media & IFM_GMASK) == IFM_FDX)
 			sc->hw.phy.autoneg_advertised = ADVERTISE_100_FULL;
+		else
+			sc->hw.phy.autoneg_advertised = ADVERTISE_100_HALF;
 		break;
 	case IFM_10_T:
-		if ((ifm->ifm_media & IFM_GMASK) == IFM_HDX)
-			sc->hw.phy.autoneg_advertised = ADVERTISE_10_HALF;
-		else
+		if ((ifm->ifm_media & IFM_GMASK) == IFM_FDX)
 			sc->hw.phy.autoneg_advertised = ADVERTISE_10_FULL;
+		else
+			sc->hw.phy.autoneg_advertised = ADVERTISE_10_HALF;
 		break;
 	default:
 		return EINVAL;
@@ -1590,6 +1607,9 @@ igc_update_link_status(struct igc_softc *sc)
 	struct ifnet *ifp = &sc->sc_ac.ac_if;
 	struct igc_hw *hw = &sc->hw;
 	int link_state;
+
+	if (hw->mac.get_link_status == true)
+		igc_check_for_link(hw);
 
 	if (IGC_READ_REG(&sc->hw, IGC_STATUS) & IGC_STATUS_LU) {
 		if (sc->link_active == 0) {
@@ -2005,7 +2025,6 @@ igc_tx_ctx_setup(struct tx_ring *txr, struct mbuf *mp, int prod,
 	struct igc_adv_tx_context_desc *txdesc;
 	uint32_t type_tucmd_mlhl = 0;
 	uint32_t vlan_macip_lens = 0;
-	uint32_t iphlen;
 	int off = 0;
 
 	vlan_macip_lens |= (sizeof(*ext.eh) << IGC_ADVTXD_MACLEN_SHIFT);
@@ -2028,8 +2047,6 @@ igc_tx_ctx_setup(struct tx_ring *txr, struct mbuf *mp, int prod,
 	ether_extract_headers(mp, &ext);
 
 	if (ext.ip4) {
-		iphlen = ext.ip4->ip_hl << 2;
-
 		type_tucmd_mlhl |= IGC_ADVTXD_TUCMD_IPV4;
 		if (ISSET(mp->m_pkthdr.csum_flags, M_IPV4_CSUM_OUT)) {
 			*olinfo_status |= IGC_TXD_POPTS_IXSM << 8;
@@ -2037,15 +2054,13 @@ igc_tx_ctx_setup(struct tx_ring *txr, struct mbuf *mp, int prod,
 		}
 #ifdef INET6
 	} else if (ext.ip6) {
-		iphlen = sizeof(*ext.ip6);
-
 		type_tucmd_mlhl |= IGC_ADVTXD_TUCMD_IPV6;
 #endif
 	} else {
 		return 0;
 	}
 
-	vlan_macip_lens |= iphlen;
+	vlan_macip_lens |= ext.iphlen;
 	type_tucmd_mlhl |= IGC_ADVTXD_DCMD_DEXT | IGC_ADVTXD_DTYP_CTXT;
 
 	if (ext.tcp) {
@@ -2179,6 +2194,8 @@ igc_setup_receive_ring(struct rx_ring *rxr)
  *  Enable receive unit.
  *
  **********************************************************************/
+#define BSIZEPKT_ROUNDUP	((1 << IGC_SRRCTL_BSIZEPKT_SHIFT) - 1)
+
 void
 igc_initialize_receive_unit(struct igc_softc *sc)
 {
@@ -2226,12 +2243,10 @@ igc_initialize_receive_unit(struct igc_softc *sc)
 	if (sc->sc_nqueues > 1)
 		igc_initialize_rss_mapping(sc);
 
-#if 0
-	srrctl |= 4096 >> IGC_SRRCTL_BSIZEPKT_SHIFT;
-	rctl |= IGC_RCTL_SZ_4096 | IGC_RCTL_BSEX;
-#endif
-
-	srrctl |= 2048 >> IGC_SRRCTL_BSIZEPKT_SHIFT;
+	/* Set maximum packet buffer len */
+	srrctl |= (sc->rx_mbuf_sz + BSIZEPKT_ROUNDUP) >>
+	    IGC_SRRCTL_BSIZEPKT_SHIFT;
+	/* srrctl above overrides this but set the register to a sane value */
 	rctl |= IGC_RCTL_SZ_2048;
 
 	/*

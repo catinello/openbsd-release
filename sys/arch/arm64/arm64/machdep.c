@@ -1,4 +1,4 @@
-/* $OpenBSD: machdep.c,v 1.84 2023/08/10 21:01:50 kettenis Exp $ */
+/* $OpenBSD: machdep.c,v 1.86 2024/02/21 01:45:14 dlg Exp $ */
 /*
  * Copyright (c) 2014 Patrick Wildt <patrick@blueri.se>
  * Copyright (c) 2021 Mark Kettenis <kettenis@openbsd.org>
@@ -1053,6 +1053,22 @@ initarm(struct arm64_bootparams *abp)
 		}
 	}
 
+	/* Remove reserved memory. */
+	node = fdt_find_node("/reserved-memory");
+	if (node) {
+		for (node = fdt_child_node(node); node;
+		    node = fdt_next_node(node)) {
+			char *no_map;
+			if (fdt_node_property(node, "no-map", &no_map) < 0)
+				continue;
+			if (fdt_get_reg(node, 0, &reg))
+				continue;
+			if (reg.size == 0)
+				continue;
+			memreg_remove(&reg);
+		}
+	}
+
 	/* Remove the initial 64MB block. */
 	reg.addr = memstart;
 	reg.size = memend - memstart;
@@ -1067,13 +1083,15 @@ initarm(struct arm64_bootparams *abp)
 		physmem += atop(end - start);
 	}
 
+	kmeminit_nkmempages();
+
 	/*
 	 * Make sure that we have enough KVA to initialize UVM.  In
 	 * particular, we need enough KVA to be able to allocate the
-	 * vm_page structures.
+	 * vm_page structures and nkmempages for malloc(9).
 	 */
 	pmap_growkernel(VM_MIN_KERNEL_ADDRESS + 1024 * 1024 * 1024 +
-	    physmem * sizeof(struct vm_page));
+	    physmem * sizeof(struct vm_page) + ptoa(nkmempages));
 
 #ifdef DDB
 	db_machine_init();

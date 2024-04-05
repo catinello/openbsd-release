@@ -2702,6 +2702,7 @@ get_segment_type (unsigned long p_type)
     case PT_GNU_EH_FRAME:
 			return "GNU_EH_FRAME";
     case PT_GNU_STACK:	return "GNU_STACK";
+    case PT_GNU_PROPERTY:	return "GNU_PROPERTY";
     case PT_GNU_RELRO:  return "GNU_RELRO";
     case PT_OPENBSD_RANDOMIZE:
 			return "OPENBSD_RANDOMIZE";
@@ -2713,6 +2714,8 @@ get_segment_type (unsigned long p_type)
 			return "OPENBSD_MUTABLE";
     case PT_OPENBSD_NOBTCFI:
 			return "OPENBSD_NOBTCFI";
+    case PT_OPENBSD_SYSCALLS:
+			return "OPENBSD_SYSCALLS";
 
     default:
       if ((p_type >= PT_LOPROC) && (p_type <= PT_HIPROC))

@@ -1,4 +1,4 @@
-/*	$OpenBSD: b.c,v 1.42 2023/09/21 17:19:06 millert Exp $	*/
+/*	$OpenBSD: b.c,v 1.50 2024/01/25 16:40:51 millert Exp $	*/
 /****************************************************************
 Copyright (C) Lucent Technologies 1997
 All Rights Reserved
@@ -81,6 +81,8 @@ int	patlen;
 fa	*fatab[NFA];
 int	nfatab	= 0;	/* entries in fatab */
 
+extern int u8_nextlen(const char *s);
+
 
 /* utf-8 mechanism:
 
@@ -95,9 +97,8 @@ int	nfatab	= 0;	/* entries in fatab */
    mechanism of the goto table used 8-bit byte indices into the
    gototab entries to compute the next state.  Unicode is a lot
    bigger, so the gototab entries are now structs with a character
-   and a next state, and there is a linear search of the characters
-   to find the state.  (Yes, this is slower, by a significant
-   amount.  Tough.)
+   and a next state. These are sorted by code point and binary
+   searched.
 
    Throughout the RE mechanism in b.c, utf-8 characters are
    converted to their utf-32 value.  This mostly shows up in
@@ -112,9 +113,11 @@ int	nfatab	= 0;	/* entries in fatab */
 
  */
 
+static int entry_cmp(const void *l, const void *r);
 static int get_gototab(fa*, int, int);
 static int set_gototab(fa*, int, int, int);
-extern int u8_rune(int *, const uschar *);
+static void clear_gototab(fa*, int);
+extern int u8_rune(int *, const char *);
 
 static int *
 intalloc(size_t n, const char *f)
@@ -148,7 +151,7 @@ resizesetvec(const char *f)
 static void
 resize_state(fa *f, int state)
 {
-	gtt **p;
+	gtt *p;
 	uschar *p2;
 	int **p3;
 	int i, new_count;
@@ -158,7 +161,7 @@ resize_state(fa *f, int state)
 
 	new_count = state + 10; /* needs to be tuned */
 
-	p = (gtt **) reallocarray(f->gototab, new_count, sizeof(f->gototab[0]));
+	p = (gtt *) reallocarray(f->gototab, new_count, sizeof(gtt));
 	if (p == NULL)
 		goto out;
 	f->gototab = p;
@@ -174,13 +177,14 @@ resize_state(fa *f, int state)
 	f->posns = p3;
 
 	for (i = f->state_count; i < new_count; ++i) {
-		f->gototab[i] = (gtt *) calloc(NCHARS, sizeof(**f->gototab));
-		if (f->gototab[i] == NULL)
+		f->gototab[i].entries = (gtte *) calloc(NCHARS, sizeof(gtte));
+		if (f->gototab[i].entries == NULL)
 			goto out;
-		f->out[i]  = 0;
+		f->gototab[i].allocated = NCHARS;
+		f->gototab[i].inuse = 0;
+		f->out[i] = 0;
 		f->posns[i] = NULL;
 	}
-	f->gototab_len = NCHARS; /* should be variable, growable */
 	f->state_count = new_count;
 	return;
 out:
@@ -274,8 +278,7 @@ int makeinit(fa *f, bool anchor)
 	}
 	if ((f->posns[2])[1] == f->accept)
 		f->out[2] = 1;
-	for (i = 0; i < NCHARS; i++)
-		set_gototab(f, 2, 0, 0); /* f->gototab[2][i] = 0; */
+	clear_gototab(f, 2);
 	f->curstat = cgoto(f, 2, HAT);
 	if (anchor) {
 		*f->posns[2] = k-1;	/* leave out position 0 */
@@ -419,7 +422,7 @@ int *cclenter(const char *argp)	/* add a character class */
 		FATAL("out of space for character class [%.10s...] 1", p);
 	bp = buf;
 	for (i = 0; *p != 0; ) {
-		n = u8_rune(&c, p);
+		n = u8_rune(&c, (const char *) p);
 		p += n;
 		if (c == '\\') {
 			c = quoted(&p);
@@ -427,7 +430,7 @@ int *cclenter(const char *argp)	/* add a character class */
 			if (*p != 0) {
 				c = bp[-1];
 				/* c2 = *p++; */
-				n = u8_rune(&c2, p);
+				n = u8_rune(&c2, (const char *) p);
 				p += n;
 				if (c2 == '\\')
 					c2 = quoted(&p); /* BUG: sets p, has to be u8 size */
@@ -438,7 +441,7 @@ int *cclenter(const char *argp)	/* add a character class */
 				}
 				while (c < c2) {
 					if (i >= bufsz) {
-						buf = (int *) reallocarray(buf, bufsz, sizeof(int) * 2);
+						buf = (int *) reallocarray(buf, bufsz, 2 * sizeof(int));
 						if (buf == NULL)
 							FATAL("out of space for character class [%.10s...] 2", p);
 						bufsz *= 2;
@@ -451,7 +454,7 @@ int *cclenter(const char *argp)	/* add a character class */
 			}
 		}
 		if (i >= bufsz) {
-			buf = (int *) reallocarray(buf, bufsz, sizeof(int) * 2);
+			buf = (int *) reallocarray(buf, bufsz, 2 * sizeof(int));
 			if (buf == NULL)
 				FATAL("out of space for character class [%.10s...] 2", p);
 			bufsz *= 2;
@@ -599,30 +602,102 @@ int member(int c, int *sarg)	/* is c in s? */
 	return(0);
 }
 
+static void resize_gototab(fa *f, int state)
+{
+	size_t new_size = f->gototab[state].allocated * 2;
+	gtte *p = (gtte *) realloc(f->gototab[state].entries, new_size * sizeof(gtte));
+	if (p == NULL)
+		overflo(__func__);
+
+	// need to initialized the new memory to zero
+	size_t orig_size = f->gototab[state].allocated;		// 2nd half of new mem is this size
+	memset(p + orig_size, 0, orig_size * sizeof(gtte));	// clean it out
+
+	f->gototab[state].allocated = new_size;			// update gotottab info
+	f->gototab[state].entries = p;
+}
+
 static int get_gototab(fa *f, int state, int ch) /* hide gototab inplementation */
 {
-	int i;
-	for (i = 0; i < f->gototab_len; i++) {
-		if (f->gototab[state][i].ch == 0)
-			break;
-		if (f->gototab[state][i].ch == ch)
-			return f->gototab[state][i].state;
-	}
-	return 0;
+	gtte key;
+	gtte *item;
+
+	key.ch = ch;
+	key.state = 0;	/* irrelevant */
+	item = (gtte *) bsearch(& key, f->gototab[state].entries,
+			f->gototab[state].inuse, sizeof(gtte),
+			entry_cmp);
+
+	if (item == NULL)
+		return 0;
+	else
+		return item->state;
+}
+
+static int entry_cmp(const void *l, const void *r)
+{
+	const gtte *left, *right;
+
+	left = (const gtte *) l;
+	right = (const gtte *) r;
+
+	return left->ch - right->ch;
 }
 
 static int set_gototab(fa *f, int state, int ch, int val) /* hide gototab inplementation */
 {
-	int i;
-	for (i = 0; i < f->gototab_len; i++) {
-		if (f->gototab[state][i].ch == 0 || f->gototab[state][i].ch == ch) {
-			f->gototab[state][i].ch = ch;
-			f->gototab[state][i].state = val;
-			return val;
+	if (f->gototab[state].inuse == 0) {
+		f->gototab[state].entries[0].ch = ch;
+		f->gototab[state].entries[0].state = val;
+		f->gototab[state].inuse++;
+		return val;
+	} else if (ch > f->gototab[state].entries[f->gototab[state].inuse-1].ch) {
+		// not seen yet, insert and return
+		gtt *tab = & f->gototab[state];
+		if (tab->inuse + 1 >= tab->allocated)
+			resize_gototab(f, state);
+
+		f->gototab[state].entries[f->gototab[state].inuse-1].ch = ch;
+		f->gototab[state].entries[f->gototab[state].inuse-1].state = val;
+		f->gototab[state].inuse++;
+		return val;
+	} else {
+		// maybe we have it, maybe we don't
+		gtte key;
+		gtte *item;
+
+		key.ch = ch;
+		key.state = 0;	/* irrelevant */
+		item = (gtte *) bsearch(& key, f->gototab[state].entries,
+				f->gototab[state].inuse, sizeof(gtte),
+				entry_cmp);
+
+		if (item != NULL) {
+			// we have it, update state and return
+			item->state = val;
+			return item->state;
 		}
+		// otherwise, fall through to insert and reallocate.
 	}
-	overflo(__func__);
+
+	gtt *tab = & f->gototab[state];
+	if (tab->inuse + 1 >= tab->allocated)
+		resize_gototab(f, state);
+	++tab->inuse;
+	f->gototab[state].entries[tab->inuse].ch = ch;
+	f->gototab[state].entries[tab->inuse].state = val;
+
+	qsort(f->gototab[state].entries,
+		f->gototab[state].inuse, sizeof(gtte), entry_cmp);
+
 	return val; /* not used anywhere at the moment */
+}
+
+static void clear_gototab(fa *f, int state)
+{
+	memset(f->gototab[state].entries, 0,
+		f->gototab[state].allocated * sizeof(gtte));
+	f->gototab[state].inuse = 0;
 }
 
 int match(fa *f, const char *p0)	/* shortest match ? */
@@ -641,7 +716,7 @@ int match(fa *f, const char *p0)	/* shortest match ? */
 		return(1);
 	do {
 		/* assert(*p < NCHARS); */
-		n = u8_rune(&rune, p);
+		n = u8_rune(&rune, (const char *) p);
 		if ((ns = get_gototab(f, s, rune)) != 0)
 			s = ns;
 		else
@@ -674,7 +749,7 @@ int pmatch(fa *f, const char *p0)	/* longest match, for sub */
 			if (f->out[s])		/* final state */
 				patlen = q-p;
 			/* assert(*q < NCHARS); */
-			n = u8_rune(&rune, q);
+			n = u8_rune(&rune, (const char *) q);
 			if ((ns = get_gototab(f, s, rune)) != 0)
 				s = ns;
 			else
@@ -705,7 +780,7 @@ int pmatch(fa *f, const char *p0)	/* longest match, for sub */
 		s = 2;
 		if (*p == 0)
 			break;
-		n = u8_rune(&rune, p);
+		n = u8_rune(&rune, (const char *) p);
 		p += n;
 	} while (1); /* was *p++ */
 	return (0);
@@ -730,7 +805,7 @@ int nematch(fa *f, const char *p0)	/* non-empty match, for sub */
 			if (f->out[s])		/* final state */
 				patlen = q-p;
 			/* assert(*q < NCHARS); */
-			n = u8_rune(&rune, q);
+			n = u8_rune(&rune, (const char *) q);
 			if ((ns = get_gototab(f, s, rune)) != 0)
 				s = ns;
 			else
@@ -760,35 +835,8 @@ int nematch(fa *f, const char *p0)	/* non-empty match, for sub */
 	return (0);
 }
 
-static int getrune(FILE *fp, char **pbuf, int *pbufsize, int quantum,
-		   int *curpos, int *lastpos)
-{
-	int c = 0;
-	char *buf = *pbuf;
-	static const int max_bytes = 4;	// max multiple bytes in UTF-8 is 4
-	int i, rune;
-	uschar private_buf[max_bytes + 1];
 
-	for (i = 0; i <= max_bytes; i++) {
-		if (++*curpos == *lastpos) {
-			if (*lastpos == *pbufsize)
-				if (!adjbuf((char **) pbuf, pbufsize, *pbufsize+1, quantum, 0, "getrune"))
-					FATAL("stream '%.30s...' too long", buf);
-			buf[(*lastpos)++] = (c = getc(fp)) != EOF ? c : 0;
-			private_buf[i] = c;
-		}
-		if (c == 0 || c < 128 ||  (c >> 6) == 4) { // 10xxxxxx starts a new character
-			ungetc(c, fp);
-			private_buf[i] = 0;
-			break;
-		}
-	}
-
-	u8_rune(& rune, private_buf);
-
-	return rune;
-}
-
+#define MAX_UTF_BYTES	4	// UTF-8 is up to 4 bytes long
 
 /*
  * NAME
@@ -807,62 +855,76 @@ static int getrune(FILE *fp, char **pbuf, int *pbufsize, int quantum,
 
 bool fnematch(fa *pfa, FILE *f, char **pbuf, int *pbufsize, int quantum)
 {
-	char *buf = *pbuf;
+	char *i, *j, *k, *buf = *pbuf;
 	int bufsize = *pbufsize;
-	int c, i, j, k, ns, s;
-	int rune;
+	int c, n, ns, s;
 
 	s = pfa->initstat;
 	patlen = 0;
 
 	/*
-	 * All indices relative to buf.
-	 * i <= j <= k <= bufsize
+	 * buf <= i <= j <= k <= buf+bufsize
 	 *
 	 * i: origin of active substring
 	 * j: current character
-	 * k: destination of next getc()
+	 * k: destination of the next getc
 	 */
-	i = -1, k = 0;
-        do {
-		j = i++;
-		do {
-			if (++j == k) {
-				if (k == bufsize)
-					if (!adjbuf(&buf, &bufsize, bufsize+1, quantum, 0, "fnematch"))
-						FATAL("stream '%.30s...' too long", buf);
-				buf[k++] = (c = getc(f)) != EOF ? c : 0;
-			}
-			c = (uschar)buf[j];
-			if (c < 128 || awk_mb_cur_max == 1)
-				rune = c;
-			else {
-				j--;
-				k--;
-				ungetc(c, f);
-				rune = getrune(f, &buf, &bufsize, quantum, &j, &k);
-			}
 
-			if ((ns = get_gototab(pfa, s, rune)) != 0)
-				s = ns;
-			else
-				s = cgoto(pfa, s, rune);
+	i = j = k = buf;
 
-			if (pfa->out[s]) {	/* final state */
-				patlen = j - i + 1;
-				if (c == 0)	/* don't count $ */
-					patlen--;
+	do {
+		/*
+		 * Call u8_rune with at least MAX_UTF_BYTES ahead in
+		 * the buffer until EOF interferes.
+		 */
+		if (k - j < MAX_UTF_BYTES) {
+			if (k + MAX_UTF_BYTES > buf + bufsize) {
+				adjbuf(&buf, &bufsize,
+				    bufsize + MAX_UTF_BYTES,
+				    quantum, 0, "fnematch");
 			}
-		} while (buf[j] && s != 1);
+			for (n = MAX_UTF_BYTES ; n > 0; n--) {
+				*k++ = (c = getc(f)) != EOF ? c : 0;
+				if (c == EOF) {
+					if (ferror(f))
+						FATAL("fnematch: getc error");
+					break;
+				}
+			}
+		}
+
+		j += u8_rune(&c, j);
+
+		if ((ns = get_gototab(pfa, s, c)) != 0)
+			s = ns;
+		else
+			s = cgoto(pfa, s, c);
+
+		if (pfa->out[s]) {	/* final state */
+			patbeg = i;
+			patlen = j - i;
+			if (c == 0)	/* don't count $ */
+				patlen--;
+		}
+
+		if (c && s != 1)
+			continue;  /* origin i still viable, next j */
+		if (patlen)
+			break;     /* best match found */
+
+		/* no match at origin i, next i and start over */
+		i += u8_rune(&c, i);
+		if (c == 0)
+			break;    /* no match */
+		j = i;
 		s = 2;
-	} while (buf[i] && !patlen);
+	} while (1);
 
 	/* adjbuf() may have relocated a resized buffer. Inform the world. */
 	*pbuf = buf;
 	*pbufsize = bufsize;
 
 	if (patlen) {
-		patbeg = buf + i;
 		/*
 		 * Under no circumstances is the last character fed to
 		 * the automaton part of the match. It is EOF's nullbyte,
@@ -875,10 +937,10 @@ bool fnematch(fa *pfa, FILE *f, char **pbuf, int *pbufsize, int quantum)
 		 * terminate the buffer.
 		 */
 		do
-			if (buf[--k] && ungetc(buf[k], f) == EOF)
-				FATAL("unable to ungetc '%c'", buf[k]);
-		while (k > i + patlen);
-		buf[k] = '\0';
+			if (*--k && ungetc(*k, f) == EOF)
+				FATAL("unable to ungetc '%c'", *k);
+		while (k > patbeg + patlen);
+		*k = '\0';
 		return true;
 	}
 	else
@@ -1172,8 +1234,6 @@ static int repeat(const uschar *reptok, int reptoklen, const uschar *atom,
 	return 0;
 }
 
-extern int u8_rune(int *, const uschar *); /* run.c; should be in header file */
-
 int relex(void)		/* lexical analyzer for reparse */
 {
 	int c, n;
@@ -1191,7 +1251,7 @@ int relex(void)		/* lexical analyzer for reparse */
 rescan:
 	starttok = prestr;
 
-	if ((n = u8_rune(&rlxval, prestr)) > 1) {
+	if ((n = u8_rune(&rlxval, (const char *) prestr)) > 1) {
 		prestr += n;
 		starttok = prestr;
 		return CHAR;
@@ -1238,7 +1298,7 @@ rescan:
 		if (!adjbuf((char **) &buf, &bufsz, n, n, (char **) &bp, "relex1"))
 			FATAL("out of space for reg expr %.10s...", lastre);
 		for (; ; ) {
-			if ((n = u8_rune(&rlxval, prestr)) > 1) {
+			if ((n = u8_rune(&rlxval, (const char *) prestr)) > 1) {
 				for (i = 0; i < n; i++)
 					*bp++ = *prestr++;
 				continue;
@@ -1466,8 +1526,7 @@ int cgoto(fa *f, int s, int c)
 	/* add tmpset to current set of states */
 	++(f->curstat);
 	resize_state(f, f->curstat);
-	for (i = 0; i < NCHARS; i++)
-		set_gototab(f, f->curstat, 0, 0);
+	clear_gototab(f, f->curstat);
 	xfree(f->posns[f->curstat]);
 	p = intalloc(setcnt + 1, __func__);
 
@@ -1491,7 +1550,8 @@ void freefa(fa *f)	/* free a finite automaton */
 	if (f == NULL)
 		return;
 	for (i = 0; i < f->state_count; i++)
-		xfree(f->gototab[i])
+		xfree(f->gototab[i].entries);
+	xfree(f->gototab);
 	for (i = 0; i <= f->curstat; i++)
 		xfree(f->posns[i]);
 	for (i = 0; i <= f->accept; i++) {

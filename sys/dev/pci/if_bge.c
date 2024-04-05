@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_bge.c,v 1.401 2023/07/04 10:22:39 jmatthew Exp $	*/
+/*	$OpenBSD: if_bge.c,v 1.403 2024/02/11 06:40:46 jmc Exp $	*/
 
 /*
  * Copyright (c) 2001 Wind River Systems
@@ -2099,7 +2099,7 @@ bge_blockinit(struct bge_softc *sc)
 	 * The BD ring replenish thresholds control how often the
 	 * hardware fetches new BD's from the producer rings in host
 	 * memory.  Setting the value too low on a busy system can
-	 * starve the hardware and recue the throughput.
+	 * starve the hardware and reduce the throughput.
 	 *
 	 * Set the BD ring replenish thresholds. The recommended
 	 * values are 1/8th the number of descriptors allocated to
@@ -3061,7 +3061,7 @@ bge_attach(struct device *parent, struct device *self, void *aux)
 	ifp->if_ioctl = bge_ioctl;
 	ifp->if_qstart = bge_start;
 	ifp->if_watchdog = bge_watchdog;
-	ifq_set_maxlen(&ifp->if_snd, BGE_TX_RING_CNT - 1);
+	ifq_init_maxlen(&ifp->if_snd, BGE_TX_RING_CNT - 1);
 
 	DPRINTFN(5, ("bcopy\n"));
 	bcopy(sc->bge_dev.dv_xname, ifp->if_xname, IFNAMSIZ);

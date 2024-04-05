@@ -1,4 +1,4 @@
-/*	$OpenBSD: protosw.h,v 1.62 2023/05/18 09:59:44 mvs Exp $	*/
+/*	$OpenBSD: protosw.h,v 1.65 2024/02/03 22:50:09 mvs Exp $	*/
 /*	$NetBSD: protosw.h,v 1.10 1996/04/09 20:55:32 cgd Exp $	*/
 
 /*-
@@ -69,6 +69,7 @@ struct pr_usrreqs {
 	int	(*pru_detach)(struct socket *);
 	void	(*pru_lock)(struct socket *);
 	void	(*pru_unlock)(struct socket *);
+	int	(*pru_locked)(struct socket *so);
 	int	(*pru_bind)(struct socket *, struct mbuf *, struct proc *);
 	int	(*pru_listen)(struct socket *);
 	int	(*pru_connect)(struct socket *, struct mbuf *);
@@ -259,6 +260,7 @@ struct ifnet;
 struct sockaddr;
 const struct protosw *pffindproto(int, int, int);
 const struct protosw *pffindtype(int, int);
+const struct domain *pffinddomain(int);
 void pfctlinput(int, struct sockaddr *);
 
 extern u_char ip_protox[];
@@ -284,13 +286,23 @@ pru_detach(struct socket *so)
 static inline void
 pru_lock(struct socket *so)
 {
-	(*so->so_proto->pr_usrreqs->pru_lock)(so);
+	if (so->so_proto->pr_usrreqs->pru_lock)
+		(*so->so_proto->pr_usrreqs->pru_lock)(so);
 }
 
 static inline void
 pru_unlock(struct socket *so)
 {
-	(*so->so_proto->pr_usrreqs->pru_unlock)(so);
+	if (so->so_proto->pr_usrreqs->pru_unlock)
+		(*so->so_proto->pr_usrreqs->pru_unlock)(so);
+}
+
+static inline int
+pru_locked(struct socket *so)
+{
+	if (so->so_proto->pr_usrreqs->pru_locked)
+		return (*so->so_proto->pr_usrreqs->pru_locked)(so);
+	return (0);
 }
 
 static inline int

@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.h,v 1.162 2023/03/28 12:15:23 claudio Exp $ */
+/*	$OpenBSD: session.h,v 1.167 2024/01/16 13:15:31 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -123,21 +123,6 @@ struct bgp_msg {
 	uint16_t	 len;
 };
 
-struct msg_header {
-	u_char		 marker[MSGSIZE_HEADER_MARKER];
-	uint16_t	 len;
-	uint8_t		 type;
-};
-
-struct msg_open {
-	struct msg_header	 header;
-	uint32_t		 bgpid;
-	uint16_t		 myas;
-	uint16_t		 holdtime;
-	uint8_t			 version;
-	uint8_t			 optparamlen;
-};
-
 struct bgpd_sysdep {
 	uint8_t			no_pfkey;
 	uint8_t			no_md5sig;
@@ -145,7 +130,7 @@ struct bgpd_sysdep {
 
 struct ctl_conn {
 	TAILQ_ENTRY(ctl_conn)	entry;
-	struct imsgbuf		ibuf;
+	struct imsgbuf		imsgbuf;
 	int			restricted;
 	int			throttled;
 	int			terminate;
@@ -240,6 +225,7 @@ struct peer {
 	int			 lasterr;
 	u_int			 errcnt;
 	u_int			 IdleHoldTime;
+	unsigned int		 if_scope;	/* interface scope for IPv6 */
 	uint32_t		 remote_bgpid;
 	enum session_state	 state;
 	enum session_state	 prev_state;
@@ -287,7 +273,7 @@ char	*log_fmt_peer(const struct peer_config *);
 void	 log_statechange(struct peer *, enum session_state,
 	    enum session_events);
 void	 log_notification(const struct peer *, uint8_t, uint8_t,
-	    u_char *, uint16_t, const char *);
+	    struct ibuf *, const char *);
 void	 log_conn_attempt(const struct peer *, struct sockaddr *,
 	    socklen_t);
 
@@ -353,8 +339,9 @@ struct peer	*getpeerbydesc(struct bgpd_config *, const char *);
 struct peer	*getpeerbyip(struct bgpd_config *, struct sockaddr *);
 struct peer	*getpeerbyid(struct bgpd_config *, uint32_t);
 int		 peer_matched(struct peer *, struct ctl_neighbor *);
-int		 imsg_ctl_parent(int, uint32_t, pid_t, void *, uint16_t);
-int		 imsg_ctl_rde(int, uint32_t, pid_t, void *, uint16_t);
+int		 imsg_ctl_parent(struct imsg *);
+int		 imsg_ctl_rde(struct imsg *);
+int		 imsg_ctl_rde_msg(int, uint32_t, pid_t);
 void		 session_stop(struct peer *, uint8_t);
 
 /* timer.c */

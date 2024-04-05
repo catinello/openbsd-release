@@ -41,7 +41,7 @@ struct module_handlers {
 	    size_t pktlen);
 
 	void (*response_decoration)(void *ctx, u_int query_id,
-	    const u_char *pkt, size_t pktlen);
+	    const u_char *req, size_t reqlen, const u_char *res, size_t reslen);
 };
 
 #define SYNTAX_ASSERT(_cond, _msg)				\
@@ -60,7 +60,7 @@ void			 module_stop(struct module_base *);
 int			 module_run(struct module_base *);
 void			 module_destroy(struct module_base *);
 void			 module_load(struct module_base *);
-void			 module_drop_privilege(struct module_base *);
+void			 module_drop_privilege(struct module_base *, int);
 int			 module_notify_secret(struct module_base *,
 			    const char *);
 int			 module_send_message(struct module_base *, uint32_t,

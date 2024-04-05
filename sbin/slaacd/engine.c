@@ -1,4 +1,4 @@
-/*	$OpenBSD: engine.c,v 1.85 2023/04/30 13:08:40 phessler Exp $	*/
+/*	$OpenBSD: engine.c,v 1.88 2024/02/11 21:29:12 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2017 Florian Obser <florian@openbsd.org>
@@ -60,7 +60,6 @@
 #include <netinet/in.h>
 #include <netinet/if_ether.h>
 #include <netinet/ip6.h>
-#include <netinet6/ip6_var.h>
 #include <netinet6/nd6.h>
 #include <netinet/icmp6.h>
 
@@ -661,7 +660,7 @@ engine_dispatch_main(int fd, short event, void *bula)
 				fatalx("%s: received unexpected imsg fd "
 				    "to engine", __func__);
 
-			if ((fd = imsg.fd) == -1)
+			if ((fd = imsg_get_fd(&imsg)) == -1)
 				fatalx("%s: expected to receive imsg fd to "
 				   "engine but didn't receive any", __func__);
 
@@ -1272,7 +1271,7 @@ request_solicitation(struct slaacd_iface *iface)
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	timespecsub(&now, &iface->last_sol, &diff);
 	if (timespeccmp(&diff, &sol_delay, <)) {
-		log_warnx("last solicitation less then %d seconds ago",
+		log_debug("last solicitation less than %d seconds ago",
 		    RTR_SOLICITATION_INTERVAL);
 		return;
 	}

@@ -1,4 +1,4 @@
-/*	$OpenBSD: proc.c,v 1.28 2023/02/15 20:44:01 tobhe Exp $	*/
+/*	$OpenBSD: proc.c,v 1.30 2024/01/16 13:33:12 claudio Exp $	*/
 
 /*
  * Copyright (c) 2010 - 2016 Reyk Floeter <reyk@openbsd.org>
@@ -17,14 +17,13 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/types.h>
-#include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
@@ -34,6 +33,7 @@
 #include <event.h>
 #include <imsg.h>
 
+#include "log.h"
 #include "snmpd.h"
 
 void	 proc_exec(struct privsep *, struct privsep_proc *, unsigned int, int,
@@ -644,7 +644,7 @@ proc_dispatch(int fd, short event, void *arg)
 		case IMSG_CTL_PROCFD:
 			IMSG_SIZE_CHECK(&imsg, &pf);
 			memcpy(&pf, imsg.data, sizeof(pf));
-			proc_accept(ps, imsg.fd, pf.pf_procid,
+			proc_accept(ps, imsg_get_fd(&imsg), pf.pf_procid,
 			    pf.pf_instance);
 			break;
 		default:
@@ -768,14 +768,6 @@ proc_composev(struct privsep *ps, enum privsep_procid id,
     uint16_t type, const struct iovec *iov, int iovcnt)
 {
 	return (proc_composev_imsg(ps, id, -1, type, -1, -1, iov, iovcnt));
-}
-
-int
-proc_forward_imsg(struct privsep *ps, struct imsg *imsg,
-    enum privsep_procid id, int n)
-{
-	return (proc_compose_imsg(ps, id, n, imsg->hdr.type,
-	    imsg->hdr.peerid, imsg->fd, imsg->data, IMSG_DATA_SIZE(imsg)));
 }
 
 struct imsgbuf *

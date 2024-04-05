@@ -1,4 +1,4 @@
-/*	$OpenBSD: proc.c,v 1.39 2023/06/28 12:31:19 gerhard Exp $	*/
+/*	$OpenBSD: proc.c,v 1.42 2024/02/15 20:10:45 tobhe Exp $	*/
 
 /*
  * Copyright (c) 2010 - 2016 Reyk Floeter <reyk@openbsd.org>
@@ -155,14 +155,19 @@ proc_exec(struct privsep *ps, struct privsep_proc *procs, unsigned int nproc,
 }
 
 void
-proc_connect(struct privsep *ps)
+proc_connect(struct privsep *ps, void (*connected)(struct privsep *))
 {
 	struct imsgev		*iev;
 	unsigned int		 src, dst, inst;
 
 	/* Don't distribute any sockets if we are not really going to run. */
-	if (ps->ps_noaction)
+	if (ps->ps_noaction) {
+		if (connected == NULL)
+			fatalx("%s: missing callback", __func__);
+		connected(ps);
 		return;
+	}
+	ps->ps_connected = connected;
 
 	for (dst = 0; dst < PROC_MAX; dst++) {
 		/* We don't communicate with ourselves. */
@@ -187,6 +192,27 @@ proc_connect(struct privsep *ps)
 
 			proc_open(ps, src, dst);
 		}
+
+	/*
+	 * Finally, send a ready message to everyone:
+	 * When this message is processed by the receiver, it has
+	 * already processed all IMSG_CTL_PROCFD messages and all
+	 * pipes are ready.
+	 */
+	for (dst = 0; dst < PROC_MAX; dst++) {
+		if (dst == PROC_PARENT)
+			continue;
+		for (inst = 0; inst < ps->ps_instances[dst]; inst++) {
+			if (proc_compose_imsg(ps, dst, inst, IMSG_CTL_PROCREADY,
+			    -1, -1, NULL, 0) == -1)
+				fatal("%s: proc_compose_imsg", __func__);
+			ps->ps_connecting++;
+#if DEBUG
+			log_debug("%s: #%d %s %d", __func__,
+			    ps->ps_connecting, ps->ps_title[dst], inst + 1);
+#endif
+		}
+	}
 }
 
 void
@@ -516,7 +542,6 @@ proc_run(struct privsep *ps, struct privsep_proc *p,
 {
 	struct passwd		*pw;
 	const char		*root;
-	struct control_sock	*rcs;
 
 	log_procinit(p->p_title);
 
@@ -526,9 +551,6 @@ proc_run(struct privsep *ps, struct privsep_proc *p,
 	if (p->p_id == PROC_CONTROL && ps->ps_instance == 0) {
 		if (control_init(ps, &ps->ps_csock) == -1)
 			fatalx("%s: control_init", __func__);
-		TAILQ_FOREACH(rcs, &ps->ps_rcsocks, cs_entry)
-			if (control_init(ps, rcs) == -1)
-				fatalx("%s: control_init", __func__);
 	}
 
 	/* Use non-standard user */
@@ -578,9 +600,6 @@ proc_run(struct privsep *ps, struct privsep_proc *p,
 	if (p->p_id == PROC_CONTROL && ps->ps_instance == 0) {
 		if (control_listen(&ps->ps_csock) == -1)
 			fatalx("%s: control_listen", __func__);
-		TAILQ_FOREACH(rcs, &ps->ps_rcsocks, cs_entry)
-			if (control_listen(rcs) == -1)
-				fatalx("%s: control_listen", __func__);
 	}
 
 #if DEBUG
@@ -667,8 +686,35 @@ proc_dispatch(int fd, short event, void *arg)
 		case IMSG_CTL_PROCFD:
 			IMSG_SIZE_CHECK(&imsg, &pf);
 			memcpy(&pf, imsg.data, sizeof(pf));
-			proc_accept(ps, imsg.fd, pf.pf_procid,
+			proc_accept(ps, imsg_get_fd(&imsg), pf.pf_procid,
 			    pf.pf_instance);
+			break;
+		case IMSG_CTL_PROCREADY:
+#if DEBUG
+			log_debug("%s: ready-%s: #%d %s %d -> %s %d", __func__,
+			    p->p_id == PROC_PARENT ? "req" : "ack",
+			    ps->ps_connecting, p->p_title, imsg.hdr.pid,
+			    title, ps->ps_instance + 1);
+#endif
+			if (p->p_id == PROC_PARENT) {
+				/* ack that we are ready */
+				if (proc_compose_imsg(ps, PROC_PARENT, 0,
+				    IMSG_CTL_PROCREADY, -1, -1, NULL, 0) == -1)
+					fatal("%s: proc_compose_imsg", __func__);
+			} else {
+				/* parent received ack */
+				if (ps->ps_connecting == 0)
+					fatalx("%s: wrong acks", __func__);
+				if (ps->ps_instance != 0)
+					fatalx("%s: wrong instance %d",
+					    __func__, ps->ps_instance);
+				if (ps->ps_connected == NULL)
+					fatalx("%s: missing callback", __func__);
+				if (--ps->ps_connecting == 0) {
+					log_debug("%s: all connected", __func__);
+					ps->ps_connected(ps);
+				}
+			}
 			break;
 		default:
 			fatalx("%s: %s %d got invalid imsg %d peerid %d "
@@ -798,7 +844,7 @@ proc_forward_imsg(struct privsep *ps, struct imsg *imsg,
     enum privsep_procid id, int n)
 {
 	return (proc_compose_imsg(ps, id, n, imsg->hdr.type,
-	    imsg->hdr.peerid, imsg->fd, imsg->data, IMSG_DATA_SIZE(imsg)));
+	    imsg->hdr.peerid, -1, imsg->data, IMSG_DATA_SIZE(imsg)));
 }
 
 struct imsgbuf *

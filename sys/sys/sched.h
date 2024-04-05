@@ -1,4 +1,4 @@
-/*	$OpenBSD: sched.h,v 1.64 2023/09/14 22:07:11 cheloha Exp $	*/
+/*	$OpenBSD: sched.h,v 1.70 2024/01/24 19:23:38 cheloha Exp $	*/
 /* $NetBSD: sched.h,v 1.2 1999/02/28 18:14:58 ross Exp $ */
 
 /*-
@@ -69,8 +69,6 @@
 #ifndef	_SYS_SCHED_H_
 #define	_SYS_SCHED_H_
 
-#include <sys/queue.h>
-
 /*
  * Posix defines a <sched.h> which may want to include <sys/sched.h>
  */
@@ -88,9 +86,20 @@
 #define CP_IDLE		5
 #define CPUSTATES	6
 
+struct cpustats {
+	uint64_t	cs_time[CPUSTATES];	/* CPU state statistics */
+	uint64_t	cs_flags;		/* see below */
+};
+
+#define CPUSTATS_ONLINE		0x0001	/* CPU is schedulable */
+
+#ifdef	_KERNEL
+
+#include <sys/clockintr.h>
+#include <sys/queue.h>
+
 #define	SCHED_NQS	32			/* 32 run queues. */
 
-struct clockintr;
 struct smr_entry;
 
 /*
@@ -106,10 +115,10 @@ struct schedstate_percpu {
 	u_int64_t spc_cp_time[CPUSTATES]; /* CPU state statistics */
 	u_char spc_curpriority;		/* usrpri of curproc */
 
-	struct clockintr *spc_itimer;	/* [o] itimer_update handle */
-	struct clockintr *spc_profclock; /* [o] profclock handle */
-	struct clockintr *spc_roundrobin; /* [o] roundrobin handle */
-	struct clockintr *spc_statclock; /* [o] statclock handle */
+	struct clockintr spc_itimer;	/* [o] itimer_update handle */
+	struct clockintr spc_profclock;	/* [o] profclock handle */
+	struct clockintr spc_roundrobin;/* [o] roundrobin handle */
+	struct clockintr spc_statclock;	/* [o] statclock handle */
 
 	u_int spc_nrun;			/* procs on the run queues */
 
@@ -124,15 +133,6 @@ struct schedstate_percpu {
 	u_char spc_smrgp;		/* this CPU's view of grace period */
 };
 
-struct cpustats {
-	uint64_t	cs_time[CPUSTATES];	/* CPU state statistics */
-	uint64_t	cs_flags;		/* see below */
-};
-
-#define CPUSTATS_ONLINE		0x0001	/* CPU is schedulable */
-
-#ifdef	_KERNEL
-
 /* spc_flags */
 #define SPCF_SEENRR             0x0001  /* process has seen roundrobin() */
 #define SPCF_SHOULDYIELD        0x0002  /* process should yield the CPU */
@@ -146,11 +146,12 @@ struct cpustats {
 #define NICE_WEIGHT 2			/* priorities per nice level */
 #define	ESTCPULIM(e) min((e), NICE_WEIGHT * PRIO_MAX - SCHED_PPQ)
 
-extern uint32_t roundrobin_period;
+extern uint64_t roundrobin_period;
 
 struct proc;
 void schedclock(struct proc *);
-void roundrobin(struct clockintr *, void *, void *);
+struct clockrequest;
+void roundrobin(struct clockrequest *, void *, void *);
 void scheduler_start(void);
 void userret(struct proc *p);
 
@@ -158,6 +159,7 @@ struct cpu_info;
 void sched_init_cpu(struct cpu_info *);
 void sched_idle(void *);
 void sched_exit(struct proc *);
+void sched_toidle(void);
 void mi_switch(void);
 void cpu_switchto(struct proc *, struct proc *);
 struct proc *sched_chooseproc(void);

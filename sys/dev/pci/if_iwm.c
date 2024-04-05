@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_iwm.c,v 1.410 2023/09/02 09:02:18 stsp Exp $	*/
+/*	$OpenBSD: if_iwm.c,v 1.414 2024/02/16 11:44:52 stsp Exp $	*/
 
 /*
  * Copyright (c) 2014, 2016 genua gmbh <info@genua.de>
@@ -6166,7 +6166,7 @@ uint8_t
 iwm_get_vht_ctrl_pos(struct ieee80211com *ic, struct ieee80211_channel *chan)
 {
 	int center_idx = ic->ic_bss->ni_vht_chan_center_freq_idx0;
-	int primary_idx = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+	int primary_idx = ic->ic_bss->ni_primary_chan;
 	/*
 	 * The FW is expected to check the control channel position only
 	 * when in HT/VHT and the channel width is not 20MHz. Return
@@ -7704,6 +7704,7 @@ iwm_fill_probe_req(struct iwm_softc *sc, struct iwm_scan_probe_req *preq)
 				return ENOBUFS;
 			frm = ieee80211_add_vhtcaps(frm, ic);
 			remain -= frm - pos;
+			preq->band_data[1].len = htole16(frm - pos);
 		}
 	}
 
@@ -8533,7 +8534,7 @@ iwm_scan(struct iwm_softc *sc)
 	 * The current mode might have been fixed during association.
 	 * Ensure all channels get scanned.
 	 */
-	if (IFM_MODE(ic->ic_media.ifm_cur->ifm_media) == IFM_AUTO)
+	if (IFM_SUBTYPE(ic->ic_media.ifm_cur->ifm_media) == IFM_AUTO)
 		ieee80211_setmode(ic, IEEE80211_MODE_AUTO);
 
 	sc->sc_flags |= IWM_FLAG_SCANNING;
@@ -9294,8 +9295,17 @@ iwm_set_rate_table_vht(struct iwm_node *in, struct iwm_lq_cmd *lqcmd)
 				if (i < 2 && in->in_phyctxt->vht_chan_width >=
 				    IEEE80211_VHTOP0_CHAN_WIDTH_80)
 					tab |= IWM_RATE_MCS_CHAN_WIDTH_80;
-				else
+				else if (in->in_phyctxt->sco ==
+				    IEEE80211_HTOP0_SCO_SCA ||
+				    in->in_phyctxt->sco ==
+				    IEEE80211_HTOP0_SCO_SCB)
 					tab |= IWM_RATE_MCS_CHAN_WIDTH_40;
+				else {
+					/* no 40 MHz, fall back on MCS 8 */
+					tab &= ~IWM_RATE_VHT_MCS_RATE_CODE_MSK;
+					tab |= 8;
+				}
+					
 				tab |= IWM_RATE_MCS_RTS_REQUIRED_MSK;
 				if (i < 4) {
 					if (ieee80211_ra_vht_use_sgi(ni))

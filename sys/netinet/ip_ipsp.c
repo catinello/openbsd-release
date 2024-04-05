@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip_ipsp.c,v 1.276 2023/08/07 03:43:57 dlg Exp $	*/
+/*	$OpenBSD: ip_ipsp.c,v 1.278 2023/12/03 10:50:25 mvs Exp $	*/
 /*
  * The authors of this code are John Ioannidis (ji@tla.org),
  * Angelos D. Keromytis (kermit@csd.uch.gr),
@@ -124,7 +124,8 @@ void ipsp_ids_gc(void *);
 LIST_HEAD(, ipsec_ids) ipsp_ids_gc_list =
     LIST_HEAD_INITIALIZER(ipsp_ids_gc_list);	/* [F] */
 struct timeout ipsp_ids_gc_timeout =
-    TIMEOUT_INITIALIZER_FLAGS(ipsp_ids_gc, NULL, KCLOCK_NONE, TIMEOUT_PROC);
+    TIMEOUT_INITIALIZER_FLAGS(ipsp_ids_gc, NULL, KCLOCK_NONE,
+    TIMEOUT_PROC | TIMEOUT_MPSAFE);
 
 static inline int ipsp_ids_cmp(const struct ipsec_ids *,
     const struct ipsec_ids *);
@@ -714,6 +715,23 @@ tdb_firstuse(void *v)
 	/* decrement refcount of the timeout argument */
 	tdb_unref(tdb);
 	NET_UNLOCK();
+}
+
+void
+tdb_addtimeouts(struct tdb *tdbp)
+{
+	mtx_enter(&tdbp->tdb_mtx);
+	if (tdbp->tdb_flags & TDBF_TIMER) {
+		if (timeout_add_sec(&tdbp->tdb_timer_tmo,
+		    tdbp->tdb_exp_timeout))
+			tdb_ref(tdbp);
+	}
+	if (tdbp->tdb_flags & TDBF_SOFT_TIMER) {
+		if (timeout_add_sec(&tdbp->tdb_stimer_tmo,
+		    tdbp->tdb_soft_timeout))
+			tdb_ref(tdbp);
+	}
+	mtx_leave(&tdbp->tdb_mtx);
 }
 
 void

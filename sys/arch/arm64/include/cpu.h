@@ -1,4 +1,4 @@
-/* $OpenBSD: cpu.h,v 1.39 2023/08/23 01:55:46 cheloha Exp $ */
+/* $OpenBSD: cpu.h,v 1.43 2024/02/25 19:15:50 cheloha Exp $ */
 /*
  * Copyright (c) 2016 Dale Rahn <drahn@dalerahn.com>
  *
@@ -116,6 +116,7 @@ struct cpu_info {
 
 	u_int32_t		ci_cpuid;
 	uint64_t		ci_mpidr;
+	uint64_t		ci_midr;
 	u_int			ci_acpi_proc_id;
 	int			ci_node;
 	struct cpu_info		*ci_self;
@@ -143,6 +144,7 @@ struct cpu_info {
 	int			ci_want_resched;
 
 	void			(*ci_flush_bp)(void);
+	void			(*ci_serror)(void);
 
 	uint64_t		ci_ttbr1;
 	vaddr_t			ci_el1_stkend;
@@ -172,9 +174,9 @@ struct cpu_info {
 
 #ifdef GPROF
 	struct gmonparam	*ci_gmon;
-	struct clockintr	*ci_gmonclock;
+	struct clockintr	ci_gmonclock;
 #endif
-	struct clockintr_queue	ci_queue;
+	struct clockqueue	ci_queue;
 	char			ci_panicbuf[512];
 };
 

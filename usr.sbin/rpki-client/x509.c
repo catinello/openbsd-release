@@ -1,4 +1,4 @@
-/*	$OpenBSD: x509.c,v 1.74 2023/09/12 09:33:30 job Exp $ */
+/*	$OpenBSD: x509.c,v 1.81 2024/02/22 12:49:42 job Exp $ */
 /*
  * Copyright (c) 2022 Theo Buehler <tb@openbsd.org>
  * Copyright (c) 2021 Claudio Jeker <claudio@openbsd.org>
@@ -44,6 +44,7 @@ ASN1_OBJECT	*rsc_oid;	/* id-ct-signedChecklist */
 ASN1_OBJECT	*aspa_oid;	/* id-ct-ASPA */
 ASN1_OBJECT	*tak_oid;	/* id-ct-SignedTAL */
 ASN1_OBJECT	*geofeed_oid;	/* id-ct-geofeedCSVwithCRLF */
+ASN1_OBJECT	*spl_oid;	/* id-ct-signedPrefixList */
 
 static const struct {
 	const char	 *oid;
@@ -116,6 +117,10 @@ static const struct {
 	{
 		.oid = "1.2.840.113549.1.9.16.1.50",
 		.ptr = &tak_oid,
+	},
+	{
+		.oid = "1.2.840.113549.1.9.16.1.51",
+		.ptr = &spl_oid,
 	},
 };
 
@@ -191,18 +196,18 @@ out:
 }
 
 /*
- * Parse X509v3 subject key identifier (SKI), RFC 6487 sec. 4.8.2.
- * The SKI must be the SHA1 hash of the Subject Public Key.
+ * Validate the X509v3 subject key identifier (SKI), RFC 6487 section 4.8.2:
+ * "The SKI is a SHA-1 hash of the value of the DER-encoded ASN.1 BIT STRING of
+ * the Subject Public Key, as described in Section 4.2.1.2 of RFC 5280."
  * Returns the SKI formatted as hex string, or NULL if it couldn't be parsed.
  */
 int
 x509_get_ski(X509 *x, const char *fn, char **ski)
 {
-	const unsigned char	*d, *spk;
 	ASN1_OCTET_STRING	*os;
-	X509_PUBKEY		*pubkey;
-	unsigned char		 spkd[SHA_DIGEST_LENGTH];
-	int			 crit, dsz, spkz, rc = 0;
+	unsigned char		 md[EVP_MAX_MD_SIZE];
+	unsigned int		 md_len = EVP_MAX_MD_SIZE;
+	int			 crit, rc = 0;
 
 	*ski = NULL;
 	os = X509_get_ext_d2i(x, NID_subject_key_identifier, &crit, NULL);
@@ -220,36 +225,24 @@ x509_get_ski(X509 *x, const char *fn, char **ski)
 		goto out;
 	}
 
-	d = os->data;
-	dsz = os->length;
+	if (!X509_pubkey_digest(x, EVP_sha1(), md, &md_len)) {
+		warnx("%s: X509_pubkey_digest", fn);
+		goto out;
+	}
 
-	if (dsz != SHA_DIGEST_LENGTH) {
+	if (os->length < 0 || md_len != (size_t)os->length) {
 		warnx("%s: RFC 6487 section 4.8.2: SKI: "
-		    "want %d bytes SHA1 hash, have %d bytes",
-		    fn, SHA_DIGEST_LENGTH, dsz);
+		    "want %u bytes SHA1 hash, have %d bytes",
+		    fn, md_len, os->length);
 		goto out;
 	}
 
-	if ((pubkey = X509_get_X509_PUBKEY(x)) == NULL) {
-		warnx("%s: X509_get_X509_PUBKEY", fn);
-		goto out;
-	}
-	if (!X509_PUBKEY_get0_param(NULL, &spk, &spkz, NULL, pubkey)) {
-		warnx("%s: X509_PUBKEY_get0_param", fn);
-		goto out;
-	}
-
-	if (!EVP_Digest(spk, spkz, spkd, NULL, EVP_sha1(), NULL)) {
-		warnx("%s: EVP_Digest failed", fn);
-		goto out;
-	}
-
-	if (memcmp(spkd, d, dsz) != 0) {
+	if (memcmp(os->data, md, md_len) != 0) {
 		warnx("%s: SKI does not match SHA1 hash of SPK", fn);
 		goto out;
 	}
 
-	*ski = hex_encode(d, dsz);
+	*ski = hex_encode(md, md_len);
 	rc = 1;
  out:
 	ASN1_OCTET_STRING_free(os);
@@ -362,7 +355,7 @@ x509_get_pubkey(X509 *x, const char *fn)
 	nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(eckey));
 	if (nid != NID_X9_62_prime256v1) {
 		if ((cname = EC_curve_nid2nist(nid)) == NULL)
-			cname = OBJ_nid2sn(nid);
+			cname = nid2str(nid);
 		warnx("%s: Expected P-256, got %s", fn, cname);
 		goto out;
 	}
@@ -384,6 +377,38 @@ x509_get_pubkey(X509 *x, const char *fn)
  out:
 	free(pubkey);
 	return res;
+}
+
+/*
+ * Compute the SKI of an RSA public key in an X509_PUBKEY using SHA-1.
+ * Returns allocated hex-encoded SKI on success, NULL on failure.
+ */
+char *
+x509_pubkey_get_ski(X509_PUBKEY *pubkey, const char *fn)
+{
+	ASN1_OBJECT		*obj;
+	const unsigned char	*der;
+	int			 der_len, nid;
+	unsigned char		 md[EVP_MAX_MD_SIZE];
+	unsigned int		 md_len = EVP_MAX_MD_SIZE;
+
+	if (!X509_PUBKEY_get0_param(&obj, &der, &der_len, NULL, pubkey)) {
+		warnx("%s: X509_PUBKEY_get0_param failed", fn);
+		return NULL;
+	}
+
+	if ((nid = OBJ_obj2nid(obj)) != NID_rsaEncryption) {
+		warnx("%s: RFC 7935: wrong signature algorithm %s, want %s",
+		    fn, nid2str(nid), LN_rsaEncryption);
+		return NULL;
+	}
+
+	if (!EVP_Digest(der, der_len, md, &md_len, EVP_sha1(), NULL)) {
+		warnx("%s: EVP_Digest failed", fn);
+		return NULL;
+	}
+
+	return hex_encode(md, md_len);
 }
 
 /*
@@ -806,6 +831,36 @@ out:
 }
 
 /*
+ * Retrieve CRL Number extension. Returns a printable hexadecimal representation
+ * of the number which has to be freed after use.
+ */
+char *
+x509_crl_get_number(X509_CRL *crl, const char *fn)
+{
+	ASN1_INTEGER		*aint;
+	int			 crit;
+	char			*res = NULL;
+
+	aint = X509_CRL_get_ext_d2i(crl, NID_crl_number, &crit, NULL);
+	if (aint == NULL) {
+		warnx("%s: RFC 6487 section 5: CRL Number missing", fn);
+		return NULL;
+	}
+	if (crit != 0) {
+		warnx("%s: RFC 5280, section 5.2.3: "
+		    "CRL Number not non-critical", fn);
+		goto out;
+	}
+
+	/* This checks that the number is non-negative and <= 20 bytes. */
+	res = x509_convert_seqnum(fn, aint);
+
+ out:
+	ASN1_INTEGER_free(aint);
+	return res;
+}
+
+/*
  * Convert passed ASN1_TIME to time_t *t.
  * Returns 1 on success and 0 on failure.
  */
@@ -925,8 +980,8 @@ x509_valid_subject(const char *fn, const X509 *x)
 			warnx("%s: OBJ_obj2nid failed", fn);
 			return 0;
 		default:
-			warnx("%s: RFC 6487 section 4.5: unexpected attribute "
-			    "%s", fn, OBJ_nid2sn(nid));
+			warnx("%s: RFC 6487 section 4.5: unexpected attribute"
+			    " %s", fn, nid2str(nid));
 			return 0;
 		}
 	}

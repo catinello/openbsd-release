@@ -29,7 +29,6 @@
 ./usr/share/man/man1/cal.1
 ./usr/share/man/man1/calendar.1
 ./usr/share/man/man1/cap_mkdb.1
-./usr/share/man/man1/captoinfo.1
 ./usr/share/man/man1/cat.1
 ./usr/share/man/man1/cdio.1
 ./usr/share/man/man1/check-lib-depends.1
@@ -116,7 +115,6 @@
 ./usr/share/man/man1/info.1
 ./usr/share/man/man1/infocmp.1
 ./usr/share/man/man1/infokey.1
-./usr/share/man/man1/infotocap.1
 ./usr/share/man/man1/install-info.1
 ./usr/share/man/man1/install.1
 ./usr/share/man/man1/instmodsh.1
@@ -251,8 +249,12 @@
 ./usr/share/man/man1/perl5321delta.1
 ./usr/share/man/man1/perl5340delta.1
 ./usr/share/man/man1/perl5341delta.1
+./usr/share/man/man1/perl5342delta.1
+./usr/share/man/man1/perl5343delta.1
 ./usr/share/man/man1/perl5360delta.1
 ./usr/share/man/man1/perl5361delta.1
+./usr/share/man/man1/perl5362delta.1
+./usr/share/man/man1/perl5363delta.1
 ./usr/share/man/man1/perl561delta.1
 ./usr/share/man/man1/perl56delta.1
 ./usr/share/man/man1/perl581delta.1
@@ -1250,12 +1252,15 @@
 ./usr/share/man/man4/arm64
 ./usr/share/man/man4/arm64/agintc.4
 ./usr/share/man/man4/arm64/agtimer.4
+./usr/share/man/man4/arm64/ampchwm.4
 ./usr/share/man/man4/arm64/ampintc.4
 ./usr/share/man/man4/arm64/aplaudio.4
 ./usr/share/man/man4/arm64/aplcpu.4
 ./usr/share/man/man4/arm64/apldart.4
+./usr/share/man/man4/arm64/apldcp.4
 ./usr/share/man/man4/arm64/apldma.4
 ./usr/share/man/man4/arm64/apldog.4
+./usr/share/man/man4/arm64/apldrm.4
 ./usr/share/man/man4/arm64/aplefuse.4
 ./usr/share/man/man4/arm64/aplhidev.4
 ./usr/share/man/man4/arm64/apliic.4
@@ -1856,6 +1861,7 @@
 ./usr/share/man/man4/qle.4
 ./usr/share/man/man4/qlw.4
 ./usr/share/man/man4/qsphy.4
+./usr/share/man/man4/qwx.4
 ./usr/share/man/man4/radio.4
 ./usr/share/man/man4/ral.4
 ./usr/share/man/man4/random.4
@@ -1877,6 +1883,8 @@
 ./usr/share/man/man4/riscv64/sfgpio.4
 ./usr/share/man/man4/riscv64/sfuart.4
 ./usr/share/man/man4/riscv64/stfclock.4
+./usr/share/man/man4/riscv64/stfpcie.4
+./usr/share/man/man4/riscv64/stfpciephy.4
 ./usr/share/man/man4/riscv64/stfpinctrl.4
 ./usr/share/man/man4/riscv64/stfrng.4
 ./usr/share/man/man4/rkanxdp.4
@@ -1897,6 +1905,7 @@
 ./usr/share/man/man4/rkpmic.4
 ./usr/share/man/man4/rkpwm.4
 ./usr/share/man/man4/rkrng.4
+./usr/share/man/man4/rkspi.4
 ./usr/share/man/man4/rktcphy.4
 ./usr/share/man/man4/rktemp.4
 ./usr/share/man/man4/rkusbphy.4
@@ -2303,6 +2312,7 @@
 ./usr/share/man/man5/rpc.5
 ./usr/share/man/man5/ruby-module.5
 ./usr/share/man/man5/sasyncd.conf.5
+./usr/share/man/man5/scr_dump.5
 ./usr/share/man/man5/securenet.5
 ./usr/share/man/man5/sensorsd.conf.5
 ./usr/share/man/man5/services.5
@@ -2325,6 +2335,7 @@
 ./usr/share/man/man5/tzfile.5
 ./usr/share/man/man5/unbound.conf.5
 ./usr/share/man/man5/unwind.conf.5
+./usr/share/man/man5/user_caps.5
 ./usr/share/man/man5/usermgmt.conf.5
 ./usr/share/man/man5/utmp.5
 ./usr/share/man/man5/uuencode.5

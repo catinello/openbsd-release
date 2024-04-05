@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfkeyv2_convert.c,v 1.81 2023/09/16 09:33:27 mpi Exp $	*/
+/*	$OpenBSD: pfkeyv2_convert.c,v 1.83 2023/11/28 13:23:20 bluhm Exp $	*/
 /*
  * The author of this code is Angelos D. Keromytis (angelos@keromytis.org)
  *
@@ -302,9 +302,6 @@ import_lifetime(struct tdb *tdb, struct sadb_lifetime *sadb_lifetime, int type)
 		if ((tdb->tdb_exp_timeout =
 		    sadb_lifetime->sadb_lifetime_addtime) != 0) {
 			tdb->tdb_flags |= TDBF_TIMER;
-			if (timeout_add_sec(&tdb->tdb_timer_tmo,
-			    tdb->tdb_exp_timeout))
-				tdb_ref(tdb);
 		} else
 			tdb->tdb_flags &= ~TDBF_TIMER;
 
@@ -331,9 +328,6 @@ import_lifetime(struct tdb *tdb, struct sadb_lifetime *sadb_lifetime, int type)
 		if ((tdb->tdb_soft_timeout =
 		    sadb_lifetime->sadb_lifetime_addtime) != 0) {
 			tdb->tdb_flags |= TDBF_SOFT_TIMER;
-			if (timeout_add_sec(&tdb->tdb_stimer_tmo,
-			    tdb->tdb_soft_timeout))
-				tdb_ref(tdb);
 		} else
 			tdb->tdb_flags &= ~TDBF_SOFT_TIMER;
 
@@ -490,10 +484,8 @@ import_flow(struct sockaddr_encap *flow, struct sockaddr_encap *flowmask,
 
 #ifdef INET6
 	case AF_INET6:
-		in6_embedscope(&src->sin6.sin6_addr, &src->sin6,
-		    NULL);
-		in6_embedscope(&dst->sin6.sin6_addr, &dst->sin6,
-		    NULL);
+		in6_embedscope(&src->sin6.sin6_addr, &src->sin6, NULL, NULL);
+		in6_embedscope(&dst->sin6.sin6_addr, &dst->sin6, NULL, NULL);
 
 		/* netmask handling */
 		rt_maskedcopy(&src->sa, &src->sa, &srcmask->sa);

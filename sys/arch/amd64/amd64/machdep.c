@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.288 2023/09/08 20:47:22 kn Exp $	*/
+/*	$OpenBSD: machdep.c,v 1.291 2024/02/25 22:33:09 guenther Exp $	*/
 /*	$NetBSD: machdep.c,v 1.3 2003/05/07 22:58:18 fvdl Exp $	*/
 
 /*-
@@ -486,6 +486,7 @@ bios_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
 
 extern int tsc_is_invariant;
 extern int amd64_has_xcrypt;
+extern int need_retpoline;
 
 const struct sysctl_bounded_args cpuctl_vars[] = {
 	{ CPU_LIDACTION, &lid_action, 0, 2 },
@@ -494,6 +495,7 @@ const struct sysctl_bounded_args cpuctl_vars[] = {
 	{ CPU_CPUFEATURE, &cpu_feature, SYSCTL_INT_READONLY },
 	{ CPU_XCRYPT, &amd64_has_xcrypt, SYSCTL_INT_READONLY },
 	{ CPU_INVARIANTTSC, &tsc_is_invariant, SYSCTL_INT_READONLY },
+	{ CPU_RETPOLINE, &need_retpoline, SYSCTL_INT_READONLY },
 };
 
 /*
@@ -1742,9 +1744,6 @@ init_x86_64(paddr_t first_avail)
 	set_mem_segment(GDT_ADDR_MEM(cpu_info_primary.ci_gdt, GDATA_SEL), 0,
 	    0xfffff, SDT_MEMRWA, SEL_KPL, 1, 0, 1);
 
-	set_mem_segment(GDT_ADDR_MEM(cpu_info_primary.ci_gdt, GUCODE32_SEL), 0,
-	    atop(VM_MAXUSER_ADDRESS32) - 1, SDT_MEMERA, SEL_UPL, 1, 1, 0);
-
 	set_mem_segment(GDT_ADDR_MEM(cpu_info_primary.ci_gdt, GUDATA_SEL), 0,
 	    atop(VM_MAXUSER_ADDRESS) - 1, SDT_MEMRWA, SEL_UPL, 1, 0, 1);
 
@@ -1912,6 +1911,29 @@ idt_vec_alloc(int low, int high)
 	for (vec = low; vec <= high; vec++) {
 		if (idt_allocmap[vec] == 0) {
 			idt_allocmap[vec] = 1;
+			return vec;
+		}
+	}
+	return 0;
+}
+
+int
+idt_vec_alloc_range(int low, int high, int num)
+{
+	int i, vec;
+
+	KASSERT(powerof2(num));
+	low = (low + num - 1) & ~(num - 1);
+	high = ((high + 1) & ~(num - 1)) - 1;
+
+	for (vec = low; vec <= high; vec += num) {
+		for (i = 0; i < num; i++) {
+			if (idt_allocmap[vec + i] != 0)
+				break;
+		}
+		if (i == num) {
+			for (i = 0; i < num; i++)
+				idt_allocmap[vec + i] = 1;
 			return vec;
 		}
 	}

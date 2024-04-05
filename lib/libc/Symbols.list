@@ -434,7 +434,6 @@ symlink
 symlinkat
 sync
 sysarch
-syscall
 timer_create
 timer_delete
 timer_getoverrun
@@ -1411,6 +1410,7 @@ getw
 getwc
 getwchar
 mkdtemp
+mkdtemps
 mkostemp
 mkostemps
 mkstemp

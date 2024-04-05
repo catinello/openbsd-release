@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.346 2023/06/18 17:28:42 op Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.349 2024/02/03 15:50:00 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -917,7 +917,8 @@ setup_proc(void)
 			env->sc_queue_key = strdup(imsg.data);
 			break;
 		case IMSG_SETUP_PEER:
-			setup_peer(imsg.hdr.peerid, imsg.hdr.pid, imsg.fd);
+			setup_peer(imsg.hdr.peerid, imsg.hdr.pid,
+			    imsg_get_fd(&imsg));
 			break;
 		case IMSG_SETUP_DONE:
 			setup = 0;
@@ -1424,16 +1425,9 @@ forkmda(struct mproc *p, uint64_t id, struct deliver *deliver)
 		pw_dir = deliver->userinfo.directory;
 	}
 
-	if (pw_uid == 0 && deliver->mda_exec[0]) {
-		pw_name = deliver->userinfo.username;
-		pw_uid = deliver->userinfo.uid;
-		pw_gid = deliver->userinfo.gid;
-		pw_dir = deliver->userinfo.directory;
-	}
-
-	if (pw_uid == 0 && !dsp->u.local.is_mbox) {
-		(void)snprintf(ebuf, sizeof ebuf, "not allowed to deliver to: %s",
-		    deliver->userinfo.username);
+	if (pw_uid == 0 && (!dsp->u.local.is_mbox || deliver->mda_exec[0])) {
+		(void)snprintf(ebuf, sizeof ebuf, "MDA not allowed to deliver to: %s",
+			       deliver->userinfo.username);
 		m_create(p_dispatcher, IMSG_MDA_DONE, 0, 0, -1);
 		m_add_id(p_dispatcher, id);
 		m_add_int(p_dispatcher, MDA_PERMFAIL);
@@ -1443,6 +1437,9 @@ forkmda(struct mproc *p, uint64_t id, struct deliver *deliver)
 		return;
 	}
 
+	if (dsp->u.local.is_mbox && dsp->u.local.command != NULL)
+		fatalx("serious memory corruption in privileged process");
+	
 	if (pipe(pipefd) == -1) {
 		(void)snprintf(ebuf, sizeof ebuf, "pipe: %s", strerror(errno));
 		m_create(p_dispatcher, IMSG_MDA_DONE, 0, 0, -1);
@@ -1866,19 +1863,11 @@ log_imsg(int to, int from, struct imsg *imsg)
 	if (to == PROC_CONTROL && imsg->hdr.type == IMSG_STAT_SET)
 		return;
 
-	if (imsg->fd != -1)
-		log_trace(TRACE_IMSG, "imsg: %s <- %s: %s (len=%zu, fd=%d)",
-		    proc_name(to),
-		    proc_name(from),
-		    imsg_to_str(imsg->hdr.type),
-		    imsg->hdr.len - IMSG_HEADER_SIZE,
-		    imsg->fd);
-	else
-		log_trace(TRACE_IMSG, "imsg: %s <- %s: %s (len=%zu)",
-		    proc_name(to),
-		    proc_name(from),
-		    imsg_to_str(imsg->hdr.type),
-		    imsg->hdr.len - IMSG_HEADER_SIZE);
+	log_trace(TRACE_IMSG, "imsg: %s <- %s: %s (len=%zu)",
+	    proc_name(to),
+	    proc_name(from),
+	    imsg_to_str(imsg->hdr.type),
+	    imsg->hdr.len - IMSG_HEADER_SIZE);
 }
 
 const char *

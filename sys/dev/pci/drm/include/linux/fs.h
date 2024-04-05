@@ -19,4 +19,9 @@
 struct address_space;
 struct seq_file;
 
+struct file_operations {
+};
+
+#define DEFINE_SIMPLE_ATTRIBUTE(a, b, c, d)
+
 #endif

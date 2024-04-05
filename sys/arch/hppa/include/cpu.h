@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.101 2023/08/23 01:55:46 cheloha Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.104 2024/02/25 19:15:50 cheloha Exp $	*/
 
 /*
  * Copyright (c) 2000-2004 Michael Shalayeff
@@ -113,9 +113,9 @@ struct cpu_info {
 #endif
 #ifdef GPROF
 	struct gmonparam *ci_gmon;
-	struct clockintr *ci_gmonclock;
+	struct clockintr ci_gmonclock;
 #endif
-	struct clockintr_queue ci_queue;
+	struct clockqueue ci_queue;
 	char		ci_panicbuf[512];
 } __attribute__((__aligned__(64)));
 
@@ -130,6 +130,8 @@ struct cpu_info {
 extern struct cpu_info cpu_info[HPPA_MAXCPUS];
 
 #define MAXCPUS		HPPA_MAXCPUS
+
+#ifdef MULTIPROCESSOR
 
 static __inline struct cpu_info *
 curcpu(void)
@@ -146,6 +148,19 @@ curcpu(void)
 #define CPU_INFO_UNIT(ci)	((ci)->ci_dev ? (ci)->ci_dev->dv_unit : 0)
 #define CPU_IS_PRIMARY(ci)	((ci)->ci_cpuid == 0)
 #define CPU_IS_RUNNING(ci)	((ci)->ci_flags & CPUF_RUNNING)
+
+#else
+
+#define	curcpu()		(&cpu_info[0])
+
+#define cpu_number()		0
+
+#define CPU_INFO_UNIT(ci)	0
+#define CPU_IS_PRIMARY(ci)	1
+#define CPU_IS_RUNNING(ci)	1
+
+#endif
+
 #define	CPU_INFO_ITERATOR	int
 #define CPU_INFO_FOREACH(cii, ci) \
 	for (cii = 0, ci = &cpu_info[0]; cii < ncpus; cii++, ci++)
