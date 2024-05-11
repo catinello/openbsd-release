@@ -294,7 +294,9 @@ doall_util_fn(_LHASH *lh, int use_arg, LHASH_DOALL_FN_TYPE func,
 
 	/* Restore down load factor and trigger contraction. */
 	lh->down_load = down_load;
-	contract(lh);
+	if ((lh->num_nodes > MIN_NODES) &&
+	    (lh->down_load >= (lh->num_items * LH_LOAD_MULT / lh->num_nodes)))
+		contract(lh);
 }
 
 void
