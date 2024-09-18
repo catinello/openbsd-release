@@ -1005,6 +1005,7 @@ tryagain:
 			if ((nmp->nm_flag & NFSMNT_NFSV3) &&
 			    error == NFSERR_TRYLATER) {
 				m_freem(info.nmi_mrep);
+				info.nmi_mrep = NULL;
 				error = 0;
 				tsleep_nsec(&nowake, PSOCK, "nfsretry",
 				    SEC_TO_NSEC(trylater_delay));
