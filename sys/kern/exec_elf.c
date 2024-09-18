@@ -310,8 +310,10 @@ elf_read_pintable(struct proc *p, struct vnode *vp, Elf_Phdr *pp,
 	for (i = 0; i < nsyscalls; i++) {
 		if (syscalls[i].sysno <= 0 ||
 		    syscalls[i].sysno >= SYS_MAXSYSCALL ||
-		    syscalls[i].offset > len)
+		    syscalls[i].offset > len) {
+			npins = 0;
 			goto bad;
+		}
 		npins = MAX(npins, syscalls[i].sysno);
 	}
 	if (is_ldso)
