@@ -173,7 +173,11 @@ ext2fs_readdir(void *v)
 				break;
 			}
 			ext2fs_dirconv2ffs(dp, &dstd);
-			if(dstd.d_reclen > uio->uio_resid) {
+			if (memchr(dstd.d_name, '/', dstd.d_namlen) != NULL) {
+				error = EINVAL;
+				break;
+			}
+			if (dstd.d_reclen > uio->uio_resid) {
 				break;
 			}
 			dstd.d_off = off + e2d_reclen;

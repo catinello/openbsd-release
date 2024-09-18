@@ -1410,6 +1410,11 @@ ufs_readdir(void *v)
 		memset(u.dn.d_name + u.dn.d_namlen, 0, u.dn.d_reclen
 		    - u.dn.d_namlen - offsetof(struct dirent, d_name));
 
+		if (memchr(u.dn.d_name, '/', u.dn.d_namlen) != NULL) {
+			error = EINVAL;
+			break;
+		}
+
 		error = uiomove(&u.dn, u.dn.d_reclen, uio);
 		dp = (struct direct *)((char *)dp + dp->d_reclen);
 	}

@@ -317,6 +317,11 @@ iso_uiodir(struct isoreaddir *idp, struct dirent *dp, off_t off)
 	dp->d_name[dp->d_namlen] = 0;
 	dp->d_reclen = DIRENT_SIZE(dp);
 
+	if (memchr(dp->d_name, '/', dp->d_namlen) != NULL) {
+		/* illegal file name */
+		return (EINVAL);
+	}
+
 	if (idp->uio->uio_resid < dp->d_reclen) {
 		idp->eofflag = 0;
 		return (-1);

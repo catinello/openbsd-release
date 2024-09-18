@@ -820,6 +820,11 @@ tmpfs_dir_getdents(tmpfs_node_t *node, struct uio *uio)
 		dent.d_name[de->td_namelen] = '\0';
 		dent.d_reclen = DIRENT_SIZE(&dent);
 
+		if (memchr(dent.d_name, '/', dent.d_namlen) != NULL) {
+			error = EINVAL;
+			break;
+		}
+
 		next_de = TAILQ_NEXT(de, td_entries);
 		if (next_de == NULL)
 			dent.d_off = TMPFS_DIRSEQ_EOF;

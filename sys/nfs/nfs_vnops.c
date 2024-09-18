@@ -2116,6 +2116,11 @@ nfs_readdir(void *v)
 			dp->d_reclen -= NFS_DIRENT_OVERHEAD;
 			dp->d_off = fxdr_hyper(&ndp->cookie[0]);
 
+			if (memchr(dp->d_name, '/', dp->d_namlen) != NULL) {
+				error = EBADRPC;
+				break;
+			}
+
 			if (uio->uio_resid < dp->d_reclen) {
 				eof = 0;
 				done = 1;

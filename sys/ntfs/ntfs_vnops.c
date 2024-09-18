@@ -489,6 +489,10 @@ ntfs_readdir(void *v)
 			    "flag: %u, ",
 			    num, cde.d_name, iep->ie_fnametype, iep->ie_flag);
 			cde.d_namlen = fname - (char *) cde.d_name;
+			if (memchr(cde.d_name, '/', cde.d_namlen) != NULL) {
+				error = EINVAL;
+				goto out;
+			}
 			cde.d_fileno = iep->ie_number;
 			cde.d_type = (iep->ie_fflag & NTFS_FFLAG_DIR) ? DT_DIR : DT_REG;
 			cde.d_reclen = sizeof(struct dirent);
