@@ -53,6 +53,8 @@ struct volume
 
 struct sioctl_sun_hdl {
 	struct sioctl_hdl sioctl;
+	char display[SIOCTL_DISPLAYMAX];
+	int display_addr;
 	struct volume output, input;
 	int fd, events;
 };
@@ -147,6 +149,7 @@ init(struct sioctl_sun_hdl *hdl)
 		{AudioCinputs, AudioNvolume},
 		{AudioCinputs, AudioNinput}
 	};
+	struct audio_device getdev;
 	int i;
 
 	for (i = 0; i < sizeof(output_names) / sizeof(output_names[0]); i++) {
@@ -165,6 +168,13 @@ init(struct sioctl_sun_hdl *hdl)
 			break;
 		}
 	}
+
+	hdl->display_addr = 128;
+	if (ioctl(hdl->fd, AUDIO_GETDEV, &getdev) == -1)
+		strlcpy(hdl->display, "unknown", SIOCTL_DISPLAYMAX);
+	else
+		strlcpy(hdl->display, getdev.name, SIOCTL_DISPLAYMAX);
+	DPRINTF("init: server.device: display = %s\n", hdl->display);
 }
 
 static int
@@ -407,12 +417,27 @@ static int
 sioctl_sun_ondesc(struct sioctl_hdl *addr)
 {
 	struct sioctl_sun_hdl *hdl = (struct sioctl_sun_hdl *)addr;
+	struct sioctl_desc desc;
 
 	if (!scanvol(hdl, &hdl->output) ||
 	    !scanvol(hdl, &hdl->input)) {
 		hdl->sioctl.eof = 1;
 		return 0;
 	}
+
+	/* report "server.device" control */
+	memset(&desc, 0, sizeof(struct sioctl_desc));
+	desc.type = SIOCTL_SEL;
+	desc.maxval = 1;
+	strlcpy(desc.func, "device", SIOCTL_NAMEMAX);
+	strlcpy(desc.node0.name, "server", SIOCTL_NAMEMAX);
+	desc.node0.unit = -1;
+	strlcpy(desc.node1.name, "0", SIOCTL_NAMEMAX);
+	desc.node1.unit = -1;
+	strlcpy(desc.display, hdl->display, SIOCTL_DISPLAYMAX);
+	desc.addr = hdl->display_addr;
+	_sioctl_ondesc_cb(&hdl->sioctl, &desc, 1);
+
 	_sioctl_ondesc_cb(&hdl->sioctl, NULL, 0);
 	return 1;
 }
@@ -447,9 +472,18 @@ sioctl_sun_pollfd(struct sioctl_hdl *addr, struct pollfd *pfd, int events)
 {
 	struct sioctl_sun_hdl *hdl = (struct sioctl_sun_hdl *)addr;
 
+	hdl->events = events;
+
+	/*
+	 * The audio(4) driver doesn't support POLLOUT, so if it is
+	 * requested, don't set the struct pollfd. The AUDIO_MIXER_WRITE
+	 * ioctl never blocks, so just return POLLOUT in sioctl_sun_revents().
+	 */
+	if (events & POLLOUT)
+		return 0;
+
 	pfd->fd = hdl->fd;
 	pfd->events = POLLIN;
-	hdl->events = events;
 	return 1;
 }
 
@@ -459,6 +493,9 @@ sioctl_sun_revents(struct sioctl_hdl *arg, struct pollfd *pfd)
 	struct sioctl_sun_hdl *hdl = (struct sioctl_sun_hdl *)arg;
 	struct volume *vol;
 	int idx, n;
+
+	if (hdl->events & POLLOUT)
+		return POLLOUT;
 
 	if (pfd->revents & POLLIN) {
 		while (1) {
@@ -489,5 +526,5 @@ sioctl_sun_revents(struct sioctl_hdl *arg, struct pollfd *pfd)
 				return POLLHUP;
 		}
 	}
-	return hdl->events & POLLOUT;
+	return 0;
 }

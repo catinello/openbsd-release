@@ -1,4 +1,4 @@
-/*	$OpenBSD: tftpd.c,v 1.50 2022/10/09 23:04:57 kn Exp $	*/
+/*	$OpenBSD: tftpd.c,v 1.52 2024/09/20 02:00:46 jsg Exp $	*/
 
 /*
  * Copyright (c) 2012 David Gwynne <dlg@uq.edu.au>
@@ -166,7 +166,6 @@ void		tftpd_events(void);
 void		tftpd_recv(int, short, void *);
 int		retry(struct tftp_client *);
 int		tftp_flush(struct tftp_client *);
-void		tftp_end(struct tftp_client *);
 
 void		tftp(struct tftp_client *, struct tftphdr *, size_t);
 void		tftp_open(struct tftp_client *, const char *);
@@ -545,7 +544,7 @@ rewrite_res(int fd, short events, void *arg)
 		tftp_open(client, filename);
 
 		free(filename);
-	};
+	}
 }
 
 int

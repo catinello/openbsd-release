@@ -1,4 +1,4 @@
-/*	$OpenBSD: eap.c,v 1.25 2023/07/18 15:07:41 claudio Exp $	*/
+/*	$OpenBSD: eap.c,v 1.27 2024/07/13 12:22:46 yasuoka Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -71,7 +71,12 @@ eap_validate_id_response(struct eap_message *eap)
 	len = betoh16(eap->eap_length) - sizeof(*eap);
 	ptr += sizeof(*eap);
 
-	if (len == 0 || (str = get_string(ptr, len)) == NULL) {
+	if (len == 0) {
+		if ((str = strdup("")) == NULL) {
+			log_warn("%s: strdup failed", __func__);
+			return (NULL);
+		}
+	} else if ((str = get_string(ptr, len)) == NULL) {
 		log_info("%s: invalid identity response, length %zu",
 		    __func__, len);
 		return (NULL);
@@ -578,9 +583,12 @@ eap_parse(struct iked *env, const struct iked_sa *sa, struct iked_message *msg,
 
 		return (eap_mschap(env, sa, msg, eap));
 	default:
-		log_debug("%s: unsupported EAP type %s", __func__,
-		    print_map(eap->eap_type, eap_type_map));
-		return (-1);
+		if (sa->sa_policy->pol_auth.auth_eap != EAP_TYPE_RADIUS) {
+			log_debug("%s: unsupported EAP type %s", __func__,
+			    print_map(eap->eap_type, eap_type_map));
+			return (-1);
+		} /* else, when RADIUS, pass it to the client */
+		break;
 	}
 
 	return (0);

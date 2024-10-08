@@ -169,7 +169,9 @@ int
 fptr_whitelist_event(void (*fptr)(int, short, void *))
 {
 	if(fptr == &comm_point_udp_callback) return 1;
+#if defined(AF_INET6) && defined(IPV6_PKTINFO) && defined(HAVE_RECVMSG)
 	else if(fptr == &comm_point_udp_ancil_callback) return 1;
+#endif
 	else if(fptr == &comm_point_tcp_accept_callback) return 1;
 	else if(fptr == &comm_point_tcp_handle_callback) return 1;
 	else if(fptr == &comm_timer_callback) return 1;
@@ -442,6 +444,28 @@ fptr_whitelist_mod_deinit(void (*fptr)(struct module_env* env, int id))
 #endif
 #ifdef USE_IPSET
 	else if(fptr == &ipset_deinit) return 1;
+#endif
+	return 0;
+}
+
+int
+fptr_whitelist_mod_startup(int (*fptr)(struct module_env* env, int id))
+{
+#ifdef USE_IPSET
+	if(fptr == &ipset_startup) return 1;
+#else
+	(void)fptr;
+#endif
+	return 0;
+}
+
+int
+fptr_whitelist_mod_destartup(void (*fptr)(struct module_env* env, int id))
+{
+#ifdef USE_IPSET
+	if(fptr == &ipset_destartup) return 1;
+#else
+	(void)fptr;
 #endif
 	return 0;
 }

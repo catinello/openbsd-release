@@ -157,6 +157,7 @@ _thread_sys_nfssvc
 _thread_sys_open
 _thread_sys_openat
 _thread_sys_pathconf
+_thread_sys_pathconfat
 _thread_sys_pipe
 _thread_sys_pipe2
 _thread_sys_pledge
@@ -359,6 +360,7 @@ nfssvc
 open
 openat
 pathconf
+pathconfat
 pipe
 pipe2
 pledge
@@ -606,6 +608,7 @@ daemon
 devname
 dirfd
 dirname
+elf_aux_info
 endfsent
 endgrent
 endnetgrent
@@ -750,6 +753,7 @@ readdir_r
 readpassphrase
 rewinddir
 scandir
+scandirat
 seekdir
 setclasscontext
 setdomainname
@@ -1357,6 +1361,13 @@ xprt_register
 xprt_unregister
 
 /* stdio */
+__fpending
+__freadahead
+__freading
+__freadptr
+__freadptrinc
+__fseterr
+__fwriting
 __sF
 __srget
 __swbuf
@@ -1662,6 +1673,7 @@ wcsncasecmp_l
 wcsncat
 wcsncmp
 wcsncpy
+wcsnlen
 wcspbrk
 wcsrchr
 wcsspn

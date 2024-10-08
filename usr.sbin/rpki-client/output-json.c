@@ -1,4 +1,4 @@
-/*	$OpenBSD: output-json.c,v 1.46 2024/03/01 08:10:09 tb Exp $ */
+/*	$OpenBSD: output-json.c,v 1.50 2024/09/03 15:04:48 job Exp $ */
 /*
  * Copyright (c) 2019 Claudio Jeker <claudio@openbsd.org>
  *
@@ -22,8 +22,6 @@
 
 #include "extern.h"
 #include "json.h"
-
-extern int experimental;
 
 static void
 outputheader_json(struct stats *st)
@@ -49,9 +47,11 @@ outputheader_json(struct stats *st)
 	json_do_int("roas", st->repo_tal_stats.roas);
 	json_do_int("failedroas", st->repo_tal_stats.roas_fail);
 	json_do_int("invalidroas", st->repo_tal_stats.roas_invalid);
-	json_do_int("spls", st->repo_tal_stats.spls);
-	json_do_int("failedspls", st->repo_tal_stats.spls_fail);
-	json_do_int("invalidspls", st->repo_tal_stats.spls_invalid);
+	if (experimental) {
+		json_do_int("spls", st->repo_tal_stats.spls);
+		json_do_int("failedspls", st->repo_tal_stats.spls_fail);
+		json_do_int("invalidspls", st->repo_tal_stats.spls_invalid);
+	}
 	json_do_int("aspas", st->repo_tal_stats.aspas);
 	json_do_int("failedaspas", st->repo_tal_stats.aspas_fail);
 	json_do_int("invalidaspas", st->repo_tal_stats.aspas_invalid);
@@ -92,6 +92,9 @@ static void
 print_vap(struct vap *v)
 {
 	size_t i;
+
+	if (v->overflowed)
+		return;
 
 	json_do_object("aspa", 1);
 	json_do_int("customer_asid", v->custasid);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: main.c,v 1.54 2019/06/28 13:32:53 deraadt Exp $	*/
+/*	$OpenBSD: main.c,v 1.56 2024/07/19 15:28:51 bluhm Exp $	*/
 
 /*-
  * Copyright (c) 1980, 1993
@@ -172,7 +172,8 @@ main(int argc, char *argv[])
 
 	tname = "default";
 
-	if (unveil(_PATH_GETTYTAB, "r") == -1) {
+	if (unveil(_PATH_GETTYTAB, "r") == -1 ||
+	    unveil(_PATH_GETTYTAB ".db", "r") == -1) {
 		syslog(LOG_ERR, "%s: %m", tname);
 		exit(1);
 	}
@@ -562,10 +563,12 @@ putf(char *cp)
 			break;
 
 		case 'd': {
-			(void)time(&t);
-			(void)strftime(db, sizeof(db),
-			    "%l:%M%p on %A, %d %B %Y", localtime(&t));
-			xputs(db);
+			struct tm *tm;
+			time(&t);
+			if ((tm = localtime(&t)) != NULL)
+				if (strftime(db, sizeof(db),
+				    "%l:%M%p on %A, %d %B %Y", tm) != 0)
+					xputs(db);
 			break;
 		}
 

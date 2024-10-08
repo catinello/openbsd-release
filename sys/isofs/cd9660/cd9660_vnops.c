@@ -1,4 +1,4 @@
-/*	$OpenBSD: cd9660_vnops.c,v 1.95 2023/09/08 20:00:28 mvs Exp $	*/
+/*	$OpenBSD: cd9660_vnops.c,v 1.96 2024/09/12 09:04:51 claudio Exp $	*/
 /*	$NetBSD: cd9660_vnops.c,v 1.42 1997/10/16 23:56:57 christos Exp $	*/
 
 /*-

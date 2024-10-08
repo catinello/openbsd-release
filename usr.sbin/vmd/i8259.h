@@ -1,4 +1,4 @@
-/* $OpenBSD: i8259.h,v 1.5 2022/09/01 22:01:40 dv Exp $ */
+/* $OpenBSD: i8259.h,v 1.7 2024/07/09 09:31:37 dv Exp $ */
 /*
  * Copyright (c) 2016 Mike Larkin <mlarkin@openbsd.org>
  *
@@ -16,8 +16,6 @@
  */
 
 #include <sys/types.h>
-
-#include <machine/vmmvar.h>
 
 #define MASTER			0
 #define SLAVE			1
@@ -59,9 +57,6 @@
 /* PIC functions called by device emulation code */
 void i8259_assert_irq(uint8_t);
 void i8259_deassert_irq(uint8_t);
-
-/* PIC functions called by vcpu run loop code */
-int i8259_get_next_irq(uint8_t *);
 
 /* PIC functions called by the in/out exit handler */
 uint8_t vcpu_exit_i8259(struct vm_run_params *);

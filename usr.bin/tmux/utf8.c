@@ -1,4 +1,4 @@
-/* $OpenBSD: utf8.c,v 1.64 2023/09/15 15:49:05 nicm Exp $ */
+/* $OpenBSD: utf8.c,v 1.66 2024/07/12 11:21:18 nicm Exp $ */
 
 /*
  * Copyright (c) 2008 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -441,6 +441,28 @@ utf8_towc(const struct utf8_data *ud, wchar_t *wc)
 	return (UTF8_DONE);
 }
 
+/* Convert wide character to UTF-8 character. */
+enum utf8_state
+utf8_fromwc(wchar_t wc, struct utf8_data *ud)
+{
+	int	size, width;
+
+	size = wctomb(ud->data, wc);
+	if (size < 0) {
+		log_debug("UTF-8 %d, wctomb() %d", wc, errno);
+		wctomb(NULL, 0);
+		return (UTF8_ERROR);
+	}
+	if (size == 0)
+		return (UTF8_ERROR);
+	ud->size = ud->have = size;
+	if (utf8_width(ud, &width) == UTF8_DONE) {
+		ud->width = width;
+		return (UTF8_DONE);
+	}
+	return (UTF8_ERROR);
+}
+
 /*
  * Open UTF-8 sequence.
  *
@@ -517,7 +539,7 @@ utf8_strvis(char *dst, const char *src, size_t len, int flag)
 			/* Not a complete, valid UTF-8 character. */
 			src -= ud.have;
 		}
-		if (src[0] == '$' && src < end - 1) {
+		if ((flag & VIS_DQ) && src[0] == '$' && src < end - 1) {
 			if (isalpha((u_char)src[1]) ||
 			    src[1] == '_' ||
 			    src[1] == '{')

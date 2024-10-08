@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.299 2024/01/24 14:51:12 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.306 2024/09/25 14:46:51 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -90,7 +90,7 @@ struct rde_peer {
 	struct prefix_tree		 withdraws[AID_MAX];
 	struct filter_head		*out_rules;
 	time_t				 staletime[AID_MAX];
-	uint32_t			 remote_bgpid; /* host byte order! */
+	uint32_t			 remote_bgpid;
 	uint32_t			 path_id_tx;
 	unsigned int			 local_if_scope;
 	enum peer_state			 state;
@@ -281,19 +281,21 @@ struct prefix {
 	time_t				 lastchange;
 	uint32_t			 path_id;
 	uint32_t			 path_id_tx;
+	uint16_t			 flags;
 	uint8_t				 validation_state;
 	uint8_t				 nhflags;
 	int8_t				 dmetric;	/* decision metric */
-	uint8_t				 flags;
-#define	PREFIX_FLAG_WITHDRAW	0x01	/* enqueued on withdraw queue */
-#define	PREFIX_FLAG_UPDATE	0x02	/* enqueued on update queue */
-#define	PREFIX_FLAG_DEAD	0x04	/* locked but removed */
-#define	PREFIX_FLAG_STALE	0x08	/* stale entry (graceful reload) */
-#define	PREFIX_FLAG_MASK	0x0f	/* mask for the prefix types */
-#define	PREFIX_FLAG_ADJOUT	0x10	/* prefix is in the adj-out rib */
-#define	PREFIX_FLAG_EOR		0x20	/* prefix is EoR */
-#define	PREFIX_NEXTHOP_LINKED	0x40	/* prefix is linked onto nexthop list */
-#define	PREFIX_FLAG_LOCKED	0x80	/* locked by rib walker */
+};
+#define	PREFIX_FLAG_WITHDRAW	0x0001	/* enqueued on withdraw queue */
+#define	PREFIX_FLAG_UPDATE	0x0002	/* enqueued on update queue */
+#define	PREFIX_FLAG_DEAD	0x0004	/* locked but removed */
+#define	PREFIX_FLAG_STALE	0x0008	/* stale entry (graceful reload) */
+#define	PREFIX_FLAG_MASK	0x000f	/* mask for the prefix types */
+#define	PREFIX_FLAG_ADJOUT	0x0010	/* prefix is in the adj-out rib */
+#define	PREFIX_FLAG_EOR		0x0020	/* prefix is EoR */
+#define	PREFIX_NEXTHOP_LINKED	0x0040	/* prefix is linked onto nexthop list */
+#define	PREFIX_FLAG_LOCKED	0x0080	/* locked by rib walker */
+#define	PREFIX_FLAG_FILTERED	0x0100	/* prefix is filtered (ineligible) */
 
 #define	PREFIX_DMETRIC_NONE	0
 #define	PREFIX_DMETRIC_INVALID	1
@@ -301,7 +303,6 @@ struct prefix {
 #define	PREFIX_DMETRIC_AS_WIDE	3
 #define	PREFIX_DMETRIC_ECMP	4
 #define	PREFIX_DMETRIC_BEST	5
-};
 
 /* possible states for nhflags */
 #define	NEXTHOP_SELF		0x01
@@ -378,11 +379,15 @@ int		 peer_imsg_pop(struct rde_peer *, struct imsg *);
 int		 peer_imsg_pending(void);
 void		 peer_imsg_flush(struct rde_peer *);
 
+static inline int
+peer_is_up(struct rde_peer *peer)
+{
+	return (peer->state == PEER_UP);
+}
+
 RB_PROTOTYPE(peer_tree, rde_peer, entry, peer_cmp);
 
 /* rde_attr.c */
-int		 attr_write(void *, uint16_t, uint8_t, uint8_t, void *,
-		    uint16_t);
 int		 attr_writebuf(struct ibuf *, uint8_t, uint8_t, void *,
 		    uint16_t);
 void		 attr_shutdown(void);
@@ -564,7 +569,6 @@ re_rib(struct rib_entry *re)
 }
 
 void		 path_shutdown(void);
-uint32_t	 path_remove_stale(struct rde_aspath *, uint8_t, time_t);
 struct rde_aspath *path_copy(struct rde_aspath *, const struct rde_aspath *);
 struct rde_aspath *path_prep(struct rde_aspath *);
 struct rde_aspath *path_get(void);
@@ -581,9 +585,9 @@ struct prefix	*prefix_adjout_next(struct rde_peer *, struct prefix *);
 struct prefix	*prefix_adjout_lookup(struct rde_peer *, struct bgpd_addr *,
 		    int);
 struct prefix	*prefix_adjout_match(struct rde_peer *, struct bgpd_addr *);
-struct prefix	*prefix_match(struct rde_peer *, struct bgpd_addr *);
 int		 prefix_update(struct rib *, struct rde_peer *, uint32_t,
-		    uint32_t, struct filterstate *, struct bgpd_addr *, int);
+		    uint32_t, struct filterstate *, int, struct bgpd_addr *,
+		    int);
 int		 prefix_withdraw(struct rib *, struct rde_peer *, uint32_t,
 		    struct bgpd_addr *, int);
 int		 prefix_flowspec_update(struct rde_peer *, struct filterstate *,
@@ -597,8 +601,6 @@ void		 prefix_adjout_update(struct prefix *, struct rde_peer *,
 		    struct filterstate *, struct pt_entry *, uint32_t);
 void		 prefix_adjout_withdraw(struct prefix *);
 void		 prefix_adjout_destroy(struct prefix *);
-void		 prefix_adjout_dump(struct rde_peer *, void *,
-		    void (*)(struct prefix *, void *));
 int		 prefix_dump_new(struct rde_peer *, uint8_t, unsigned int,
 		    void *, void (*)(struct prefix *, void *),
 		    void (*)(void *, uint8_t), int (*)(void *));
@@ -609,7 +611,6 @@ int		 prefix_dump_subtree(struct rde_peer *, struct bgpd_addr *,
 struct prefix	*prefix_bypeer(struct rib_entry *, struct rde_peer *,
 		    uint32_t);
 void		 prefix_destroy(struct prefix *);
-void		 prefix_relink(struct prefix *, struct rde_aspath *, int);
 
 RB_PROTOTYPE(prefix_tree, prefix, entry, prefix_cmp)
 
@@ -676,6 +677,12 @@ prefix_re(struct prefix *p)
 	return (p->entry.list.re);
 }
 
+static inline int
+prefix_filtered(struct prefix *p)
+{
+	return ((p->flags & PREFIX_FLAG_FILTERED) != 0);
+}
+
 void		 nexthop_shutdown(void);
 int		 nexthop_pending(void);
 void		 nexthop_runner(void);
@@ -687,18 +694,16 @@ void		 nexthop_update(struct kroute_nexthop *);
 struct nexthop	*nexthop_get(struct bgpd_addr *);
 struct nexthop	*nexthop_ref(struct nexthop *);
 int		 nexthop_unref(struct nexthop *);
-int		 nexthop_compare(struct nexthop *, struct nexthop *);
 
 /* rde_update.c */
-void		 up_init(struct rde_peer *);
 void		 up_generate_updates(struct rde_peer *, struct rib_entry *);
 void		 up_generate_addpath(struct rde_peer *, struct rib_entry *);
 void		 up_generate_addpath_all(struct rde_peer *, struct rib_entry *,
 		    struct prefix *, struct prefix *);
 void		 up_generate_default(struct rde_peer *, uint8_t);
 int		 up_is_eor(struct rde_peer *, uint8_t);
-int		 up_dump_withdraws(struct ibuf *, struct rde_peer *, uint8_t);
-int		 up_dump_update(struct ibuf *, struct rde_peer *, uint8_t);
+struct ibuf	*up_dump_withdraws(struct rde_peer *, uint8_t);
+struct ibuf	*up_dump_update(struct rde_peer *, uint8_t);
 
 /* rde_aspa.c */
 void		 aspa_validation(struct rde_aspa *, struct aspath *,
@@ -713,6 +718,5 @@ int		 aspa_table_equal(const struct rde_aspa *,
 		    const struct rde_aspa *);
 void		 aspa_table_unchanged(struct rde_aspa *,
 		    const struct rde_aspa *);
-void		 aspa_table_set_generation(struct rde_aspa *, uint8_t);
 
 #endif /* __RDE_H__ */

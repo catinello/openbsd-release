@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmm.c,v 1.119 2024/02/05 21:58:09 dv Exp $	*/
+/*	$OpenBSD: vmm.c,v 1.122 2024/09/11 15:42:52 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2015 Mike Larkin <mlarkin@openbsd.org>
@@ -28,10 +28,7 @@
 #include <dev/ic/i8253reg.h>
 #include <dev/isa/isareg.h>
 #include <dev/pci/pcireg.h>
-
-#include <machine/psl.h>
-#include <machine/specialreg.h>
-#include <machine/vmmvar.h>
+#include <dev/vmm/vmm.h>
 
 #include <net/if.h>
 
@@ -50,7 +47,6 @@
 #include <util.h>
 
 #include "vmd.h"
-#include "vmm.h"
 #include "atomicio.h"
 #include "proc.h"
 
@@ -328,6 +324,11 @@ vmm_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 
 		/* Get and terminate all running VMs */
 		get_info_vm(ps, NULL, 1);
+		break;
+	case IMSG_VMDOP_RECEIVE_PSP_FD:
+		if (env->vmd_psp_fd > -1)
+			fatalx("already received psp fd");
+		env->vmd_psp_fd = imsg->fd;
 		break;
 	default:
 		return (-1);
@@ -649,7 +650,7 @@ vmm_start_vm(struct imsg *imsg, uint32_t *id, pid_t *pid)
 {
 	struct vm_create_params	*vcp;
 	struct vmd_vm		*vm;
-	char			*nargv[8], num[32], vmm_fd[32];
+	char			*nargv[10], num[32], vmm_fd[32], psp_fd[32];
 	int			 fd, ret = EINVAL;
 	int			 fds[2];
 	pid_t			 vm_pid;
@@ -764,6 +765,9 @@ vmm_start_vm(struct imsg *imsg, uint32_t *id, pid_t *pid)
 				close(fd);
 		}
 
+		if (env->vmd_psp_fd > 0)
+			fcntl(env->vmd_psp_fd, F_SETFD, 0); /* psp device fd */
+
 		/*
 		 * Prepare our new argv for execvp(2) with the fd of our open
 		 * pipe to the parent/vmm process as an argument.
@@ -773,6 +777,8 @@ vmm_start_vm(struct imsg *imsg, uint32_t *id, pid_t *pid)
 		snprintf(num, sizeof(num), "%d", fds[1]);
 		memset(vmm_fd, 0, sizeof(vmm_fd));
 		snprintf(vmm_fd, sizeof(vmm_fd), "%d", env->vmd_fd);
+		memset(psp_fd, 0, sizeof(psp_fd));
+		snprintf(psp_fd, sizeof(psp_fd), "%d", env->vmd_psp_fd);
 
 		nargv[0] = env->argv0;
 		nargv[1] = "-V";
@@ -780,14 +786,16 @@ vmm_start_vm(struct imsg *imsg, uint32_t *id, pid_t *pid)
 		nargv[3] = "-n";
 		nargv[4] = "-i";
 		nargv[5] = vmm_fd;
-		nargv[6] = NULL;
+		nargv[6] = "-j";
+		nargv[7] = psp_fd;
+		nargv[8] = NULL;
 
 		if (env->vmd_verbose == 1) {
-			nargv[6] = VMD_VERBOSE_1;
-			nargv[7] = NULL;
+			nargv[8] = VMD_VERBOSE_1;
+			nargv[9] = NULL;
 		} else if (env->vmd_verbose > 1) {
-			nargv[6] = VMD_VERBOSE_2;
-			nargv[7] = NULL;
+			nargv[8] = VMD_VERBOSE_2;
+			nargv[9] = NULL;
 		}
 
 		/* Control resumes in vmd main(). */

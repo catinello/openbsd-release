@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.c,v 1.262 2024/01/09 13:41:32 claudio Exp $ */
+/*	$OpenBSD: bgpd.c,v 1.267 2024/09/04 15:06:36 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -20,6 +20,8 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <err.h>
 #include <errno.h>
@@ -573,13 +575,11 @@ reconfigure(char *conffile, struct bgpd_config *conf)
 
 	merge_config(conf, new_conf);
 
-	if (prepare_listeners(conf) == -1) {
+	if (prepare_listeners(conf) == -1)
 		return (1);
-	}
 
-	if (control_setup(conf) == -1) {
+	if (control_setup(conf) == -1)
 		return (1);
-	}
 
 	return send_config(conf);
 }
@@ -645,6 +645,9 @@ send_config(struct bgpd_config *conf)
 
 	/* send peer list to the SE */
 	RB_FOREACH(p, peer_head, &conf->peers) {
+		if (p->reconf_action == RECONF_DELETE)
+			continue;
+
 		if (imsg_compose(ibuf_se, IMSG_RECONF_PEER, p->conf.id, 0, -1,
 		    &p->conf, sizeof(p->conf)) == -1)
 			return (-1);
@@ -716,11 +719,19 @@ send_config(struct bgpd_config *conf)
 	}
 	free_roatree(&conf->roa);
 	RB_FOREACH(aspa, aspa_tree, &conf->aspa) {
+		/* XXX prevent oversized IMSG for now */
+		if (aspa->num * sizeof(*aspa->tas) >
+		    MAX_IMSGSIZE - IMSG_HEADER_SIZE) {
+			log_warnx("oversized ASPA set for customer-as %s, %s",
+			    log_as(aspa->as), "dropped");
+			continue;
+		}
+
 		if (imsg_compose(ibuf_rtr, IMSG_RECONF_ASPA, 0, 0,
 		    -1, aspa, offsetof(struct aspa_set, tas)) == -1)
 			return (-1);
 		if (imsg_compose(ibuf_rtr, IMSG_RECONF_ASPA_TAS, 0, 0,
-		    -1, aspa->tas, sizeof(*aspa->tas) * aspa->num) == -1)
+		    -1, aspa->tas, aspa->num * sizeof(*aspa->tas)) == -1)
 			return (-1);
 		if (imsg_compose(ibuf_rtr, IMSG_RECONF_ASPA_DONE, 0, 0, -1,
 		    NULL, 0) == -1)
@@ -728,8 +739,12 @@ send_config(struct bgpd_config *conf)
 	}
 	free_aspatree(&conf->aspa);
 	SIMPLEQ_FOREACH(rtr, &conf->rtrs, entry) {
+		struct rtr_config_msg rtrconf = { 0 };
+
+		strlcpy(rtrconf.descr, rtr->descr, sizeof(rtrconf.descr));
+		rtrconf.min_version = rtr->min_version;
 		if (imsg_compose(ibuf_rtr, IMSG_RECONF_RTR_CONFIG, rtr->id,
-		    0, -1, rtr->descr, sizeof(rtr->descr)) == -1)
+		    0, -1, &rtrconf, sizeof(rtrconf)) == -1)
 			return (-1);
 	}
 
@@ -1011,6 +1026,9 @@ dispatch_imsg(struct imsgbuf *imsgbuf, int idx, struct bgpd_config *conf)
 
 				/* redistribute list needs to be reloaded too */
 				kr_reload();
+
+				/* also remove old peers */
+				free_deleted_peers(conf);
 			}
 			reconfpending--;
 			break;
@@ -1161,6 +1179,12 @@ bgpd_oknexthop(struct kroute_full *kf)
 
 	/* any other route is fine */
 	return (1);
+}
+
+int
+bgpd_has_bgpnh(void)
+{
+	return ((cflags & BGPD_FLAG_NEXTHOP_BGP) != 0);
 }
 
 int
@@ -1334,6 +1358,8 @@ bgpd_rtr_connect(struct rtr_config *r)
 	struct connect_elm *ce;
 	struct sockaddr *sa;
 	socklen_t len;
+	int nodelay = 1;
+	int pre = IPTOS_PREC_INTERNETCONTROL;
 
 	if (connect_cnt >= MAX_CONNECT_CNT) {
 		log_warnx("rtr %s: too many concurrent connection requests",
@@ -1376,6 +1402,29 @@ bgpd_rtr_connect(struct rtr_config *r)
 		}
 		TAILQ_INSERT_TAIL(&connect_queue, ce, entry);
 		connect_cnt++;
+		return;
+	}
+
+	switch (r->remote_addr.aid) {
+	case AID_INET:
+		if (setsockopt(ce->fd, IPPROTO_IP, IP_TOS, &pre, sizeof(pre)) ==
+		    -1) {
+			log_warn("rtr %s: setsockopt IP_TOS", r->descr);
+			return;
+		}
+		break;
+	case AID_INET6:
+		if (setsockopt(ce->fd, IPPROTO_IPV6, IPV6_TCLASS, &pre,
+		    sizeof(pre)) == -1) {
+			log_warn("rtr %s: setsockopt IP_TOS", r->descr);
+			return;
+		}
+		break;
+	}
+
+	if (setsockopt(ce->fd, IPPROTO_TCP, TCP_NODELAY, &nodelay,
+	    sizeof(nodelay)) == -1) {
+		log_warn("rtr %s: setsockopt TCP_NODELAY", r->descr);
 		return;
 	}
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: vmctl.c,v 1.89 2023/11/09 12:26:08 dv Exp $	*/
+/*	$OpenBSD: vmctl.c,v 1.91 2024/07/09 15:51:11 mlarkin Exp $	*/
 
 /*
  * Copyright (c) 2014 Mike Larkin <mlarkin@openbsd.org>
@@ -691,12 +691,15 @@ check_info_id(const char *name, uint32_t id)
  *   0     : Message successfully processed
  *   EINVAL: Invalid or unexpected response from vmd
  *   ENOMEM: memory allocation failure
+ *   ENOENT: no entries
  */
 int
 add_info(struct imsg *imsg, int *ret)
 {
 	static size_t ct = 0;
 	static struct vmop_info_result *vir = NULL;
+
+	*ret = 0;
 
 	if (imsg->hdr.type == IMSG_VMDOP_GET_INFO_VM_DATA) {
 		vir = reallocarray(vir, ct + 1,
@@ -707,7 +710,6 @@ add_info(struct imsg *imsg, int *ret)
 		}
 		memcpy(&vir[ct], imsg->data, sizeof(struct vmop_info_result));
 		ct++;
-		*ret = 0;
 		return (0);
 	} else if (imsg->hdr.type == IMSG_VMDOP_GET_INFO_VM_END_DATA) {
 		switch (info_action) {
@@ -718,11 +720,10 @@ add_info(struct imsg *imsg, int *ret)
 			terminate_all(vir, ct, info_flags);
 			break;
 		default:
-			print_vm_info(vir, ct);
+			*ret = print_vm_info(vir, ct);
 			break;
 		}
 		free(vir);
-		*ret = 0;
 		return (1);
 	} else {
 		*ret = EINVAL;
@@ -766,8 +767,12 @@ vm_state(unsigned int mask)
  * Parameters
  *  list: the vm information (consolidated) returned from vmd via imsg
  *  ct  : the size (number of elements in 'list') of the result
+ *
+ * Return values:
+ *  0: no error
+ *  ENOENT: no entries printed
  */
-void
+int
 print_vm_info(struct vmop_info_result *list, size_t ct)
 {
 	struct vm_info_result *vir;
@@ -778,7 +783,10 @@ print_vm_info(struct vmop_info_result *list, size_t ct)
 	char maxmem[FMT_SCALED_STRSIZE];
 	char user[16], group[16];
 	const char *name;
-	int running;
+	int running, found_running;
+	extern int stat_rflag;
+
+	found_running = 0;
 
 	printf("%5s %5s %5s %7s %7s %7s %12s %8s %s\n", "ID", "PID", "VCPUS",
 	    "MAXMEM", "CURMEM", "TTY", "OWNER", "STATE", "NAME");
@@ -787,6 +795,11 @@ print_vm_info(struct vmop_info_result *list, size_t ct)
 		vmi = &list[i];
 		vir = &vmi->vir_info;
 		running = (vir->vir_creator_pid != 0 && vir->vir_id != 0);
+		if (!running && stat_rflag)
+			continue;
+
+		found_running++;
+
 		if (check_info_id(vir->vir_name, vir->vir_id)) {
 			/* get user name */
 			name = user_from_uid(vmi->vir_uid, 1);
@@ -838,6 +851,11 @@ print_vm_info(struct vmop_info_result *list, size_t ct)
 			}
 		}
 	}
+
+	if (found_running)
+		return (0);
+	else
+		return (ENOENT);
 }
 
 /*

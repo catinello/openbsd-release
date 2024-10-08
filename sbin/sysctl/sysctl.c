@@ -1,4 +1,4 @@
-/*	$OpenBSD: sysctl.c,v 1.260 2024/02/11 21:29:12 bluhm Exp $	*/
+/*	$OpenBSD: sysctl.c,v 1.262 2024/09/09 05:36:17 kn Exp $	*/
 /*	$NetBSD: sysctl.c,v 1.9 1995/09/30 07:12:50 thorpej Exp $	*/
 
 /*
@@ -937,8 +937,14 @@ parse(char *string, int flags)
 		struct timeval *btp = (struct timeval *)buf;
 
 		if (!nflag) {
+			char *ct;
 			boottime = btp->tv_sec;
-			(void)printf("%s%s%s", string, equ, ctime(&boottime));
+			ct = ctime(&boottime);
+			if (ct)
+				(void)printf("%s%s%s", string, equ, ct);
+			else
+				(void)printf("%s%s%lld\n", string, equ,
+				    boottime);
 		} else
 			(void)printf("%lld\n", (long long)btp->tv_sec);
 		return;
@@ -2855,9 +2861,11 @@ print_sensor(struct sensor *s)
 		time_t t = s->tv.tv_sec;
 		char ct[26];
 
-		ctime_r(&t, ct);
-		ct[19] = '\0';
-		printf(", %s.%03ld", ct, s->tv.tv_usec / 1000);
+		if (ctime_r(&t, ct)) {
+			ct[19] = '\0';
+			printf(", %s.%03ld", ct, s->tv.tv_usec / 1000);
+		} else
+			printf(", %lld.%03ld", t, s->tv.tv_usec / 1000);
 	}
 }
 
@@ -2965,8 +2973,7 @@ findname(char *string, char *level, char **bufp, struct list *namelist)
 void
 usage(void)
 {
-
 	(void)fprintf(stderr,
-	    "usage: sysctl [-Aanq] [name[=value]]\n");
+	    "usage: sysctl [-Aanq] [name[=value] ...]\n");
 	exit(1);
 }

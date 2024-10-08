@@ -14,7 +14,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-/* $Id: dighost.c,v 1.37 2020/12/21 11:41:08 florian Exp $ */
+/* $Id: dighost.c,v 1.39 2024/08/29 07:20:16 florian Exp $ */
 
 /*! \file
  *  \note
@@ -116,8 +116,8 @@ static const struct {
 } root_hints[] = {
 	{ "198.41.0.4", AF_INET },		/*  a.root-servers.net  */
 	{ "2001:503:ba3e::2:30", AF_INET6 },	/*  a.root-servers.net  */
-	{ "199.9.14.201", AF_INET },		/*  b.root-servers.net  */
-	{ "2001:500:200::b", AF_INET6 },	/*  b.root-servers.net  */
+	{ "170.247.170.2", AF_INET },		/*  b.root-servers.net  */
+	{ "2801:1b8:10::b", AF_INET6 },		/*  b.root-servers.net  */
 	{ "192.33.4.12", AF_INET },		/*  c.root-servers.net  */
 	{ "2001:500:2::c", AF_INET6 },		/*  c.root-servers.net  */
 	{ "199.7.91.13", AF_INET },		/*  d.root-servers.net  */
@@ -3643,15 +3643,14 @@ recv_done(isc_task_t *task, isc_event_t *event) {
 	} else {
 
 		if (msg->rcode == dns_rcode_noerror || l->origin == NULL) {
-
-				dighost_received(b->used, &sevent->address, query);
+			dighost_received(b->used, &sevent->address, query);
 		}
 
 		if (!query->lookup->ns_search_only)
 			query->lookup->pending = 0;
 		if (!query->lookup->ns_search_only ||
 		    query->lookup->trace_root || docancel) {
-				dns_message_destroy(&msg);
+			dns_message_destroy(&msg);
 
 			cancel_lookup(l);
 		}

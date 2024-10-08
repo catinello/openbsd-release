@@ -1,4 +1,4 @@
-/* $OpenBSD: options-table.c,v 1.169 2024/02/13 08:10:23 nicm Exp $ */
+/* $OpenBSD: options-table.c,v 1.178 2024/09/16 20:28:22 nicm Exp $ */
 
 /*
  * Copyright (c) 2011 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -93,6 +93,9 @@ static const char *options_table_detach_on_destroy_list[] = {
 };
 static const char *options_table_extended_keys_list[] = {
 	"off", "on", "always", NULL
+};
+static const char *options_table_extended_keys_format_list[] = {
+	"csi-u", "xterm", NULL
 };
 static const char *options_table_allow_passthrough_list[] = {
 	"off", "on", "all", NULL
@@ -286,7 +289,7 @@ const struct options_table_entry options_table[] = {
 	  .scope = OPTIONS_TABLE_SERVER,
 	  .minimum = 0,
 	  .maximum = INT_MAX,
-	  .default_num = 500,
+	  .default_num = 10,
 	  .unit = "milliseconds",
 	  .text = "Time to wait before assuming a key is Escape."
 	},
@@ -313,6 +316,14 @@ const struct options_table_entry options_table[] = {
 	  .default_num = 0,
 	  .text = "Whether to request extended key sequences from terminals "
 		  "that support it."
+	},
+
+	{ .name = "extended-keys-format",
+	  .type = OPTIONS_TABLE_CHOICE,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .choices = options_table_extended_keys_format_list,
+	  .default_num = 1,
+	  .text = "The format of emitted extended key sequences."
 	},
 
 	{ .name = "focus-events",
@@ -375,6 +386,17 @@ const struct options_table_entry options_table[] = {
 	  .text = "Maximum number of server messages to keep."
 	},
 
+	{ .name = "prefix-timeout",
+	  .type = OPTIONS_TABLE_NUMBER,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .minimum = 0,
+	  .maximum = INT_MAX,
+	  .default_num = 0,
+	  .unit = "milliseconds",
+	  .text = "The timeout for the prefix key if no subsequent key is "
+	          "pressed. Zero means disabled."
+	},
+
 	{ .name = "prompt-history-limit",
 	  .type = OPTIONS_TABLE_NUMBER,
 	  .scope = OPTIONS_TABLE_SERVER,
@@ -398,7 +420,7 @@ const struct options_table_entry options_table[] = {
 	  .type = OPTIONS_TABLE_STRING,
 	  .scope = OPTIONS_TABLE_SERVER,
 	  .flags = OPTIONS_TABLE_IS_ARRAY,
-	  .default_str = "",
+	  .default_str = "linux*:AX@",
 	  .separator = ",",
 	  .text = "List of terminal capabilities overrides."
 	},
@@ -614,7 +636,7 @@ const struct options_table_entry options_table[] = {
 	{ .name = "prefix",
 	  .type = OPTIONS_TABLE_KEY,
 	  .scope = OPTIONS_TABLE_SESSION,
-	  .default_num = '\002',
+	  .default_num = 'b'|KEYC_CTRL,
 	  .text = "The prefix key."
 	},
 
@@ -874,6 +896,14 @@ const struct options_table_entry options_table[] = {
 	  .default_num = 0,
 	  .text = "Whether applications are allowed to use the escape sequence "
 		  "to rename windows."
+	},
+
+	{ .name = "allow-set-title",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_WINDOW|OPTIONS_TABLE_PANE,
+	  .default_num = 1,
+	  .text = "Whether applications are allowed to use the escape sequence "
+		  "to set the pane title."
 	},
 
 	{ .name = "alternate-screen",
@@ -1318,6 +1348,7 @@ const struct options_table_entry options_table[] = {
 	OPTIONS_TABLE_HOOK("client-focus-out", ""),
 	OPTIONS_TABLE_HOOK("client-resized", ""),
 	OPTIONS_TABLE_HOOK("client-session-changed", ""),
+	OPTIONS_TABLE_HOOK("command-error", ""),
 	OPTIONS_TABLE_PANE_HOOK("pane-died", ""),
 	OPTIONS_TABLE_PANE_HOOK("pane-exited", ""),
 	OPTIONS_TABLE_PANE_HOOK("pane-focus-in", ""),

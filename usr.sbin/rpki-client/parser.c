@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.c,v 1.130 2024/03/01 08:10:09 tb Exp $ */
+/*	$OpenBSD: parser.c,v 1.143 2024/08/29 13:46:28 tb Exp $ */
 /*
  * Copyright (c) 2019 Claudio Jeker <claudio@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
@@ -38,9 +38,7 @@
 
 #include "extern.h"
 
-extern int noop;
-extern int experimental;
-extern int verbose;
+extern int certid;
 
 static X509_STORE_CTX	*ctx;
 static struct auth_tree	 auths = RB_INITIALIZER(&auths);
@@ -91,6 +89,41 @@ repo_add(unsigned int id, char *path, char *validpath)
 }
 
 /*
+ * Return the issuer by its certificate id, or NULL on failure.
+ * Make sure the AKI is the same as the AKI listed on the Manifest,
+ * and that the SKI of the cert matches with the AKI.
+ */
+static struct auth *
+find_issuer(const char *fn, int id, const char *aki, const char *mftaki)
+{
+	struct auth *a;
+
+	a = auth_find(&auths, id);
+	if (a == NULL) {
+		if (certid <= CERTID_MAX)
+			warnx("%s: RFC 6487: unknown cert with SKI %s", fn,
+			    aki);
+		return NULL;
+	}
+
+	if (mftaki != NULL) {
+		if (strcmp(aki, mftaki) != 0) {
+			warnx("%s: AKI %s doesn't match Manifest AKI %s", fn,
+			    aki, mftaki);
+			return NULL;
+		}
+	}
+
+	if (strcmp(aki, a->cert->ski) != 0) {
+		warnx("%s: AKI %s doesn't match issuer SKI %s", fn,
+		    aki, a->cert->ski);
+		return NULL;
+	}
+
+	return a;
+}
+
+/*
  * Build access path to file based on repoid, path, location and file values.
  */
 static char *
@@ -133,30 +166,37 @@ proc_parser_roa(char *file, const unsigned char *der, size_t len,
     const struct entity *entp)
 {
 	struct roa		*roa;
+	X509			*x509 = NULL;
 	struct auth		*a;
 	struct crl		*crl;
-	X509			*x509;
 	const char		*errstr;
 
 	if ((roa = roa_parse(&x509, file, entp->talid, der, len)) == NULL)
-		return NULL;
+		goto out;
 
-	a = valid_ski_aki(file, &auths, roa->ski, roa->aki, entp->mftaki);
+	a = find_issuer(file, entp->certid, roa->aki, entp->mftaki);
+	if (a == NULL)
+		goto out;
 	crl = crl_get(&crlt, a);
 
 	if (!valid_x509(file, ctx, x509, a, crl, &errstr)) {
 		warnx("%s: %s", file, errstr);
-		X509_free(x509);
-		roa_free(roa);
-		return NULL;
+		goto out;
 	}
 	X509_free(x509);
+	x509 = NULL;
 
 	roa->talid = a->cert->talid;
 
 	roa->expires = x509_find_expires(roa->notafter, a, &crlt);
 
 	return roa;
+
+ out:
+	roa_free(roa);
+	X509_free(x509);
+
+	return NULL;
 }
 
 /*
@@ -168,30 +208,37 @@ proc_parser_spl(char *file, const unsigned char *der, size_t len,
     const struct entity *entp)
 {
 	struct spl		*spl;
+	X509			*x509 = NULL;
 	struct auth		*a;
 	struct crl		*crl;
-	X509			*x509;
 	const char		*errstr;
 
 	if ((spl = spl_parse(&x509, file, entp->talid, der, len)) == NULL)
-		return NULL;
+		goto out;
 
-	a = valid_ski_aki(file, &auths, spl->ski, spl->aki, entp->mftaki);
+	a = find_issuer(file, entp->certid, spl->aki, entp->mftaki);
+	if (a == NULL)
+		goto out;
 	crl = crl_get(&crlt, a);
 
 	if (!valid_x509(file, ctx, x509, a, crl, &errstr)) {
 		warnx("%s: %s", file, errstr);
-		X509_free(x509);
-		spl_free(spl);
-		return NULL;
+		goto out;
 	}
 	X509_free(x509);
+	x509 = NULL;
 
 	spl->talid = a->cert->talid;
 
 	spl->expires = x509_find_expires(spl->notafter, a, &crlt);
 
 	return spl;
+
+ out:
+	spl_free(spl);
+	X509_free(x509);
+
+	return NULL;
 }
 
 /*
@@ -277,6 +324,9 @@ parse_load_crl_from_mft(struct entity *entp, struct mft *mft, enum location loc,
 		goto out;
 	}
 
+	if ((crl->mftpath = strdup(mft->sia)) == NULL)
+		err(1, NULL);
+
 	*crlfile = fn;
 	free(f);
 
@@ -337,7 +387,9 @@ proc_parser_mft_pre(struct entity *entp, char *file, struct crl **crl,
 	if (*crl == NULL)
 		*crl = parse_load_crl_from_mft(entp, mft, DIR_VALID, crlfile);
 
-	a = valid_ski_aki(file, &auths, mft->ski, mft->aki, NULL);
+	a = find_issuer(file, entp->certid, mft->aki, NULL);
+	if (a == NULL)
+		goto err;
 	if (!valid_x509(file, ctx, x509, a, *crl, errstr))
 		goto err;
 	X509_free(x509);
@@ -345,6 +397,7 @@ proc_parser_mft_pre(struct entity *entp, char *file, struct crl **crl,
 
 	mft->repoid = entp->repoid;
 	mft->talid = a->cert->talid;
+	mft->certid = entp->certid;
 
 	now = get_current_time();
 	/* check that now is not before from */
@@ -461,7 +514,8 @@ proc_parser_mft(struct entity *entp, struct mft **mp, char **crlfile,
 				err2 = err1;
 			if (err2 == NULL)
 				err2 = "no valid manifest available";
-			warnx("%s: %s", file2, err2);
+			if (certid <= CERTID_MAX)
+				warnx("%s: %s", file2, err2);
 		}
 
 		mft_free(mft1);
@@ -477,13 +531,11 @@ proc_parser_mft(struct entity *entp, struct mft **mp, char **crlfile,
 
 	if (*mp != NULL) {
 		*crlmtime = crl->thisupdate;
-		if (!crl_insert(&crlt, crl)) {
-			warnx("%s: duplicate AKI %s", file, crl->aki);
-			crl_free(crl);
-		}
-	} else {
-		crl_free(crl);
+		if (crl_insert(&crlt, crl))
+			crl = NULL;
 	}
+	crl_free(crl);
+
 	return file;
 }
 
@@ -496,7 +548,7 @@ proc_parser_mft(struct entity *entp, struct mft **mp, char **crlfile,
  */
 static struct cert *
 proc_parser_cert(char *file, const unsigned char *der, size_t len,
-    const char *mftaki)
+    const struct entity *entp)
 {
 	struct cert	*cert;
 	struct crl	*crl;
@@ -508,73 +560,136 @@ proc_parser_cert(char *file, const unsigned char *der, size_t len,
 	cert = cert_parse_pre(file, der, len);
 	cert = cert_parse(file, cert);
 	if (cert == NULL)
-		return NULL;
+		goto out;
 
-	a = valid_ski_aki(file, &auths, cert->ski, cert->aki, mftaki);
+	a = find_issuer(file, entp->certid, cert->aki, entp->mftaki);
+	if (a == NULL)
+		goto out;
 	crl = crl_get(&crlt, a);
 
 	if (!valid_x509(file, ctx, cert->x509, a, crl, &errstr) ||
 	    !valid_cert(file, a, cert)) {
 		if (errstr != NULL)
 			warnx("%s: %s", file, errstr);
-		cert_free(cert);
-		return NULL;
+		goto out;
 	}
 
 	cert->talid = a->cert->talid;
 
 	if (cert->purpose == CERT_PURPOSE_BGPSEC_ROUTER) {
-		if (!constraints_validate(file, cert)) {
-			cert_free(cert);
-			return NULL;
-		}
+		if (!constraints_validate(file, cert))
+			goto out;
 	}
 
 	/*
 	 * Add validated CA certs to the RPKI auth tree.
 	 */
 	if (cert->purpose == CERT_PURPOSE_CA)
-		auth_insert(&auths, cert, a);
+		auth_insert(file, &auths, cert, a);
 
 	return cert;
+
+ out:
+	cert_free(cert);
+
+	return NULL;
+}
+
+static int
+proc_parser_ta_cmp(const struct cert *cert1, const struct cert *cert2)
+{
+	if (cert1 == NULL)
+		return -1;
+	if (cert2 == NULL)
+		return 1;
+
+	/*
+	 * The standards don't specify tiebreakers. While RFC 6487 and other
+	 * sources advise against backdating, it's explicitly allowed and some
+	 * TAs do. Some TAs have also re-issued with new dates and old
+	 * serialNumber.
+	 * Our tiebreaker logic: a more recent notBefore is taken to mean a
+	 * more recent issuance, and thus preferable. Given equal notBefore
+	 * values, prefer the TA cert with the narrower validity window. This
+	 * hopefully encourages TA operators to reduce egregiously long TA
+	 * validity periods.
+	 */
+
+	if (cert1->notbefore < cert2->notbefore)
+		return -1;
+	if (cert1->notbefore > cert2->notbefore)
+		return 1;
+
+	if (cert1->notafter > cert2->notafter)
+		return -1;
+	if (cert1->notafter < cert2->notafter)
+		return 1;
+
+	/*
+	 * Both certs are valid from our perspective. If anything changed,
+	 * prefer the freshly-fetched one. We rely on cert_parse_pre() having
+	 * cached the extensions and thus libcrypto has already computed the
+	 * certs' hashes (SHA-1 for OpenSSL, SHA-512 for LibreSSL). The below
+	 * compares them.
+	 */
+
+	return X509_cmp(cert1->x509, cert2->x509) != 0;
 }
 
 /*
- * Root certificates come from TALs (has a pkey and is self-signed).
- * Parse the certificate, ensure that its public key matches the
- * known public key from the TAL, and then validate the RPKI
- * content.
- *
- * This returns a certificate (which must not be freed) or NULL on
- * parse failure.
+ * Root certificates come from TALs. Inspect and validate both options and
+ * compare the two. The cert in out_cert must not be freed. Returns the file
+ * name of the chosen TA.
  */
-static struct cert *
-proc_parser_root_cert(char *file, const unsigned char *der, size_t len,
-    unsigned char *pkey, size_t pkeysz, int talid)
+static char *
+proc_parser_root_cert(struct entity *entp, struct cert **out_cert)
 {
-	struct cert		*cert;
+	struct cert		*cert1 = NULL, *cert2 = NULL;
+	char			*file1 = NULL, *file2 = NULL;
+	unsigned char		*der = NULL, *pkey = entp->data;
+	size_t			 der_len = 0, pkeysz = entp->datasz;
+	int			 cmp;
 
-	/* Extract certificate data. */
+	*out_cert = NULL;
 
-	cert = cert_parse_pre(file, der, len);
-	cert = ta_parse(file, cert, pkey, pkeysz);
-	if (cert == NULL)
-		return NULL;
+	file2 = parse_filepath(entp->repoid, entp->path, entp->file, DIR_VALID);
+	der = load_file(file2, &der_len);
+	cert2 = cert_parse_pre(file2, der, der_len);
+	free(der);
+	cert2 = ta_parse(file2, cert2, pkey, pkeysz);
 
-	if (!valid_ta(file, &auths, cert)) {
-		warnx("%s: certificate not a valid ta", file);
-		cert_free(cert);
-		return NULL;
+	if (!noop) {
+		file1 = parse_filepath(entp->repoid, entp->path, entp->file,
+		    DIR_TEMP);
+		der = load_file(file1, &der_len);
+		cert1 = cert_parse_pre(file1, der, der_len);
+		free(der);
+		cert1 = ta_parse(file1, cert1, pkey, pkeysz);
 	}
 
-	cert->talid = talid;
+	if ((cmp = proc_parser_ta_cmp(cert1, cert2)) > 0) {
+		cert_free(cert2);
+		free(file2);
 
-	/*
-	 * Add valid roots to the RPKI auth tree.
-	 */
-	auth_insert(&auths, cert, NULL);
+		cert1->talid = entp->talid;
+		auth_insert(file1, &auths, cert1, NULL);
 
-	return cert;
+		*out_cert = cert1;
+		return file1;
+	} else {
+		if (cmp < 0 && cert1 != NULL && cert2 != NULL)
+			warnx("%s: cached TA is newer", entp->file);
+		cert_free(cert1);
+		free(file1);
+
+		if (cert2 != 0) {
+			cert2->talid = entp->talid;
+			auth_insert(file2, &auths, cert2, NULL);
+		}
+
+		*out_cert = cert2;
+		return file2;
+	}
 }
 
 /*
@@ -585,29 +700,35 @@ proc_parser_gbr(char *file, const unsigned char *der, size_t len,
     const struct entity *entp)
 {
 	struct gbr	*gbr;
-	X509		*x509;
+	X509		*x509 = NULL;
 	struct crl	*crl;
 	struct auth	*a;
 	const char	*errstr;
 
 	if ((gbr = gbr_parse(&x509, file, entp->talid, der, len)) == NULL)
-		return NULL;
+		goto out;
 
-	a = valid_ski_aki(file, &auths, gbr->ski, gbr->aki, entp->mftaki);
+	a = find_issuer(file, entp->certid, gbr->aki, entp->mftaki);
+	if (a == NULL)
+		goto out;
 	crl = crl_get(&crlt, a);
 
-	/* return value can be ignored since nothing happens here */
 	if (!valid_x509(file, ctx, x509, a, crl, &errstr)) {
 		warnx("%s: %s", file, errstr);
-		X509_free(x509);
-		gbr_free(gbr);
-		return NULL;
+		goto out;
 	}
 	X509_free(x509);
+	x509 = NULL;
 
 	gbr->talid = a->cert->talid;
 
 	return gbr;
+
+ out:
+	gbr_free(gbr);
+	X509_free(x509);
+
+	return NULL;
 }
 
 /*
@@ -618,30 +739,37 @@ proc_parser_aspa(char *file, const unsigned char *der, size_t len,
     const struct entity *entp)
 {
 	struct aspa	*aspa;
+	X509		*x509 = NULL;
 	struct auth	*a;
 	struct crl	*crl;
-	X509		*x509;
 	const char	*errstr;
 
 	if ((aspa = aspa_parse(&x509, file, entp->talid, der, len)) == NULL)
-		return NULL;
+		goto out;
 
-	a = valid_ski_aki(file, &auths, aspa->ski, aspa->aki, entp->mftaki);
+	a = find_issuer(file, entp->certid, aspa->aki, entp->mftaki);
+	if (a == NULL)
+		goto out;
 	crl = crl_get(&crlt, a);
 
 	if (!valid_x509(file, ctx, x509, a, crl, &errstr)) {
 		warnx("%s: %s", file, errstr);
-		X509_free(x509);
-		aspa_free(aspa);
-		return NULL;
+		goto out;
 	}
 	X509_free(x509);
+	x509 = NULL;
 
 	aspa->talid = a->cert->talid;
 
 	aspa->expires = x509_find_expires(aspa->notafter, a, &crlt);
 
 	return aspa;
+
+ out:
+	aspa_free(aspa);
+	X509_free(x509);
+
+	return NULL;
 }
 
 /*
@@ -652,36 +780,39 @@ proc_parser_tak(char *file, const unsigned char *der, size_t len,
     const struct entity *entp)
 {
 	struct tak	*tak;
-	X509		*x509;
+	X509		*x509 = NULL;
 	struct crl	*crl;
 	struct auth	*a;
 	const char	*errstr;
-	int		 rc = 0;
 
 	if ((tak = tak_parse(&x509, file, entp->talid, der, len)) == NULL)
-		return NULL;
+		goto out;
 
-	a = valid_ski_aki(file, &auths, tak->ski, tak->aki, entp->mftaki);
+	a = find_issuer(file, entp->certid, tak->aki, entp->mftaki);
+	if (a == NULL)
+		goto out;
 	crl = crl_get(&crlt, a);
 
 	if (!valid_x509(file, ctx, x509, a, crl, &errstr)) {
 		warnx("%s: %s", file, errstr);
 		goto out;
 	}
+	X509_free(x509);
+	x509 = NULL;
 
 	/* TAK EE must be signed by self-signed CA */
-	if (a->parent != NULL)
+	if (a->issuer != NULL)
 		goto out;
 
 	tak->talid = a->cert->talid;
-	rc = 1;
- out:
-	if (rc == 0) {
-		tak_free(tak);
-		tak = NULL;
-	}
-	X509_free(x509);
+
 	return tak;
+
+ out:
+	tak_free(tak);
+	X509_free(x509);
+
+	return NULL;
 }
 
 /*
@@ -760,15 +891,13 @@ parse_entity(struct entityq *q, struct msgbuf *msgq)
 			tal_free(tal);
 			break;
 		case RTYPE_CER:
-			file = parse_load_file(entp, &f, &flen);
+			if (entp->data != NULL) {
+				file = proc_parser_root_cert(entp, &cert);
+			} else {
+				file = parse_load_file(entp, &f, &flen);
+				cert = proc_parser_cert(file, f, flen, entp);
+			}
 			io_str_buffer(b, file);
-			if (entp->data != NULL)
-				cert = proc_parser_root_cert(file,
-				    f, flen, entp->data, entp->datasz,
-				    entp->talid);
-			else
-				cert = proc_parser_cert(file, f, flen,
-				    entp->mftaki);
 			if (cert != NULL)
 				mtime = cert->notbefore;
 			io_simple_buffer(b, &mtime, sizeof(mtime));
@@ -936,7 +1065,7 @@ proc_parser(int fd)
 
 	for (;;) {
 		pfd.events = POLLIN;
-		if (msgq.queued)
+		if (msgbuf_queuelen(&msgq) > 0)
 			pfd.events |= POLLOUT;
 
 		if (poll(&pfd, 1, INFTIM) == -1) {
@@ -988,6 +1117,9 @@ proc_parser(int fd)
 	msgbuf_clear(&msgq);
 
 	ibuf_free(inbuf);
+
+	if (certid > CERTID_MAX)
+		errx(1, "processing incomplete: too many certificates");
 
 	exit(0);
 }

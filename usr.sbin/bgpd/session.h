@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.h,v 1.167 2024/01/16 13:15:31 claudio Exp $ */
+/*	$OpenBSD: session.h,v 1.173 2024/09/04 13:30:10 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -106,17 +106,6 @@ enum opt_params {
 	OPT_PARAM_EXT_LEN=255,
 };
 
-enum capa_codes {
-	CAPA_NONE = 0,
-	CAPA_MP = 1,
-	CAPA_REFRESH = 2,
-	CAPA_ROLE = 9,
-	CAPA_RESTART = 64,
-	CAPA_AS4BYTE = 65,
-	CAPA_ADD_PATH = 69,
-	CAPA_ENHANCED_RR = 70,
-};
-
 struct bgp_msg {
 	struct ibuf	*buf;
 	enum msg_type	 type;
@@ -162,6 +151,7 @@ struct peer_stats {
 	time_t			 last_updown;
 	time_t			 last_read;
 	time_t			 last_write;
+	uint32_t		 msg_queue_len;
 	uint32_t		 prefix_cnt;
 	uint32_t		 prefix_out_cnt;
 	uint32_t		 pending_update;
@@ -257,6 +247,7 @@ int	 carp_demote_set(char *, int);
 
 /* config.c */
 void	 merge_config(struct bgpd_config *, struct bgpd_config *);
+void	 free_deleted_peers(struct bgpd_config *);
 int	 prepare_listeners(struct bgpd_config *);
 
 /* control.c */
@@ -273,7 +264,7 @@ char	*log_fmt_peer(const struct peer_config *);
 void	 log_statechange(struct peer *, enum session_state,
 	    enum session_events);
 void	 log_notification(const struct peer *, uint8_t, uint8_t,
-	    struct ibuf *, const char *);
+	    const struct ibuf *, const char *);
 void	 log_conn_attempt(const struct peer *, struct sockaddr *,
 	    socklen_t);
 
@@ -307,14 +298,14 @@ struct rtr_session;
 size_t			 rtr_count(void);
 void			 rtr_check_events(struct pollfd *, size_t);
 size_t			 rtr_poll_events(struct pollfd *, size_t, time_t *);
-struct rtr_session	*rtr_new(uint32_t, char *);
+struct rtr_session	*rtr_new(uint32_t, struct rtr_config_msg *);
 struct rtr_session	*rtr_get(uint32_t);
 void			 rtr_free(struct rtr_session *);
 void			 rtr_open(struct rtr_session *, int);
-struct roa_tree		*rtr_get_roa(struct rtr_session *);
 void			 rtr_config_prep(void);
 void			 rtr_config_merge(void);
-void			 rtr_config_keep(struct rtr_session *);
+void			 rtr_config_keep(struct rtr_session *,
+			     struct rtr_config_msg *);
 void			 rtr_roa_merge(struct roa_tree *);
 void			 rtr_aspa_merge(struct aspa_tree *);
 void			 rtr_shutdown(void);
@@ -342,7 +333,7 @@ int		 peer_matched(struct peer *, struct ctl_neighbor *);
 int		 imsg_ctl_parent(struct imsg *);
 int		 imsg_ctl_rde(struct imsg *);
 int		 imsg_ctl_rde_msg(int, uint32_t, pid_t);
-void		 session_stop(struct peer *, uint8_t);
+void		 session_stop(struct peer *, uint8_t, const char *);
 
 /* timer.c */
 struct timer	*timer_get(struct timer_head *, enum Timer);

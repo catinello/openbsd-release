@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.623 2024/02/22 06:45:22 miod Exp $ */
+/*	$OpenBSD: rde.c,v 1.634 2024/09/25 14:46:51 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -245,7 +245,7 @@ rde_main(int debug, int verbose)
 
 			if (i >= pfd_elms)
 				fatalx("poll pfd too small");
-			if (mctx->mrt.wbuf.queued) {
+			if (msgbuf_queuelen(&mctx->mrt.wbuf) > 0) {
 				pfd[i].fd = mctx->mrt.wbuf.fd;
 				pfd[i].events = POLLOUT;
 				i++;
@@ -398,7 +398,8 @@ rde_dispatch_imsg_session(struct imsgbuf *imsgbuf)
 				    peerid);
 				break;
 			}
-			peer_imsg_push(peer, &imsg);
+			if (peer_is_up(peer))
+				peer_imsg_push(peer, &imsg);
 			break;
 		case IMSG_SESSION_ADD:
 			if (imsg_get_data(&imsg, &pconf, sizeof(pconf)) == -1)
@@ -442,7 +443,7 @@ rde_dispatch_imsg_session(struct imsgbuf *imsgbuf)
 				log_warnx("%s: wrong imsg len", __func__);
 				break;
 			}
-			if (aid >= AID_MAX) {
+			if (aid < AID_MIN || aid >= AID_MAX) {
 				log_warnx("%s: bad AID", __func__);
 				break;
 			}
@@ -1122,7 +1123,9 @@ rde_dispatch_imsg_parent(struct imsgbuf *imsgbuf)
 			    sizeof(uint32_t));
 			break;
 		case IMSG_RECONF_AS_SET_ITEMS:
-			if (imsg_get_ibuf(&imsg, &ibuf) == -1)
+			if (imsg_get_ibuf(&imsg, &ibuf) == -1 ||
+			    ibuf_size(&ibuf) == 0 ||
+			    ibuf_size(&ibuf) % sizeof(uint32_t) != 0)
 				fatalx("IMSG_RECONF_AS_SET_ITEMS bad len");
 			nmemb = ibuf_size(&ibuf) / sizeof(uint32_t);
 			if (set_add(last_as_set->set, ibuf_data(&ibuf),
@@ -1276,8 +1279,6 @@ rde_dispatch_imsg_rtr(struct imsgbuf *imsgbuf)
 		case IMSG_RECONF_ASPA_TAS:
 			if (aspa == NULL)
 				fatalx("unexpected IMSG_RECONF_ASPA_TAS");
-			if (imsg_get_len(&imsg) != aspa->num * sizeof(uint32_t))
-				fatalx("IMSG_RECONF_ASPA_TAS bad len");
 			aspa->tas = reallocarray(NULL, aspa->num,
 			    sizeof(uint32_t));
 			if (aspa->tas == NULL)
@@ -1311,13 +1312,16 @@ rde_dispatch_imsg_peer(struct rde_peer *peer, void *bula)
 	struct imsg imsg;
 	struct ibuf ibuf;
 
+	if (!peer_is_up(peer)) {
+		peer_imsg_flush(peer);
+		return;
+	}
+		
 	if (!peer_imsg_pop(peer, &imsg))
 		return;
 
 	switch (imsg_get_type(&imsg)) {
 	case IMSG_UPDATE:
-		if (peer->state != PEER_UP)
-			break;
 		if (imsg_get_ibuf(&imsg, &ibuf) == -1)
 			log_warn("update: bad imsg");
 		else
@@ -1328,7 +1332,7 @@ rde_dispatch_imsg_peer(struct rde_peer *peer, void *bula)
 			log_warnx("route refresh: wrong imsg len");
 			break;
 		}
-		if (rr.aid >= AID_MAX) {
+		if (rr.aid < AID_MIN || rr.aid >= AID_MAX) {
 			log_peer_warnx(&peer->conf,
 			    "route refresh: bad AID %d", rr.aid);
 			break;
@@ -1854,7 +1858,7 @@ rde_update_update(struct rde_peer *peer, uint32_t path_id,
 	path_id_tx = pathid_assign(peer, path_id, prefix, prefixlen);
 	/* add original path to the Adj-RIB-In */
 	if (prefix_update(rib_byid(RIB_ADJ_IN), peer, path_id, path_id_tx,
-	    in, prefix, prefixlen) == 1)
+	    in, 0, prefix, prefixlen) == 1)
 		peer->stats.prefix_cnt++;
 
 	/* max prefix checker */
@@ -1883,11 +1887,16 @@ rde_update_update(struct rde_peer *peer, uint32_t path_id,
 			    &state.nexthop->exit_nexthop, prefix,
 			    prefixlen);
 			prefix_update(rib, peer, path_id, path_id_tx, &state,
-			    prefix, prefixlen);
-		} else if (prefix_withdraw(rib, peer, path_id, prefix,
-		    prefixlen)) {
-			rde_update_log(wmsg, i, peer,
-			    NULL, prefix, prefixlen);
+			    0, prefix, prefixlen);
+		} else if (conf->filtered_in_locrib && i == RIB_LOC_START) {
+			rde_update_log(wmsg, i, peer, NULL, prefix, prefixlen);
+			prefix_update(rib, peer, path_id, path_id_tx, &state,
+			    1, prefix, prefixlen);
+		} else {
+			if (prefix_withdraw(rib, peer, path_id, prefix,
+			    prefixlen))
+				rde_update_log(wmsg, i, peer,
+				    NULL, prefix, prefixlen);
 		}
 
 		rde_filterstate_clean(&state);
@@ -2185,8 +2194,22 @@ rde_attr_parse(struct ibuf *buf, struct rde_peer *peer,
 	case ATTR_CLUSTER_LIST:
 		if (!CHECK_FLAGS(flags, ATTR_OPTIONAL, 0))
 			goto bad_flags;
-		if (ibuf_size(&attrbuf) % 4 != 0)
-			goto bad_len;
+		if (peer->conf.ebgp) {
+			/* As per RFC7606 use "attribute discard" here. */
+			log_peer_warnx(&peer->conf, "bad CLUSTER_LIST, "
+			    "received from external peer, attribute discarded");
+			break;
+		}
+		if (ibuf_size(&attrbuf) % 4 != 0 || ibuf_size(&attrbuf) == 0) {
+			/*
+			 * mark update as bad and withdraw all routes as per
+			 * RFC 7606
+			 */
+			a->flags |= F_ATTR_PARSE_ERR;
+			log_peer_warnx(&peer->conf, "bad CLUSTER_LIST, "
+			    "path invalidated and prefix withdrawn");
+			break;
+		}
 		goto optattr;
 	case ATTR_MP_REACH_NLRI:
 		if (!CHECK_FLAGS(flags, ATTR_OPTIONAL, 0))
@@ -2647,48 +2670,49 @@ rde_reflector(struct rde_peer *peer, struct rde_aspath *asp)
 
 	/* check for originator id if eq router_id drop */
 	if ((a = attr_optget(asp, ATTR_ORIGINATOR_ID)) != NULL) {
-		if (memcmp(&conf->bgpid, a->data, sizeof(conf->bgpid)) == 0) {
+		id = htonl(conf->bgpid);
+		if (memcmp(&id, a->data, sizeof(id)) == 0) {
 			/* this is coming from myself */
 			asp->flags |= F_ATTR_LOOP;
 			return;
 		}
 	} else if (conf->flags & BGPD_FLAG_REFLECTOR) {
 		if (peer->conf.ebgp)
-			id = conf->bgpid;
+			id = htonl(conf->bgpid);
 		else
 			id = htonl(peer->remote_bgpid);
 		if (attr_optadd(asp, ATTR_OPTIONAL, ATTR_ORIGINATOR_ID,
-		    &id, sizeof(uint32_t)) == -1)
+		    &id, sizeof(id)) == -1)
 			fatalx("attr_optadd failed but impossible");
 	}
 
 	/* check for own id in the cluster list */
 	if (conf->flags & BGPD_FLAG_REFLECTOR) {
+		id = htonl(conf->clusterid);
 		if ((a = attr_optget(asp, ATTR_CLUSTER_LIST)) != NULL) {
-			for (len = 0; len < a->len;
-			    len += sizeof(conf->clusterid))
+			for (len = 0; len < a->len; len += sizeof(id))
 				/* check if coming from my cluster */
-				if (memcmp(&conf->clusterid, a->data + len,
-				    sizeof(conf->clusterid)) == 0) {
+				if (memcmp(&id, a->data + len,
+				    sizeof(id)) == 0) {
 					asp->flags |= F_ATTR_LOOP;
 					return;
 				}
 
 			/* prepend own clusterid by replacing attribute */
-			len = a->len + sizeof(conf->clusterid);
+			len = a->len + sizeof(id);
 			if (len < a->len)
 				fatalx("rde_reflector: cluster-list overflow");
 			if ((p = malloc(len)) == NULL)
 				fatal("rde_reflector");
-			memcpy(p, &conf->clusterid, sizeof(conf->clusterid));
-			memcpy(p + sizeof(conf->clusterid), a->data, a->len);
+			memcpy(p, &id, sizeof(id));
+			memcpy(p + sizeof(id), a->data, a->len);
 			attr_free(asp, a);
 			if (attr_optadd(asp, ATTR_OPTIONAL, ATTR_CLUSTER_LIST,
 			    p, len) == -1)
 				fatalx("attr_optadd failed but impossible");
 			free(p);
 		} else if (attr_optadd(asp, ATTR_OPTIONAL, ATTR_CLUSTER_LIST,
-		    &conf->clusterid, sizeof(conf->clusterid)) == -1)
+		    &id, sizeof(id)) == -1)
 			fatalx("attr_optadd failed but impossible");
 	}
 }
@@ -2737,7 +2761,7 @@ rde_dump_rib_as(struct prefix *p, struct rde_aspath *asp, pid_t pid, int flags,
 	rib.aspa_validation_state = prefix_aspa_vstate(p);
 	rib.dmetric = p->dmetric;
 	rib.flags = 0;
-	if (!adjout) {
+	if (!adjout && prefix_eligible(p)) {
 		re = prefix_re(p);
 		TAILQ_FOREACH(xp, &re->prefix_h, entry.list.rib) {
 			switch (xp->dmetric) {
@@ -2767,6 +2791,8 @@ rde_dump_rib_as(struct prefix *p, struct rde_aspath *asp, pid_t pid, int flags,
 		rib.flags |= F_PREF_ANNOUNCE;
 	if (prefix_eligible(p))
 		rib.flags |= F_PREF_ELIGIBLE;
+	if (prefix_filtered(p))
+		rib.flags |= F_PREF_FILTERED;
 	/* otc loop includes parse err so skip the latter if the first is set */
 	if (asp->flags & F_ATTR_OTC_LEAK)
 		rib.flags |= F_PREF_OTC_LEAK;
@@ -2852,6 +2878,8 @@ rde_dump_filter(struct prefix *p, struct ctl_show_rib_request *req, int adjout)
 		return;
 	if ((req->flags & F_CTL_INVALID) &&
 	    (asp->flags & F_ATTR_PARSE_ERR) == 0)
+		return;
+	if ((req->flags & F_CTL_FILTERED) && !prefix_filtered(p))
 		return;
 	if ((req->flags & F_CTL_INELIGIBLE) && prefix_eligible(p))
 		return;
@@ -3165,7 +3193,7 @@ rde_mrt_throttled(void *arg)
 {
 	struct mrt	*mrt = arg;
 
-	return (mrt->wbuf.queued > SESS_MSG_LOW_MARK);
+	return (msgbuf_queuelen(&mrt->wbuf) > SESS_MSG_LOW_MARK);
 }
 
 static void
@@ -3185,7 +3213,7 @@ rde_dump_mrt_new(struct mrt *mrt, pid_t pid, int fd)
 		return;
 	}
 	memcpy(&ctx->mrt, mrt, sizeof(struct mrt));
-	TAILQ_INIT(&ctx->mrt.wbuf.bufs);
+	msgbuf_init(&ctx->mrt.wbuf);
 	ctx->mrt.wbuf.fd = fd;
 	ctx->mrt.state = MRT_STATE_RUNNING;
 	rid = rib_find(ctx->mrt.rib);
@@ -3322,11 +3350,11 @@ rde_update_queue_pending(void)
 	RB_FOREACH(peer, peer_tree, &peertable) {
 		if (peer->conf.id == 0)
 			continue;
-		if (peer->state != PEER_UP)
+		if (!peer_is_up(peer))
 			continue;
 		if (peer->throttled)
 			continue;
-		for (aid = 0; aid < AID_MAX; aid++) {
+		for (aid = AID_MIN; aid < AID_MAX; aid++) {
 			if (!RB_EMPTY(&peer->updates[aid]) ||
 			    !RB_EMPTY(&peer->withdraws[aid]))
 				return 1;
@@ -3348,18 +3376,14 @@ rde_update_queue_runner(uint8_t aid)
 		RB_FOREACH(peer, peer_tree, &peertable) {
 			if (peer->conf.id == 0)
 				continue;
-			if (peer->state != PEER_UP)
+			if (!peer_is_up(peer))
 				continue;
 			if (peer->throttled)
 				continue;
 			if (RB_EMPTY(&peer->withdraws[aid]))
 				continue;
 
-			if ((buf = ibuf_dynamic(4, 4096 - MSGSIZE_HEADER)) ==
-			    NULL)
-				fatal("%s", __func__);
-			if (up_dump_withdraws(buf, peer, aid) == -1) {
-				ibuf_free(buf);
+			if ((buf = up_dump_withdraws(peer, aid)) == NULL) {
 				continue;
 			}
 			if (imsg_compose_ibuf(ibuf_se, IMSG_UPDATE,
@@ -3377,7 +3401,7 @@ rde_update_queue_runner(uint8_t aid)
 		RB_FOREACH(peer, peer_tree, &peertable) {
 			if (peer->conf.id == 0)
 				continue;
-			if (peer->state != PEER_UP)
+			if (!peer_is_up(peer))
 				continue;
 			if (peer->throttled)
 				continue;
@@ -3394,11 +3418,7 @@ rde_update_queue_runner(uint8_t aid)
 				continue;
 			}
 
-			if ((buf = ibuf_dynamic(4, 4096 - MSGSIZE_HEADER)) ==
-			    NULL)
-				fatal("%s", __func__);
-			if (up_dump_update(buf, peer, aid) == -1) {
-				ibuf_free(buf);
+			if ((buf = up_dump_update(peer, aid)) == NULL) {
 				continue;
 			}
 			if (imsg_compose_ibuf(ibuf_se, IMSG_UPDATE,
@@ -3556,7 +3576,7 @@ rde_reload_done(void)
 	struct rde_prefixset_head originsets_old;
 	struct as_set_head	 as_sets_old;
 	uint16_t		 rid;
-	int			 reload = 0;
+	int			 reload = 0, force_locrib = 0;
 
 	softreconfig = 0;
 
@@ -3566,6 +3586,12 @@ rde_reload_done(void)
 	SIMPLEQ_CONCAT(&prefixsets_old, &conf->rde_prefixsets);
 	SIMPLEQ_CONCAT(&originsets_old, &conf->rde_originsets);
 	SIMPLEQ_CONCAT(&as_sets_old, &conf->as_sets);
+
+	/* run softreconfig in if filter mode changed */
+	if (conf->filtered_in_locrib != nconf->filtered_in_locrib) {
+		log_debug("filter mode changed, reloading Loc-Rib");
+		force_locrib = 1;
+	}
 
 	/* merge the main config */
 	copy_config(conf, nconf);
@@ -3584,11 +3610,11 @@ rde_reload_done(void)
 	nconf = NULL;
 
 	/* sync peerself with conf */
-	peerself->remote_bgpid = ntohl(conf->bgpid);
+	peerself->remote_bgpid = conf->bgpid;
 	peerself->conf.local_as = conf->as;
 	peerself->conf.remote_as = conf->as;
 	peerself->conf.remote_addr.aid = AID_INET;
-	peerself->conf.remote_addr.v4.s_addr = conf->bgpid;
+	peerself->conf.remote_addr.v4.s_addr = htonl(conf->bgpid);
 	peerself->conf.remote_masklen = 32;
 	peerself->short_as = conf->short_as;
 
@@ -3611,6 +3637,27 @@ rde_reload_done(void)
 			continue;
 		peer->reconf_out = 0;
 		peer->reconf_rib = 0;
+
+		/* max prefix checker */
+		if (peer->conf.max_prefix &&
+		    peer->stats.prefix_cnt > peer->conf.max_prefix) {
+			log_peer_warnx(&peer->conf,
+			    "prefix limit reached (>%u/%u)",
+			    peer->stats.prefix_cnt, peer->conf.max_prefix);
+			rde_update_err(peer, ERR_CEASE, ERR_CEASE_MAX_PREFIX,
+			    NULL);
+		}
+		/* max prefix checker outbound */
+		if (peer->conf.max_out_prefix &&
+		    peer->stats.prefix_out_cnt > peer->conf.max_out_prefix) {
+			log_peer_warnx(&peer->conf,
+			    "outbound prefix limit reached (>%u/%u)",
+			    peer->stats.prefix_out_cnt,
+			    peer->conf.max_out_prefix);
+			rde_update_err(peer, ERR_CEASE,
+			    ERR_CEASE_MAX_SENT_PREFIX, NULL);
+		}
+
 		if (peer->export_type != peer->conf.export_type) {
 			log_peer_info(&peer->conf, "export type change, "
 			    "reloading");
@@ -3687,7 +3734,7 @@ rde_reload_done(void)
 	}
 
 	/* bring ribs in sync */
-	for (rid = 0; rid < rib_size; rid++) {
+	for (rid = RIB_LOC_START; rid < rib_size; rid++) {
 		struct rib *rib = rib_byid(rid);
 		if (rib == NULL)
 			continue;
@@ -3733,10 +3780,11 @@ rde_reload_done(void)
 			rib->state = RECONF_KEEP;
 			/* FALLTHROUGH */
 		case RECONF_KEEP:
-			if (rde_filter_equal(rib->in_rules, rib->in_rules_tmp))
+			if (!(force_locrib && rid == RIB_LOC_START) &&
+			    rde_filter_equal(rib->in_rules, rib->in_rules_tmp))
 				/* rib is in sync */
 				break;
-			log_debug("in filter change: reloading RIB %s",
+			log_debug("filter change: reloading RIB %s",
 			    rib->name);
 			rib->state = RECONF_RELOAD;
 			reload++;
@@ -3821,7 +3869,7 @@ rde_softreconfig_in_done(void *arg, uint8_t dummy)
 				peer->reconf_out = 0;
 			} else if (peer->export_type == EXPORT_DEFAULT_ROUTE) {
 				/* just resend the default route */
-				for (aid = 0; aid < AID_MAX; aid++) {
+				for (aid = AID_MIN; aid < AID_MAX; aid++) {
 					if (peer->capa.mp[aid])
 						up_generate_default(peer, aid);
 				}
@@ -3831,7 +3879,7 @@ rde_softreconfig_in_done(void *arg, uint8_t dummy)
 				    RECONF_RELOAD;
 		} else if (peer->reconf_rib) {
 			/* dump the full table to neighbors that changed rib */
-			for (aid = 0; aid < AID_MAX; aid++) {
+			for (aid = AID_MIN; aid < AID_MAX; aid++) {
 				if (peer->capa.mp[aid])
 					peer_dump(peer, aid);
 			}
@@ -3934,9 +3982,14 @@ rde_softreconfig_in(struct rib_entry *re, void *bula)
 			if (action == ACTION_ALLOW) {
 				/* update Local-RIB */
 				prefix_update(rib, peer, p->path_id,
-				    p->path_id_tx, &state,
+				    p->path_id_tx, &state, 0,
 				    &prefix, pt->prefixlen);
-			} else if (action == ACTION_DENY) {
+			} else if (conf->filtered_in_locrib &&
+			    i == RIB_LOC_START) {
+				prefix_update(rib, peer, p->path_id,
+				    p->path_id_tx, &state, 1,
+				    &prefix, pt->prefixlen);
+			} else {
 				/* remove from Local-RIB */
 				prefix_withdraw(rib, peer, p->path_id, &prefix,
 				    pt->prefixlen);
@@ -4083,9 +4136,14 @@ rde_rpki_softreload(struct rib_entry *re, void *bula)
 			if (action == ACTION_ALLOW) {
 				/* update Local-RIB */
 				prefix_update(rib, peer, p->path_id,
-				    p->path_id_tx, &state,
+				    p->path_id_tx, &state, 0,
 				    &prefix, pt->prefixlen);
-			} else if (action == ACTION_DENY) {
+			} else if (conf->filtered_in_locrib &&
+			    i == RIB_LOC_START) {
+				prefix_update(rib, peer, p->path_id,
+				    p->path_id_tx, &state, 1,
+				    &prefix, pt->prefixlen);
+			} else {
 				/* remove from Local-RIB */
 				prefix_withdraw(rib, peer, p->path_id, &prefix,
 				    pt->prefixlen);
@@ -4364,7 +4422,7 @@ network_add(struct network_config *nc, struct filterstate *state)
 
 	path_id_tx = pathid_assign(peerself, 0, &nc->prefix, nc->prefixlen);
 	if (prefix_update(rib_byid(RIB_ADJ_IN), peerself, 0, path_id_tx,
-	    state, &nc->prefix, nc->prefixlen) == 1)
+	    state, 0, &nc->prefix, nc->prefixlen) == 1)
 		peerself->stats.prefix_cnt++;
 	for (i = RIB_LOC_START; i < rib_size; i++) {
 		struct rib *rib = rib_byid(i);
@@ -4373,8 +4431,8 @@ network_add(struct network_config *nc, struct filterstate *state)
 		rde_update_log("announce", i, peerself,
 		    state->nexthop ? &state->nexthop->exit_nexthop : NULL,
 		    &nc->prefix, nc->prefixlen);
-		prefix_update(rib, peerself, 0, path_id_tx, state, &nc->prefix,
-		    nc->prefixlen);
+		prefix_update(rib, peerself, 0, path_id_tx, state, 0,
+		    &nc->prefix, nc->prefixlen);
 	}
 	filterset_free(&nc->attrset);
 }

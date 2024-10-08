@@ -1,4 +1,4 @@
-/*	$Id: test-ip.c,v 1.9 2023/05/30 12:14:48 claudio Exp $ */
+/*	$Id: test-ip.c,v 1.11 2024/08/23 12:56:26 anton Exp $ */
 /*
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
@@ -34,6 +34,7 @@
 int outformats;
 int verbose;
 int filemode;
+int experimental;
 
 static void
 test(const char *res, uint16_t afiv, size_t sz, size_t unused, ...)
@@ -58,7 +59,7 @@ test(const char *res, uint16_t afiv, size_t sz, size_t unused, ...)
 	addr.prefixlen = sz * 8 - unused;
 	ip_addr_print(&addr, afi, buf, sizeof(buf));
 	if (res != NULL && strcmp(res, buf))
-		errx(EXIT_FAILURE, "fail: %s != %s\n", res, buf);
+		errx(EXIT_FAILURE, "fail: %s != %s", res, buf);
 	else if (res != NULL)
 		warnx("pass: %s", buf);
 	else

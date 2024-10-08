@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.349 2024/02/03 15:50:00 op Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.352 2024/09/03 18:27:04 op Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -1127,7 +1127,8 @@ load_pki_keys(void)
 }
 
 int
-fork_proc_backend(const char *key, const char *conf, const char *procname)
+fork_proc_backend(const char *key, const char *conf, const char *procname,
+    int do_stdout)
 {
 	pid_t		pid;
 	int		sp[2];
@@ -1137,7 +1138,7 @@ fork_proc_backend(const char *key, const char *conf, const char *procname)
 
 	if (strlcpy(name, conf, sizeof(name)) >= sizeof(name)) {
 		log_warnx("warn: %s-proc: conf too long", key);
-		return (0);
+		return (-1);
 	}
 
 	arg = strchr(name, ':');
@@ -1165,6 +1166,8 @@ fork_proc_backend(const char *key, const char *conf, const char *procname)
 	if (pid == 0) {
 		/* child process */
 		dup2(sp[0], STDIN_FILENO);
+		if (do_stdout)
+			dup2(sp[0], STDOUT_FILENO);
 		if (closefrom(STDERR_FILENO + 1) == -1)
 			exit(1);
 
@@ -1800,7 +1803,7 @@ parent_forward_open(char *username, char *directory, uid_t uid, gid_t gid)
 	}
 
 	if (!secure_file(fd, pathname, directory, uid, 1)) {
-		log_warnx("warn: smtpd: %s: unsecure file", pathname);
+		log_warnx("warn: smtpd: %s: insecure file", pathname);
 		close(fd);
 		return -1;
 	}

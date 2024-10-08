@@ -1,4 +1,4 @@
-/*	$OpenBSD: fortune.c,v 1.63 2021/01/03 01:32:13 schwarze Exp $	*/
+/*	$OpenBSD: fortune.c,v 1.65 2024/09/20 12:52:37 tb Exp $	*/
 /*	$NetBSD: fortune.c,v 1.8 1995/03/23 08:28:40 cgd Exp $	*/
 
 /*-
@@ -140,7 +140,6 @@ void	 sum_tbl(STRFILE *, STRFILE *);
 __dead void	 usage(void);
 void	 zero_tbl(STRFILE *);
 
-char	*conv_pat(char *);
 int	 find_matches(void);
 void	 matches_in_list(FILEDESC *);
 int	 maxlen_in_list(FILEDESC *);
@@ -414,6 +413,7 @@ add_file(int percent, char *file, char *dir, FILEDESC **head, FILEDESC **tail,
 			if (was_malloc)
 				free(path);
 			path = offensive;
+			offensive = NULL;
 			file = off_name(file);
 			was_malloc = true;
 		}
@@ -431,9 +431,9 @@ over:
 		 * we'll pick up the -o file anyway.
 		 */
 		if (All_forts && offensive != NULL) {
-			path = offensive;
 			if (was_malloc)
 				free(path);
+			path = offensive;
 			offensive = NULL;
 			was_malloc = true;
 			DPRINTF(1, (stderr, "\ttrying \"%s\"\n", path));

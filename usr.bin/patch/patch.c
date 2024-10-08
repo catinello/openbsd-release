@@ -1,4 +1,4 @@
-/*	$OpenBSD: patch.c,v 1.75 2023/10/25 20:05:43 bluhm Exp $	*/
+/*	$OpenBSD: patch.c,v 1.77 2024/08/30 07:11:02 op Exp $	*/
 
 /*
  * patch - a program to apply diffs to original files
@@ -108,6 +108,8 @@ static bool	remove_empty_files = false;
 
 /* true if -R was specified on command line.  */
 static bool	reverse_flag_specified = false;
+
+static bool	Vflag = false;
 
 /* buffer holding the name of the rejected patch file. */
 static char	rejname[PATH_MAX];
@@ -255,7 +257,7 @@ main(int argc, char *argv[])
 		my_exit(2);
 	}
 
-	if (backup_type == none) {
+	if (!Vflag) {
 		if ((v = getenv("PATCH_VERSION_CONTROL")) == NULL)
 			v = getenv("VERSION_CONTROL");
 		if (v != NULL || !posix)
@@ -540,6 +542,7 @@ get_some_switches(void)
 		{NULL,			0,			0,	0}
 	};
 	int ch;
+	const char *errstr;
 
 	rejname[0] = '\0';
 	Argc_last = Argc;
@@ -596,7 +599,10 @@ get_some_switches(void)
 			force = true;
 			break;
 		case 'F':
-			maxfuzz = atoi(optarg);
+			maxfuzz = strtonum(optarg, 0, INT_MAX, &errstr);
+			if (errstr != NULL)
+				fatal("maximum fuzz is %s: %s\n",
+				    errstr, optarg);
 			break;
 		case 'i':
 			if (++filec == MAXFILEC)
@@ -616,7 +622,10 @@ get_some_switches(void)
 			outname = xstrdup(optarg);
 			break;
 		case 'p':
-			strippath = atoi(optarg);
+			strippath = strtonum(optarg, 0, INT_MAX, &errstr);
+			if (errstr != NULL)
+				fatal("strip count is %s: %s\n",
+				    errstr, optarg);
 			break;
 		case 'r':
 			if (strlcpy(rejname, optarg,
@@ -641,10 +650,14 @@ get_some_switches(void)
 			break;
 		case 'V':
 			backup_type = get_version(optarg);
+			Vflag = true;
 			break;
 #ifdef DEBUGGING
 		case 'x':
-			debug = atoi(optarg);
+			debug = strtonum(optarg, 0, INT_MAX, &errstr);
+			if (errstr != NULL)
+				fatal("debug number is %s: %s\n",
+				    errstr, optarg);
 			break;
 #endif
 		default:
@@ -677,8 +690,8 @@ usage(void)
 	fprintf(stderr,
 "usage: patch [-bCcEeflNnRstuv] [-B backup-prefix] [-D symbol] [-d directory]\n"
 "             [-F max-fuzz] [-i patchfile] [-o out-file] [-p strip-count]\n"
-"             [-r rej-name] [-V t | nil | never] [-x number] [-z backup-ext]\n"
-"             [--posix] [origfile [patchfile]]\n"
+"             [-r rej-name] [-V t | nil | never | none] [-x number]\n"
+"             [-z backup-ext] [--posix] [origfile [patchfile]]\n"
 "       patch <patchfile\n");
 	my_exit(2);
 }

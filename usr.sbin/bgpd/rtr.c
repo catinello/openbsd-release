@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtr.c,v 1.20 2024/01/18 09:39:36 claudio Exp $ */
+/*	$OpenBSD: rtr.c,v 1.23 2024/09/10 08:37:52 claudio Exp $ */
 
 /*
  * Copyright (c) 2020 Claudio Jeker <claudio@openbsd.org>
@@ -143,7 +143,7 @@ aspa_set_entry(struct aspa_set *aspa, uint32_t asnum)
 	}
 
 	num = aspa->num + 1;
-	newtas = recallocarray(aspa->tas, aspa->num, num, sizeof(uint32_t));
+	newtas = reallocarray(aspa->tas, num, sizeof(uint32_t));
 	if (newtas == NULL)
 		fatal("aspa_set merge");
 
@@ -309,7 +309,7 @@ rtr_dispatch_imsg_parent(struct imsgbuf *imsgbuf)
 	struct imsg		 imsg;
 	struct bgpd_config	 tconf;
 	struct roa		 roa;
-	char			 descr[PEER_DESCR_LEN];
+	struct rtr_config_msg	 rtrconf;
 	struct rtr_session	*rs;
 	uint32_t		 rtrid;
 	int			 n, fd;
@@ -395,13 +395,14 @@ rtr_dispatch_imsg_parent(struct imsgbuf *imsgbuf)
 			aspa = NULL;
 			break;
 		case IMSG_RECONF_RTR_CONFIG:
-			if (imsg_get_data(&imsg, descr, sizeof(descr)) == -1)
+			if (imsg_get_data(&imsg, &rtrconf,
+			    sizeof(rtrconf)) == -1)
 				fatal("imsg_get_data");
 			rs = rtr_get(rtrid);
 			if (rs == NULL)
-				rtr_new(rtrid, descr);
+				rtr_new(rtrid, &rtrconf);
 			else
-				rtr_config_keep(rs);
+				rtr_config_keep(rs, &rtrconf);
 			break;
 		case IMSG_RECONF_DRAIN:
 			imsg_compose(ibuf_main, IMSG_RECONF_DRAIN, 0, 0,
@@ -531,6 +532,14 @@ rtr_recalc(void)
 	/* walk tree in reverse because aspa_add_set requires that */
 	RB_FOREACH_REVERSE(aspa, aspa_tree, &at) {
 		struct aspa_set	as = { .as = aspa->as, .num = aspa->num };
+
+		/* XXX prevent oversized IMSG for now */
+		if (aspa->num * sizeof(*aspa->tas) >
+		    MAX_IMSGSIZE - IMSG_HEADER_SIZE) {
+			log_warnx("oversized ASPA set for customer-as %s, %s",
+			    log_as(aspa->as), "dropped");
+			continue;
+		}
 
 		imsg_compose(ibuf_rde, IMSG_RECONF_ASPA, 0, 0, -1,
 		    &as, offsetof(struct aspa_set, tas));

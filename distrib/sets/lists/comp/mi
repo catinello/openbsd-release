@@ -1,4 +1,5 @@
 ./sys
+./usr/bin/addr2line
 ./usr/bin/c++filt
 ./usr/bin/cpp
 ./usr/bin/ctfdump
@@ -10,6 +11,7 @@
 ./usr/bin/lorder
 ./usr/bin/objdump
 ./usr/bin/ranlib
+./usr/bin/readelf
 ./usr/bin/rpcgen
 ./usr/bin/yacc
 ./usr/include/FlexLexer.h
@@ -336,6 +338,7 @@
 ./usr/include/dev/ic/nec765reg.h
 ./usr/include/dev/ic/ns16450reg.h
 ./usr/include/dev/ic/ns16550reg.h
+./usr/include/dev/ic/nvmeio.h
 ./usr/include/dev/ic/nvmereg.h
 ./usr/include/dev/ic/nvmevar.h
 ./usr/include/dev/ic/oosiopreg.h
@@ -350,12 +353,15 @@
 ./usr/include/dev/ic/pgtreg.h
 ./usr/include/dev/ic/pgtvar.h
 ./usr/include/dev/ic/pluartvar.h
+./usr/include/dev/ic/pspvar.h
 ./usr/include/dev/ic/qlareg.h
 ./usr/include/dev/ic/qlavar.h
 ./usr/include/dev/ic/qlwreg.h
 ./usr/include/dev/ic/qlwvar.h
 ./usr/include/dev/ic/qwxreg.h
 ./usr/include/dev/ic/qwxvar.h
+./usr/include/dev/ic/qwzreg.h
+./usr/include/dev/ic/qwzvar.h
 ./usr/include/dev/ic/r92creg.h
 ./usr/include/dev/ic/ramdac.h
 ./usr/include/dev/ic/revar.h
@@ -417,7 +423,6 @@
 ./usr/include/dev/ipmivar.h
 ./usr/include/dev/isa
 ./usr/include/dev/isa/ad1848var.h
-./usr/include/dev/isa/cs4231var.h
 ./usr/include/dev/isa/elink.h
 ./usr/include/dev/isa/essreg.h
 ./usr/include/dev/isa/essvar.h
@@ -485,7 +490,6 @@
 ./usr/include/dev/mii/tlphyvar.h
 ./usr/include/dev/mii/tqphyreg.h
 ./usr/include/dev/mii/urlphyreg.h
-./usr/include/dev/mii/xmphyreg.h
 ./usr/include/dev/mulaw.h
 ./usr/include/dev/ofw
 ./usr/include/dev/ofw/fdt.h
@@ -638,7 +642,6 @@
 ./usr/include/dev/pci/pciide_jmicron_reg.h
 ./usr/include/dev/pci/pciide_natsemi_reg.h
 ./usr/include/dev/pci/pciide_nforce_reg.h
-./usr/include/dev/pci/pciide_opti_reg.h
 ./usr/include/dev/pci/pciide_pdc202xx_reg.h
 ./usr/include/dev/pci/pciide_piix_reg.h
 ./usr/include/dev/pci/pciide_rdc_reg.h
@@ -918,6 +921,7 @@
 ./usr/include/grp.h
 ./usr/include/histedit.h
 ./usr/include/icdb.h
+./usr/include/ieeefp.h
 ./usr/include/ifaddrs.h
 ./usr/include/imsg.h
 ./usr/include/inttypes.h
@@ -1117,7 +1121,6 @@
 ./usr/include/openssl/cms.h
 ./usr/include/openssl/comp.h
 ./usr/include/openssl/conf.h
-./usr/include/openssl/conf_api.h
 ./usr/include/openssl/crypto.h
 ./usr/include/openssl/ct.h
 ./usr/include/openssl/curve25519.h
@@ -1147,7 +1150,6 @@
 ./usr/include/openssl/opensslv.h
 ./usr/include/openssl/ossl_typ.h
 ./usr/include/openssl/pem.h
-./usr/include/openssl/pem2.h
 ./usr/include/openssl/pkcs12.h
 ./usr/include/openssl/pkcs7.h
 ./usr/include/openssl/poly1305.h
@@ -1163,16 +1165,12 @@
 ./usr/include/openssl/sm4.h
 ./usr/include/openssl/srtp.h
 ./usr/include/openssl/ssl.h
-./usr/include/openssl/ssl2.h
-./usr/include/openssl/ssl23.h
 ./usr/include/openssl/ssl3.h
 ./usr/include/openssl/stack.h
 ./usr/include/openssl/tls1.h
 ./usr/include/openssl/ts.h
 ./usr/include/openssl/txt_db.h
 ./usr/include/openssl/ui.h
-./usr/include/openssl/ui_compat.h
-./usr/include/openssl/whrlpool.h
 ./usr/include/openssl/x509.h
 ./usr/include/openssl/x509_vfy.h
 ./usr/include/openssl/x509v3.h
@@ -1281,6 +1279,7 @@
 ./usr/include/stddef.h
 ./usr/include/stdint.h
 ./usr/include/stdio.h
+./usr/include/stdio_ext.h
 ./usr/include/stdlib.h
 ./usr/include/string.h
 ./usr/include/strings.h
@@ -1294,6 +1293,7 @@
 ./usr/include/sys/ataio.h
 ./usr/include/sys/atomic.h
 ./usr/include/sys/audioio.h
+./usr/include/sys/auxv.h
 ./usr/include/sys/blist.h
 ./usr/include/sys/buf.h
 ./usr/include/sys/cdefs.h
@@ -1449,7 +1449,6 @@
 ./usr/include/ufs/ffs
 ./usr/include/ufs/ffs/ffs_extern.h
 ./usr/include/ufs/ffs/fs.h
-./usr/include/ufs/ffs/softdep.h
 ./usr/include/ufs/mfs
 ./usr/include/ufs/mfs/mfs_extern.h
 ./usr/include/ufs/mfs/mfsnode.h
@@ -1485,6 +1484,7 @@
 ./usr/include/uvm/uvm_page.h
 ./usr/include/uvm/uvm_pager.h
 ./usr/include/uvm/uvm_param.h
+./usr/include/uvm/uvm_percpu.h
 ./usr/include/uvm/uvm_pmap.h
 ./usr/include/uvm/uvm_pmemrange.h
 ./usr/include/uvm/uvm_swap.h
@@ -1582,7 +1582,9 @@
 ./usr/lib/liby_p.a
 ./usr/lib/libz.a
 ./usr/lib/libz_p.a
+./usr/libdata/ldscripts
 ./usr/sbin/kgmon
+./usr/share/info/bfd.info
 ./usr/share/info/binutils.info
 ./usr/share/man/man1/addr2line.1
 ./usr/share/man/man1/ar.1
@@ -1690,7 +1692,6 @@
 ./usr/share/man/man2/msgrcv.2
 ./usr/share/man/man2/msgsnd.2
 ./usr/share/man/man2/msync.2
-./usr/share/man/man2/msyscall.2
 ./usr/share/man/man2/munmap.2
 ./usr/share/man/man2/nanosleep.2
 ./usr/share/man/man2/nfssvc.2
@@ -1931,7 +1932,7 @@
 ./usr/share/man/man3/EVP_PKEY_CTX_get_operation.3
 ./usr/share/man/man3/EVP_PKEY_CTX_new.3
 ./usr/share/man/man3/EVP_PKEY_CTX_set_hkdf_md.3
-./usr/share/man/man3/EVP_PKEY_add1_attr.3
+./usr/share/man/man3/EVP_PKEY_CTX_set_tls1_prf_md.3
 ./usr/share/man/man3/EVP_PKEY_asn1_get_count.3
 ./usr/share/man/man3/EVP_PKEY_asn1_new.3
 ./usr/share/man/man3/EVP_PKEY_check.3
@@ -1962,7 +1963,6 @@
 ./usr/share/man/man3/EVP_sha3_224.3
 ./usr/share/man/man3/EVP_sm3.3
 ./usr/share/man/man3/EVP_sm4_cbc.3
-./usr/share/man/man3/EVP_whirlpool.3
 ./usr/share/man/man3/EXTENDED_KEY_USAGE_new.3
 ./usr/share/man/man3/GENERAL_NAME_new.3
 ./usr/share/man/man3/HMAC.3
@@ -2180,11 +2180,11 @@
 ./usr/share/man/man3/STACK_OF.3
 ./usr/share/man/man3/SipHash24_Init.3
 ./usr/share/man/man3/TS_REQ_new.3
-./usr/share/man/man3/UI_UTIL_read_pw.3
 ./usr/share/man/man3/UI_create_method.3
 ./usr/share/man/man3/UI_get_string_type.3
 ./usr/share/man/man3/UI_new.3
 ./usr/share/man/man3/X25519.3
+./usr/share/man/man3/X509V3_EXT_get_nid.3
 ./usr/share/man/man3/X509V3_EXT_print.3
 ./usr/share/man/man3/X509V3_extensions_print.3
 ./usr/share/man/man3/X509V3_get_d2i.3
@@ -2228,7 +2228,6 @@
 ./usr/share/man/man3/X509_STORE_new.3
 ./usr/share/man/man3/X509_STORE_set1_param.3
 ./usr/share/man/man3/X509_STORE_set_verify_cb_func.3
-./usr/share/man/man3/X509_TRUST_set.3
 ./usr/share/man/man3/X509_VERIFY_PARAM_new.3
 ./usr/share/man/man3/X509_VERIFY_PARAM_set_flags.3
 ./usr/share/man/man3/X509_add1_trust_object.3
@@ -2237,7 +2236,6 @@
 ./usr/share/man/man3/X509_check_issued.3
 ./usr/share/man/man3/X509_check_private_key.3
 ./usr/share/man/man3/X509_check_purpose.3
-./usr/share/man/man3/X509_check_trust.3
 ./usr/share/man/man3/X509_cmp.3
 ./usr/share/man/man3/X509_cmp_time.3
 ./usr/share/man/man3/X509_digest.3
@@ -2259,8 +2257,6 @@
 ./usr/share/man/man3/X509_sign.3
 ./usr/share/man/man3/X509_signature_dump.3
 ./usr/share/man/man3/X509_verify_cert.3
-./usr/share/man/man3/X509at_add1_attr.3
-./usr/share/man/man3/X509at_get_attr.3
 ./usr/share/man/man3/X509v3_addr_add_inherit.3
 ./usr/share/man/man3/X509v3_addr_get_range.3
 ./usr/share/man/man3/X509v3_addr_inherits.3
@@ -2268,6 +2264,7 @@
 ./usr/share/man/man3/X509v3_addr_validate_path.3
 ./usr/share/man/man3/X509v3_asid_add_id_or_range.3
 ./usr/share/man/man3/X509v3_get_ext_by_NID.3
+./usr/share/man/man3/__fpending.3
 ./usr/share/man/man3/__tfork_thread.3
 ./usr/share/man/man3/a2d_ASN1_OBJECT.3
 ./usr/share/man/man3/a64l.3
@@ -2453,6 +2450,7 @@
 ./usr/share/man/man3/eddsa_pk_new.3
 ./usr/share/man/man3/editline.3
 ./usr/share/man/man3/elf.3
+./usr/share/man/man3/elf_aux_info.3
 ./usr/share/man/man3/elf_begin.3
 ./usr/share/man/man3/elf_cntl.3
 ./usr/share/man/man3/elf_end.3

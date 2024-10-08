@@ -1,4 +1,4 @@
-/*	$OpenBSD: inet.c,v 1.181 2024/02/13 12:22:09 bluhm Exp $	*/
+/*	$OpenBSD: inet.c,v 1.183 2024/08/12 06:22:36 florian Exp $	*/
 /*	$NetBSD: inet.c,v 1.14 1995/10/03 21:42:37 thorpej Exp $	*/
 
 /*
@@ -813,7 +813,6 @@ static char *
 getrpcportnam(in_port_t port, int proto)
 {
 	struct sockaddr_in server_addr;
-	struct hostent *hp;
 	static struct pmaplist *head;
 	int socket = RPC_ANYSOCK;
 	struct timeval minutetimeout;
@@ -828,11 +827,7 @@ getrpcportnam(in_port_t port, int proto)
 		first = 1;
 		memset(&server_addr, 0, sizeof server_addr);
 		server_addr.sin_family = AF_INET;
-		if ((hp = gethostbyname("localhost")) != NULL)
-			memmove((caddr_t)&server_addr.sin_addr, hp->h_addr,
-			    hp->h_length);
-		else
-			(void) inet_aton("0.0.0.0", &server_addr.sin_addr);
+		(void) inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
 
 		minutetimeout.tv_sec = 60;
 		minutetimeout.tv_usec = 0;
@@ -1489,10 +1484,10 @@ inpcb_dump(u_long off, short protocol, int af)
 	printf("ro_dst %s\n ", raddr);
 	p("%#.8x", inp_flags, "\n ");
 	p("%d", inp_hops, "\n ");
-	p("%u", inp_seclevel[0], ", ");
-	p("%u", inp_seclevel[1], ", ");
-	p("%u", inp_seclevel[2], ", ");
-	p("%u", inp_seclevel[3], "\n ");
+	p("%u", inp_seclevel.sl_auth, ", ");
+	p("%u", inp_seclevel.sl_esp_trans, ", ");
+	p("%u", inp_seclevel.sl_esp_network, ", ");
+	p("%u", inp_seclevel.sl_ipcomp, "\n ");
 	p("%u", inp_ip_minttl, "\n ");
 	p("%d", inp_cksum6, "\n ");
 	pp("%p", inp_icmp6filt, "\n ");

@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.271 2023/06/25 08:07:39 op Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.274 2024/08/10 05:47:29 tb Exp $	*/
 
 /*
  * Copyright (c) 2006 - 2016 Reyk Floeter <reyk@openbsd.org>
@@ -57,9 +57,7 @@
 #define LABEL_NAME_SIZE		1024
 #define TAG_NAME_SIZE		64
 #define TABLE_NAME_SIZE		64
-#define	RD_TAG_NAME_SIZE	64
 #define	RT_LABEL_SIZE		32
-#define SRV_NAME_SIZE		64
 #define MAX_NAME_SIZE		64
 #define SRV_MAX_VIRTS		16
 #define TLS_NAME_SIZE		512
@@ -402,6 +400,7 @@ union hashkey {
 #define F_TLSINSPECT		0x04000000
 #define F_HASHKEY		0x08000000
 #define F_AGENTX_TRAPONLY	0x10000000
+#define F_PFLOG			0x20000000
 
 #define F_BITS								\
 	"\10\01DISABLE\02BACKUP\03USED\04DOWN\05ADD\06DEL\07CHANGED"	\
@@ -544,8 +543,8 @@ struct rdr_config {
 	objid_t			 backup_id;
 	int			 mode;
 	union hashkey		 key;
-	char			 name[SRV_NAME_SIZE];
-	char			 tag[RD_TAG_NAME_SIZE];
+	char			 name[PF_TABLE_NAME_SIZE];
+	char			 tag[PF_TAG_NAME_SIZE];
 	struct timeval		 timeout;
 };
 
@@ -1210,7 +1209,6 @@ void	 hce_notify_done(struct host *, enum host_error);
 /* relay.c */
 void	 relay(struct privsep *, struct privsep_proc *);
 int	 relay_privinit(struct relay *);
-void	 relay_notify_done(struct host *, const char *);
 int	 relay_session_cmp(struct rsession *, struct rsession *);
 void	 relay_close(struct rsession *, const char *, int);
 int	 relay_reset_event(struct rsession *, struct ctl_relay_event *);
@@ -1246,8 +1244,6 @@ int	 relay_test(struct protocol *, struct ctl_relay_event *);
 void	 relay_calc_skip_steps(struct relay_rules *);
 void	 relay_match(struct kvlist *, struct kv *, struct kv *,
 	    struct kvtree *);
-void	 relay_session_insert(struct rsession *);
-void	 relay_session_remove(struct rsession *);
 void	 relay_session_publish(struct rsession *);
 void	 relay_session_unpublish(struct rsession *);
 
