@@ -30,6 +30,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <signal.h>
+#include <endian.h>
 
 #include "sshkey.h"
 #include "kex.h"
