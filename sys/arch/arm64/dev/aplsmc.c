@@ -250,6 +250,12 @@ aplsmc_attach(struct device *parent, struct device *self, void *aux)
 		return;
 	}
 
+	error = rtkit_set_ap_pwrstate(sc->sc_rs, RTKIT_MGMT_PWR_STATE_ON);
+	if (error) {
+		printf(": can't set AP power state\n");
+		return;
+	}
+
 	error = rtkit_start_endpoint(sc->sc_rs, SMC_EP, aplsmc_callback, sc);
 	if (error) {
 		printf(": can't start SMC endpoint\n");
