@@ -923,6 +923,7 @@ rrdp_clear(unsigned int id)
 
 	/* remove rrdp repository contents */
 	remove_contents(rr->basedir);
+	rr->state = REPO_LOADING;
 }
 
 /*
