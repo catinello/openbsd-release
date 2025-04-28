@@ -1,4 +1,4 @@
-/*	$OpenBSD: dh.c,v 1.27 2023/03/31 07:28:46 tb Exp $	*/
+/*	$OpenBSD: dh.c,v 1.28 2025/04/09 07:10:48 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2010-2014 Reyk Floeter <reyk@openbsd.org>
