@@ -2435,6 +2435,10 @@ nfsrv_readdir(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 		siz = xfer;
 	fullsiz = siz;
 	error = nfsrv_fhtovp(fhp, 1, &vp, cred, slp, nam, &rdonly);
+	if (!error && vp->v_type != VDIR) {
+		error = ENOTDIR;
+		vput(vp);
+	}
 	if (error) {
 		if (nfsm_reply(&info, nfsd, slp, mrq, error,
 		    NFSX_UNSIGNED) != 0)
@@ -2653,6 +2657,10 @@ nfsrv_readdirplus(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 		siz = xfer;
 	fullsiz = siz;
 	error = nfsrv_fhtovp(fhp, 1, &vp, cred, slp, nam, &rdonly);
+	if (!error && vp->v_type != VDIR) {
+		error = ENOTDIR;
+		vput(vp);
+	}
 	if (error) {
 		if (nfsm_reply(&info, nfsd, slp, mrq, error,
 		    NFSX_UNSIGNED) != 0)
