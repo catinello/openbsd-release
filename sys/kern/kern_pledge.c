@@ -1263,9 +1263,11 @@ pledge_ioctl(struct proc *p, long com, struct file *fp)
 				break;
 			if ((pledge & PLEDGE_WPATH) == 0)
 				break;
-			if (cdevsw[major(vp->v_rdev)].d_open != ptcopen)
-				break;
-			return (0);
+			if (fp->f_type == DTYPE_VNODE &&
+			    vp->v_type == VCHR &&
+			    cdevsw[major(vp->v_rdev)].d_open == ptcopen)
+				return (0);
+			break;
 #endif /* NPTY > 0 */
 		case TIOCSPGRP:
 			if ((pledge & PLEDGE_PROC) == 0)
