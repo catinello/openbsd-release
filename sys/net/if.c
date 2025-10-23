@@ -1,4 +1,4 @@
-/*	$OpenBSD: if.c,v 1.729 2025/03/19 23:29:49 bluhm Exp $	*/
+/*	$OpenBSD: if.c,v 1.741 2025/09/09 09:16:18 bluhm Exp $	*/
 /*	$NetBSD: if.c,v 1.35 1996/05/07 05:26:04 thorpej Exp $	*/
 
 /*
@@ -73,16 +73,13 @@
 #include <sys/systm.h>
 #include <sys/mbuf.h>
 #include <sys/socket.h>
-#include <sys/socketvar.h>
 #include <sys/timeout.h>
 #include <sys/protosw.h>
 #include <sys/kernel.h>
 #include <sys/ioctl.h>
-#include <sys/domain.h>
 #include <sys/task.h>
 #include <sys/atomic.h>
 #include <sys/percpu.h>
-#include <sys/proc.h>
 #include <sys/stdint.h>	/* uintptr_t */
 #include <sys/rwlock.h>
 #include <sys/smr.h>
@@ -92,11 +89,6 @@
 #include <net/if_types.h>
 #include <net/route.h>
 #include <net/netisr.h>
-
-#include "vlan.h"
-#if NVLAN > 0
-#include <net/if_vlan_var.h>
-#endif
 
 #include <netinet/in.h>
 #include <netinet/if_ether.h>
@@ -112,7 +104,6 @@
 #include <netinet6/in6_var.h>
 #include <netinet6/in6_ifattach.h>
 #include <netinet6/nd6.h>
-#include <netinet/ip6.h>
 #include <netinet6/ip6_var.h>
 #endif
 
@@ -126,10 +117,6 @@
 
 #if NBRIDGE > 0
 #include <net/if_bridge.h>
-#endif
-
-#if NCARP > 0
-#include <netinet/ip_carp.h>
 #endif
 
 #if NPF > 0
@@ -200,8 +187,6 @@ struct softnet *
  * if_get(0) returns NULL.
  */
 
-struct ifnet *if_ref(struct ifnet *);
-
 /*
  * struct if_idxmap
  *
@@ -252,7 +237,11 @@ struct softnet {
 	struct taskq	*sn_taskq;
 	struct netstack	 sn_netstack;
 } __aligned(64);
-#define NET_TASKQ	4
+#ifdef MULTIPROCESSOR
+#define NET_TASKQ	8
+#else
+#define NET_TASKQ	1
+#endif
 struct softnet	softnets[NET_TASKQ];
 
 struct task	if_input_task_locked = TASK_INITIALIZER(if_netisr, NULL);
@@ -261,7 +250,8 @@ struct task	if_input_task_locked = TASK_INITIALIZER(if_netisr, NULL);
  * Serialize socket operations to ensure no new sleeping points
  * are introduced in IP output paths.
  */
-struct rwlock netlock = RWLOCK_INITIALIZER("netlock");
+struct rwlock netlock = RWLOCK_INITIALIZER_TRACE("netlock",
+    DT_RWLOCK_IDX_NETLOCK);
 
 /*
  * Network interface utility routines.
@@ -269,22 +259,44 @@ struct rwlock netlock = RWLOCK_INITIALIZER("netlock");
 void
 ifinit(void)
 {
-	unsigned int	i;
-
 	/*
 	 * most machines boot with 4 or 5 interfaces, so size the initial map
 	 * to accommodate this
 	 */
 	if_idxmap_init(8); /* 8 is a nice power of 2 for malloc */
+}
 
+void
+softnet_init(void)
+{
+	unsigned int i;
+
+	/* Number of CPU is unknown, but driver attach needs softnet tasks. */
 	for (i = 0; i < NET_TASKQ; i++) {
 		struct softnet *sn = &softnets[i];
+
 		snprintf(sn->sn_name, sizeof(sn->sn_name), "softnet%u", i);
 		sn->sn_taskq = taskq_create(sn->sn_name, 1, IPL_NET,
 		    TASKQ_MPSAFE);
 		if (sn->sn_taskq == NULL)
 			panic("unable to create network taskq %d", i);
 	}
+}
+
+void
+softnet_percpu(void)
+{
+#ifdef MULTIPROCESSOR
+	unsigned int i;
+
+	/* After attaching all CPUs and interfaces, remove useless threads. */
+	for (i = softnet_count(); i < NET_TASKQ; i++) {
+		struct softnet *sn = &softnets[i];
+
+		taskq_destroy(sn->sn_taskq);
+		sn->sn_taskq = NULL;
+	}
+#endif /* MULTIPROCESSOR */
 }
 
 static struct if_idxmap if_idxmap;
@@ -785,6 +797,7 @@ if_input_local(struct ifnet *ifp, struct mbuf *m, sa_family_t af,
 {
 	int keepflags, keepcksum;
 	uint16_t keepmss;
+	uint16_t keepflowid;
 
 #if NBPFILTER > 0
 	/*
@@ -809,12 +822,14 @@ if_input_local(struct ifnet *ifp, struct mbuf *m, sa_family_t af,
 	 */
 	keepcksum = m->m_pkthdr.csum_flags & (M_IPV4_CSUM_OUT |
 	    M_TCP_CSUM_OUT | M_UDP_CSUM_OUT | M_ICMP_CSUM_OUT |
-	    M_TCP_TSO);
+	    M_TCP_TSO | M_FLOWID);
 	keepmss = m->m_pkthdr.ph_mss;
+	keepflowid = m->m_pkthdr.ph_flowid;
 	m_resethdr(m);
 	m->m_flags |= M_LOOP | keepflags;
 	m->m_pkthdr.csum_flags = keepcksum;
 	m->m_pkthdr.ph_mss = keepmss;
+	m->m_pkthdr.ph_flowid = keepflowid;
 	m->m_pkthdr.ph_ifidx = ifp->if_index;
 	m->m_pkthdr.ph_rtableid = ifp->if_rdomain;
 
@@ -824,9 +839,7 @@ if_input_local(struct ifnet *ifp, struct mbuf *m, sa_family_t af,
 		    ISSET(ifp->if_capabilities, IFCAP_TSOv4)) ||
 		    (af == AF_INET6 &&
 		    ISSET(ifp->if_capabilities, IFCAP_TSOv6)))) {
-			tcpstat_inc(tcps_inswlro);
-			tcpstat_add(tcps_inpktlro,
-			    (m->m_pkthdr.len + ifp->if_mtu - 1) / ifp->if_mtu);
+			tcpstat_inc(tcps_inhwlro);
 		} else {
 			tcpstat_inc(tcps_inbadlro);
 			m_freem(m);
@@ -1001,10 +1014,21 @@ if_input_process(struct ifnet *ifp, struct mbuf_list *ml, unsigned int idx)
 	 */
 
 	sn = net_sn(idx);
+	ml_init(&sn->sn_netstack.ns_tcp_ml);
+#ifdef INET6
+	ml_init(&sn->sn_netstack.ns_tcp6_ml);
+#endif
 
 	NET_LOCK_SHARED();
+
 	while ((m = ml_dequeue(ml)) != NULL)
 		(*ifp->if_input)(ifp, m, &sn->sn_netstack);
+
+	tcp_input_mlist(&sn->sn_netstack.ns_tcp_ml, AF_INET);
+#ifdef INET6
+	tcp_input_mlist(&sn->sn_netstack.ns_tcp6_ml, AF_INET6);
+#endif
+
 	NET_UNLOCK_SHARED();
 }
 
@@ -1190,8 +1214,10 @@ if_detach(struct ifnet *ifp)
 	ifp->if_qstart = if_detached_qstart;
 
 	/* Wait until the start routines finished. */
-	ifq_barrier(&ifp->if_snd);
-	ifq_clr_oactive(&ifp->if_snd);
+	for (i = 0; i < ifp->if_nifqs; i++) {
+		ifq_barrier(ifp->if_ifqs[i]);
+		ifq_clr_oactive(ifp->if_ifqs[i]);
+	}
 
 #if NBPFILTER > 0
 	bpfdetach(ifp);
@@ -3288,26 +3314,28 @@ if_group_egress_build(void)
 	sa_in.sin_len = sizeof(sa_in);
 	sa_in.sin_family = AF_INET;
 	rt = rtable_lookup(0, sintosa(&sa_in), sintosa(&sa_in), NULL, RTP_ANY);
-	while (rt != NULL) {
+	for (; rt != NULL; rt = rtable_iterate(rt)) {
+		if (ISSET(rt->rt_flags, RTF_REJECT | RTF_BLACKHOLE))
+			continue;
 		ifp = if_get(rt->rt_ifidx);
 		if (ifp != NULL) {
 			if_addgroup(ifp, IFG_EGRESS);
 			if_put(ifp);
 		}
-		rt = rtable_iterate(rt);
 	}
 
 #ifdef INET6
 	bcopy(&sa6_any, &sa_in6, sizeof(sa_in6));
 	rt = rtable_lookup(0, sin6tosa(&sa_in6), sin6tosa(&sa_in6), NULL,
 	    RTP_ANY);
-	while (rt != NULL) {
+	for (; rt != NULL; rt = rtable_iterate(rt)) {
+		if (ISSET(rt->rt_flags, RTF_REJECT | RTF_BLACKHOLE))
+			continue;
 		ifp = if_get(rt->rt_ifidx);
 		if (ifp != NULL) {
 			if_addgroup(ifp, IFG_EGRESS);
 			if_put(ifp);
 		}
-		rt = rtable_iterate(rt);
 	}
 #endif /* INET6 */
 
@@ -3620,13 +3648,6 @@ if_rxr_ioctl(struct if_rxrinfo *ifri, const char *name, u_int size,
  * Network stack input queues.
  */
 
-void
-niq_init(struct niqueue *niq, u_int maxlen, u_int isr)
-{
-	mq_init(&niq->ni_q, maxlen, IPL_NET);
-	niq->ni_isr = isr;
-}
-
 int
 niq_enqueue(struct niqueue *niq, struct mbuf *m)
 {
@@ -3641,35 +3662,27 @@ niq_enqueue(struct niqueue *niq, struct mbuf *m)
 	return (rv);
 }
 
-int
-niq_enlist(struct niqueue *niq, struct mbuf_list *ml)
-{
-	int rv;
-
-	rv = mq_enlist(&niq->ni_q, ml);
-	if (rv == 0)
-		schednetisr(niq->ni_isr);
-	else
-		if_congestion();
-
-	return (rv);
-}
-
 __dead void
 unhandled_af(int af)
 {
 	panic("unhandled af %d", af);
 }
 
+unsigned int
+softnet_count(void)
+{
+	static unsigned int nsoftnets;
+
+	if (nsoftnets == 0)
+		nsoftnets = min(NET_TASKQ, ncpus);
+
+	return (nsoftnets);
+}
+
 struct softnet *
 net_sn(unsigned int ifindex)
 {
-	static int nettaskqs;
-
-	if (nettaskqs == 0)
-		nettaskqs = min(NET_TASKQ, ncpus);
-
-	return (&softnets[ifindex % nettaskqs]);
+	return (&softnets[ifindex % softnet_count()]);
 }
 
 struct taskq *
@@ -3685,7 +3698,7 @@ net_tq_barriers(const char *wmesg)
 	struct refcnt r = REFCNT_INITIALIZER();
 	int i;
 
-	for (i = 0; i < nitems(barriers); i++) {
+	for (i = 0; i < softnet_count(); i++) {
 		task_set(&barriers[i], (void (*)(void *))refcnt_rele_wake, &r);
 		refcnt_take(&r);
 		task_add(softnets[i].sn_taskq, &barriers[i]);

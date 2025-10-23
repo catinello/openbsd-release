@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_peer.c,v 1.48 2025/03/14 12:39:55 claudio Exp $ */
+/*	$OpenBSD: rde_peer.c,v 1.51 2025/09/24 14:04:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2019 Claudio Jeker <claudio@openbsd.org>
@@ -29,15 +29,9 @@
 struct peer_tree	 peertable = RB_INITIALIZER(&peertable);
 struct peer_tree	 zombietable = RB_INITIALIZER(&zombietable);
 struct rde_peer		*peerself;
-static long		 imsg_pending;
 
 CTASSERT(sizeof(peerself->recv_eor) * 8 >= AID_MAX);
 CTASSERT(sizeof(peerself->sent_eor) * 8 >= AID_MAX);
-
-struct iq {
-	SIMPLEQ_ENTRY(iq)	entry;
-	struct imsg		imsg;
-};
 
 int
 peer_has_as4byte(struct rde_peer *peer)
@@ -178,7 +172,8 @@ peer_add(uint32_t id, struct peer_config *p_conf, struct filter_head *rules)
 	peer->role = peer->conf.role;
 	peer->export_type = peer->conf.export_type;
 	peer->flags = peer->conf.flags;
-	SIMPLEQ_INIT(&peer->imsg_queue);
+	if ((peer->ibufq = ibufq_new()) == NULL)
+		fatal(NULL);
 
 	peer_apply_out_filter(peer, rules);
 
@@ -652,6 +647,7 @@ peer_reaper(struct rde_peer *peer)
 	if (!prefix_adjout_reaper(peer))
 		return;
 
+	ibufq_free(peer->ibufq);
 	RB_REMOVE(peer_tree, &zombietable, peer);
 	free(peer);
 }
@@ -663,19 +659,17 @@ peer_reaper(struct rde_peer *peer)
 int
 peer_work_pending(void)
 {
+	struct rde_peer *p;
+
 	if (!RB_EMPTY(&zombietable))
 		return 1;
-	return imsg_pending != 0;
-}
 
-/*
- * move an imsg from src to dst, disconnecting any dynamic memory from src.
- */
-static void
-imsg_move(struct imsg *dst, struct imsg *src)
-{
-	*dst = *src;
-	memset(src, 0, sizeof(*src));
+	RB_FOREACH(p, peer_tree, &peertable) {
+		if (ibufq_queuelen(p->ibufq) != 0)
+			return 1;
+	}
+
+	return 0;
 }
 
 /*
@@ -684,13 +678,7 @@ imsg_move(struct imsg *dst, struct imsg *src)
 void
 peer_imsg_push(struct rde_peer *peer, struct imsg *imsg)
 {
-	struct iq *iq;
-
-	if ((iq = calloc(1, sizeof(*iq))) == NULL)
-		fatal(NULL);
-	imsg_move(&iq->imsg, imsg);
-	SIMPLEQ_INSERT_TAIL(&peer->imsg_queue, iq, entry);
-	imsg_pending++;
+	imsg_ibufq_push(peer->ibufq, imsg);
 }
 
 /*
@@ -700,19 +688,14 @@ peer_imsg_push(struct rde_peer *peer, struct imsg *imsg)
 int
 peer_imsg_pop(struct rde_peer *peer, struct imsg *imsg)
 {
-	struct iq *iq;
-
-	iq = SIMPLEQ_FIRST(&peer->imsg_queue);
-	if (iq == NULL)
+	switch (imsg_ibufq_pop(peer->ibufq, imsg)) {
+	case 0:
 		return 0;
-
-	imsg_move(imsg, &iq->imsg);
-
-	SIMPLEQ_REMOVE_HEAD(&peer->imsg_queue, entry);
-	free(iq);
-	imsg_pending--;
-
-	return 1;
+	case 1:
+		return 1;
+	default:
+		fatal("imsg_ibufq_pop");
+	}
 }
 
 /*
@@ -721,11 +704,5 @@ peer_imsg_pop(struct rde_peer *peer, struct imsg *imsg)
 void
 peer_imsg_flush(struct rde_peer *peer)
 {
-	struct iq *iq;
-
-	while ((iq = SIMPLEQ_FIRST(&peer->imsg_queue)) != NULL) {
-		SIMPLEQ_REMOVE_HEAD(&peer->imsg_queue, entry);
-		free(iq);
-		imsg_pending--;
-	}
+	ibufq_flush(peer->ibufq);
 }

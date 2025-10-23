@@ -1,4 +1,4 @@
-/*	$OpenBSD: identcpu.c,v 1.148 2024/10/07 20:30:17 dv Exp $	*/
+/*	$OpenBSD: identcpu.c,v 1.152 2025/09/14 15:52:28 mlarkin Exp $	*/
 /*	$NetBSD: identcpu.c,v 1.1 2003/04/26 18:39:28 fvdl Exp $	*/
 
 /*
@@ -67,6 +67,7 @@ int cpuspeed;
 
 int amd64_has_xcrypt;
 int amd64_pos_cbit;	/* C bit position for SEV */
+int amd64_min_noes_asid;
 int has_rdrand;
 int has_rdseed;
 
@@ -710,6 +711,11 @@ identifycpu(struct cpu_info *ci)
 		    'd', CPUID_MEMBER(ci_feature_amdsev_edx),
 		    CPUID_AMDSEV_EDX_BITS);
 		amd64_pos_cbit = (ci->ci_feature_amdsev_ebx & 0x3f);
+		amd64_min_noes_asid = ci->ci_feature_amdsev_edx;
+		if (cpu_sev_guestmode && CPU_IS_PRIMARY(ci))
+			printf("\n%s: SEV%s guest mode", ci->ci_dev->dv_xname,
+			    ISSET(cpu_sev_guestmode, SEV_STAT_ES_ENABLED) ?
+			    "-ES" : "");
 	}
 
 	printf("\n");
@@ -949,8 +955,9 @@ cpu_check_vmm_cap(struct cpu_info *ci)
 		msr = rdmsr(IA32_VMX_PROCBASED_CTLS);
 		if (msr & (IA32_VMX_ACTIVATE_SECONDARY_CONTROLS) << 32) {
 			msr = rdmsr(IA32_VMX_PROCBASED2_CTLS);
-			/* EPT available? */
-			if (msr & (IA32_VMX_ENABLE_EPT) << 32)
+			/* EPT and UG available? */
+			if ((msr & (IA32_VMX_ENABLE_EPT) << 32) &&
+			    (msr & (IA32_VMX_UNRESTRICTED_GUEST) << 32))
 				ci->ci_vmm_flags |= CI_VMM_EPT;
 		}
 	}

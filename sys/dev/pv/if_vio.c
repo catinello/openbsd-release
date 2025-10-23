@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_vio.c,v 1.70 2025/02/24 09:40:01 jan Exp $	*/
+/*	$OpenBSD: if_vio.c,v 1.72 2025/09/16 12:18:10 hshoexer Exp $	*/
 
 /*
  * Copyright (c) 2012 Stefan Fritsch, Alexander Fiveg.
@@ -382,7 +382,7 @@ const struct cfattach vio_ca = {
 };
 
 struct cfdriver vio_cd = {
-	NULL, "vio", DV_IFNET
+	NULL, "vio", DV_IFNET, CD_COCOVM
 };
 
 int
@@ -392,11 +392,13 @@ vio_alloc_dmamem(struct vio_softc *sc)
 	int nsegs;
 
 	if (bus_dmamap_create(vsc->sc_dmat, sc->sc_dma_size, 1,
-	    sc->sc_dma_size, 0, BUS_DMA_NOWAIT | BUS_DMA_ALLOCNOW,
+	    sc->sc_dma_size, 0,
+	    BUS_DMA_NOWAIT | BUS_DMA_ALLOCNOW | BUS_DMA_64BIT,
 	    &sc->sc_dma_map) != 0)
 		goto err;
 	if (bus_dmamem_alloc(vsc->sc_dmat, sc->sc_dma_size, 16, 0,
-	    &sc->sc_dma_seg, 1, &nsegs, BUS_DMA_NOWAIT | BUS_DMA_ZERO) != 0)
+	    &sc->sc_dma_seg, 1, &nsegs,
+	    BUS_DMA_NOWAIT | BUS_DMA_ZERO | BUS_DMA_64BIT) != 0)
 		goto destroy;
 	if (bus_dmamem_map(vsc->sc_dmat, &sc->sc_dma_seg, nsegs,
 	    sc->sc_dma_size, &sc->sc_dma_kva, BUS_DMA_NOWAIT) != 0)
@@ -542,7 +544,7 @@ vio_alloc_mem(struct vio_softc *sc, int tx_max_segments)
 			r = bus_dmamap_create(vsc->sc_dmat,
 			    sc->sc_rx_mbuf_size + sc->sc_hdr_size, 2,
 			    sc->sc_rx_mbuf_size, 0,
-			    BUS_DMA_NOWAIT|BUS_DMA_ALLOCNOW,
+			    BUS_DMA_NOWAIT | BUS_DMA_ALLOCNOW | BUS_DMA_64BIT,
 			    &vioq->viq_rxdmamaps[i]);
 			if (r != 0)
 				goto destroy;
@@ -551,7 +553,7 @@ vio_alloc_mem(struct vio_softc *sc, int tx_max_segments)
 		for (i = 0; i < txqsize; i++) {
 			r = bus_dmamap_create(vsc->sc_dmat, txsize,
 			    tx_max_segments, txsize, 0,
-			    BUS_DMA_NOWAIT|BUS_DMA_ALLOCNOW,
+			    BUS_DMA_NOWAIT | BUS_DMA_ALLOCNOW | BUS_DMA_64BIT,
 			    &vioq->viq_txdmamaps[i]);
 			if (r != 0)
 				goto destroy;

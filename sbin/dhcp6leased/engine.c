@@ -1,4 +1,4 @@
-/*	$OpenBSD: engine.c,v 1.31 2024/12/24 17:40:06 florian Exp $	*/
+/*	$OpenBSD: engine.c,v 1.34 2025/09/18 11:49:23 florian Exp $	*/
 
 /*
  * Copyright (c) 2017, 2021, 2024 Florian Obser <florian@openbsd.org>
@@ -139,6 +139,9 @@ void			 deprecate_interfaces(struct dhcp6leased_iface *);
 int			 prefixcmp(struct prefix *, struct prefix *, int);
 void			 send_reconfigure_interface(struct iface_pd_conf *,
 			     struct prefix *, enum reconfigure_action);
+void			 send_reconfigure_reject_route(
+			     struct dhcp6leased_iface *, struct in6_addr *,
+			     uint8_t, enum reconfigure_action);
 int			 engine_imsg_compose_main(int, pid_t, void *, uint16_t);
 const char		*dhcp_option_type2str(int);
 const char		*dhcp_duid2str(int, uint8_t *);
@@ -479,6 +482,11 @@ engine_dispatch_main(int fd, short event, void *bula)
 				fatal(NULL);
 			memcpy(iface_conf, imsg.data, sizeof(struct
 			    iface_conf));
+			if (iface_conf->name[sizeof(iface_conf->name) - 1]
+			    != '\0')
+				fatalx("%s: IMSG_RECONF_IFACE invalid name",
+				    __func__);
+
 			SIMPLEQ_INIT(&iface_conf->iface_ia_list);
 			SIMPLEQ_INSERT_TAIL(&nconf->iface_list,
 			    iface_conf, entry);
@@ -512,6 +520,11 @@ engine_dispatch_main(int fd, short event, void *bula)
 				fatal(NULL);
 			memcpy(iface_pd_conf, imsg.data, sizeof(struct
 			    iface_pd_conf));
+			if (iface_pd_conf->name[sizeof(iface_pd_conf->name) - 1]
+			    != '\0')
+				fatalx("%s: IMSG_RECONF_IFACE_PD invalid name",
+				__func__);
+
 			SIMPLEQ_INSERT_TAIL(&iface_ia_conf->iface_pd_list,
 			    iface_pd_conf, entry);
 			break;
@@ -873,7 +886,7 @@ parse_dhcp(struct dhcp6leased_iface *iface, struct imsg_dhcp *dhcp)
 			goto out;
 		}
 
-		if (lease_time < pd->vltime)
+		if (lease_time == 0 || lease_time > pd->vltime)
 			lease_time = pd->vltime;
 
 		log_debug("%s: pltime: %u, vltime: %u, prefix: %s/%u",
@@ -928,9 +941,14 @@ parse_dhcp(struct dhcp6leased_iface *iface, struct imsg_dhcp *dhcp)
 		iface->serverid_len = serverid_len;
 		memcpy(iface->serverid, serverid, SERVERID_SIZE);
 
-		/* XXX handle t1 = 0 or t2 = 0 */
-		iface->t1 = t1;
-		iface->t2 = t2;
+		if (t1 == 0)
+			iface->t1 = lease_time / 2;
+		else
+			iface->t1 = t1;
+		if (t2 == 0)
+		    iface->t2 = lease_time - (lease_time / 8);
+		else
+			iface->t2 = t2;
 		iface->lease_time = lease_time;
 		clock_gettime(CLOCK_MONOTONIC, &iface->request_time);
 		state_transition(iface, IF_BOUND);
@@ -1290,7 +1308,6 @@ request_dhcp_request(struct dhcp6leased_iface *iface)
 	}
 }
 
-/* XXX we need to install a reject route for the delegated prefix */
 void
 configure_interfaces(struct dhcp6leased_iface *iface)
 {
@@ -1321,6 +1338,9 @@ configure_interfaces(struct dhcp6leased_iface *iface)
 		    "server %s", i, inet_ntop(AF_INET6, &pd->prefix, ntopbuf,
 		    INET6_ADDRSTRLEN), pd->prefix_len, if_name,
 		    dhcp_duid2str(iface->serverid_len, iface->serverid));
+
+		send_reconfigure_reject_route(iface, &pd->prefix,
+		    pd->prefix_len, CONFIGURE);
 	}
 
 	SIMPLEQ_FOREACH(ia_conf, &iface_conf->iface_ia_list, entry) {
@@ -1387,6 +1407,8 @@ deconfigure_interfaces(struct dhcp6leased_iface *iface)
 		    "server %s", i, inet_ntop(AF_INET6, &pd->prefix, ntopbuf,
 		    INET6_ADDRSTRLEN), pd->prefix_len, if_name,
 		    dhcp_duid2str(iface->serverid_len, iface->serverid));
+		send_reconfigure_reject_route(iface, &pd->prefix,
+		    pd->prefix_len, DECONFIGURE);
 	}
 
 	SIMPLEQ_FOREACH(ia_conf, &iface_conf->iface_ia_list, entry) {
@@ -1514,6 +1536,27 @@ send_reconfigure_interface(struct iface_pd_conf *pd_conf, struct prefix *pd,
 	else
 		engine_imsg_compose_main(IMSG_DECONFIGURE_ADDRESS, 0, &address,
 		    sizeof(address));
+}
+
+void
+send_reconfigure_reject_route(struct dhcp6leased_iface *iface,
+    struct in6_addr *prefix, uint8_t prefix_len, enum reconfigure_action action)
+{
+	struct imsg_configure_reject_route	 imsg;
+
+	memset(&imsg, 0, sizeof(imsg));
+
+	imsg.if_index = iface->if_index;
+	imsg.rdomain = iface->rdomain;
+	memcpy(&imsg.prefix, prefix, sizeof(imsg.prefix));
+	in6_prefixlen2mask(&imsg.mask, prefix_len);
+
+	if (action == CONFIGURE)
+		engine_imsg_compose_main(IMSG_CONFIGURE_REJECT_ROUTE, 0, &imsg,
+		    sizeof(imsg));
+	else
+		engine_imsg_compose_main(IMSG_DECONFIGURE_REJECT_ROUTE, 0,
+		    &imsg, sizeof(imsg));
 }
 
 const char *

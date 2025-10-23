@@ -1,4 +1,4 @@
-# $OpenBSD: GENERIC,v 1.294 2025/04/21 21:11:04 mglocker Exp $
+# $OpenBSD: GENERIC,v 1.307 2025/09/17 09:32:55 kettenis Exp $
 #
 # GENERIC machine description file
 #
@@ -42,6 +42,7 @@ acpi0		at mainbus?
 acpiac*		at acpi?
 acpibat*	at acpi?
 acpibtn*	at acpi?
+acpicpu*	at acpi?
 acpiec*		at acpi?
 acpige*		at acpi?
 acpimcfg*	at acpi?
@@ -223,7 +224,7 @@ ssdfb*		at spi?
 wsdisplay*	at ssdfb?
 imxtmu*		at fdt?
 
-# Raspberry Pi 3/4
+# Raspberry Pi 3/4/5
 bcmaux*		at fdt? early 1
 bcmbsc*		at fdt?
 iic*		at bcmbsc?
@@ -235,18 +236,28 @@ gpio*		at bcmgpio?
 bcmintc*	at fdt? early 1
 bcmirng*	at fdt?
 bcmmbox*	at fdt? early 1
+bcmmip*		at fdt? early 1
 bcmpcie*	at fdt?
 pci*		at bcmpcie?
 bcmrng*		at fdt?
 bcmsdhost*	at fdt?
 sdmmc*		at bcmsdhost?
+bcmstbgpio*	at fdt? early 1
+bcmstbintc*	at fdt? early 1
+bcmstbpinctrl*	at fdt? early 1
+bcmstbrescal*	at fdt? early 1
+bcmstbreset*	at fdt? early 1
 bcmtemp*	at fdt?
 bcmtmon*	at fdt? early 1
 bse*		at fdt?
 bse*		at acpi?
 dwctwo*		at fdt?
 usb*		at dwctwo?
+rpone*		at pci?
+rpiclock*	at fdt? early 1
 rpigpio*	at fdt? early 1
+rpipwm*		at fdt?
+rpirtc*		at fdt?
 
 # Amlogic SoCs
 amlclock*	at fdt? early 1
@@ -339,6 +350,8 @@ sdmmc*		at dwmshc?
 qcaoss*		at fdt?
 qccpu*		at fdt?
 qccpucp*	at fdt?
+qcdrm*		at fdt?
+qcdpc*		at fdt?
 qcdwusb*	at fdt?
 qcgpio*		at acpi?
 qcgpio*		at fdt? early 1
@@ -588,6 +601,7 @@ ims*		at ihidev?		# HID-over-I2C mouse/trackpad
 wsmouse*	at ims? mux 0
 imt*		at ihidev?		# HID-over-I2C multitouch trackpad
 wsmouse*	at imt? mux 0
+iasuskbd*	at ihidev?		# HID-over-I2C ASUS keyboard
 ipmi*		at iic?			# IPMI (SIIF)
 islrtc*		at iic?			# ISL1208 RTC
 maxrtc*		at iic?			# DS1307 RTC

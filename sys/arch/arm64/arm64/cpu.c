@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.140 2025/02/26 23:05:17 jsg Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.143 2025/09/11 05:54:08 jsg Exp $	*/
 
 /*
  * Copyright (c) 2016 Dale Rahn <drahn@dalerahn.com>
@@ -102,8 +102,12 @@
 #define CPU_PART_CORTEX_A725	0xd87
 #define CPU_PART_CORTEX_A520AE	0xd88
 #define CPU_PART_CORTEX_A720AE	0xd89
+#define CPU_PART_C1_NANO	0xd8a
+#define CPU_PART_C1_PRO		0xd8b
+#define CPU_PART_C1_ULTRA	0xd8c
 #define CPU_PART_NEOVERSE_N3	0xd8e
 #define CPU_PART_CORTEX_A320	0xd8f
+#define CPU_PART_C1_PREMIUM	0xd90
 
 /* Cavium */
 #define CPU_PART_THUNDERX_T88	0x0a1
@@ -151,6 +155,10 @@ struct cpu_cores cpu_cores_none[] = {
 };
 
 struct cpu_cores cpu_cores_arm[] = {
+	{ CPU_PART_C1_NANO, "C1-Nano" },
+	{ CPU_PART_C1_PREMIUM, "C1-Premium" },
+	{ CPU_PART_C1_PRO, "C1-Pro" },
+	{ CPU_PART_C1_ULTRA, "C1-Ultra" },
 	{ CPU_PART_CORTEX_A34, "Cortex-A34" },
 	{ CPU_PART_CORTEX_A35, "Cortex-A35" },
 	{ CPU_PART_CORTEX_A53, "Cortex-A53" },
@@ -273,6 +281,7 @@ extern char trampoline_vectors_loop_8[];
 extern char trampoline_vectors_loop_11[];
 extern char trampoline_vectors_loop_24[];
 extern char trampoline_vectors_loop_32[];
+extern char trampoline_vectors_loop_132[];
 #if NPSCI > 0
 extern char trampoline_vectors_psci_hvc[];
 extern char trampoline_vectors_psci_smc[];
@@ -404,12 +413,22 @@ cpu_mitigate_spectre_bhb(struct cpu_info *ci)
 		case CPU_PART_CORTEX_A78AE:
 		case CPU_PART_CORTEX_A78C:
 		case CPU_PART_CORTEX_X1:
+		case CPU_PART_CORTEX_X1C:
 		case CPU_PART_CORTEX_X2:
 		case CPU_PART_CORTEX_A710:
 		case CPU_PART_NEOVERSE_N2:
 		case CPU_PART_NEOVERSE_V1:
 			ci->ci_trampoline_vectors =
 			    (vaddr_t)trampoline_vectors_loop_32;
+			break;
+		case CPU_PART_CORTEX_X3:
+		case CPU_PART_CORTEX_X4:
+		case CPU_PART_CORTEX_X925:
+		case CPU_PART_NEOVERSE_V2:
+		case CPU_PART_NEOVERSE_V3:
+		case CPU_PART_NEOVERSE_V3AE:
+			ci->ci_trampoline_vectors =
+			    (vaddr_t)trampoline_vectors_loop_132;
 			break;
 		}
 		break;
@@ -1084,6 +1103,13 @@ cpu_identify(struct cpu_info *ci)
 
 	if (ID_AA64PFR0_DIT(id) >= ID_AA64PFR0_DIT_IMPL) {
 		printf("%sDIT", sep);
+		sep = ",";
+	}
+
+	if (ID_AA64PFR0_AMU(id) >= ID_AA64PFR0_AMU_IMPL) {
+		printf("%sAMU", sep);
+		if (ID_AA64PFR0_AMU(id) >= ID_AA64PFR0_AMU_IMPL_V1P1)
+			printf("v1p1");
 		sep = ",";
 	}
 

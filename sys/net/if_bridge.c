@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_bridge.c,v 1.374 2025/03/02 21:28:31 bluhm Exp $	*/
+/*	$OpenBSD: if_bridge.c,v 1.378 2025/09/16 23:11:39 jan Exp $	*/
 
 /*
  * Copyright (c) 1999, 2000 Jason L. Wright (jason@thought.net)
@@ -32,7 +32,6 @@
  */
 
 #include "bpfilter.h"
-#include "gif.h"
 #include "pf.h"
 #include "carp.h"
 #include "vlan.h"
@@ -42,13 +41,11 @@
 #include <sys/mbuf.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <sys/kernel.h>
 
 #include <net/if.h>
 #include <net/if_types.h>
 #include <net/if_llc.h>
 #include <net/netisr.h>
-#include <net/route.h>
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -62,9 +59,7 @@
 #endif
 
 #ifdef INET6
-#include <netinet6/in6_var.h>
 #include <netinet/ip6.h>
-#include <netinet6/ip6_var.h>
 #endif
 
 #if NPF > 0
@@ -803,6 +798,83 @@ bridge_stop(struct bridge_softc *sc)
 	bridge_rtflush(sc, IFBF_FLUSHDYN);
 }
 
+struct mbuf *
+bridge_offload(struct ifnet *brifp, struct ifnet *ifp, struct mbuf *m)
+{
+	struct ether_extracted ext;
+	int csum = 0;
+
+#if NVLAN > 0
+	/*
+	 * If the underlying interface has no VLAN hardware tagging support,
+	 * inject one in software.
+	 */
+	if (ISSET(m->m_flags, M_VLANTAG) &&
+	    !ISSET(ifp->if_capabilities, IFCAP_VLAN_HWTAGGING)) {
+		m = vlan_inject(m, ETHERTYPE_VLAN, m->m_pkthdr.ether_vtag);
+		if (m == NULL)
+			return NULL;
+	}
+#endif
+
+	if (ISSET(m->m_pkthdr.csum_flags, M_IPV4_CSUM_OUT) &&
+	    !ISSET(ifp->if_capabilities, IFCAP_CSUM_IPv4))
+		csum = 1;
+
+	if (ISSET(m->m_pkthdr.csum_flags, M_TCP_CSUM_OUT) &&
+	    (!ISSET(ifp->if_capabilities, IFCAP_CSUM_TCPv4) ||
+	     !ISSET(ifp->if_capabilities, IFCAP_CSUM_TCPv6)))
+		csum = 1;
+
+	if (ISSET(m->m_pkthdr.csum_flags, M_UDP_CSUM_OUT) &&
+	    (!ISSET(ifp->if_capabilities, IFCAP_CSUM_UDPv4) ||
+	     !ISSET(ifp->if_capabilities, IFCAP_CSUM_UDPv6)))
+		csum = 1;
+
+	if (csum) {
+		int ethlen;
+		int hlen;
+
+		ether_extract_headers(m, &ext);
+
+		ethlen = sizeof *ext.eh;
+		if (ext.evh)
+			ethlen = sizeof *ext.evh;
+
+		hlen = m->m_pkthdr.len - ext.paylen;
+
+		if (m->m_len < hlen) {
+			m = m_pullup(m, hlen);
+			if (m == NULL)
+				goto err;
+		}
+
+		/* hide ethernet header */
+		m->m_data += ethlen;
+		m->m_len -= ethlen;
+		m->m_pkthdr.len -= ethlen;
+
+		if (ext.ip4) {
+			in_hdr_cksum_out(m, ifp);
+			in_proto_cksum_out(m, ifp);
+#ifdef INET6
+		} else if (ext.ip6) {
+			in6_proto_cksum_out(m, ifp);
+#endif
+		}
+
+		/* show ethernet header again */
+		m->m_data -= ethlen;
+		m->m_len += ethlen;
+		m->m_pkthdr.len += ethlen;
+	}
+
+	return m;
+err:
+	counters_inc(brifp->if_counters, ifc_ierrors);
+	return NULL;
+}
+
 /*
  * Send output from the bridge.  The mbuf has the ethernet header
  * already attached.  We must enqueue or free the mbuf before exiting.
@@ -1174,18 +1246,6 @@ bridge_process(struct ifnet *ifp, struct mbuf *m)
 
 	if (m->m_pkthdr.len < sizeof(*eh))
 		goto bad;
-
-#if NVLAN > 0
-	/*
-	 * If the underlying interface removed the VLAN header itself,
-	 * add it back.
-	 */
-	if (ISSET(m->m_flags, M_VLANTAG)) {
-		m = vlan_inject(m, ETHERTYPE_VLAN, m->m_pkthdr.ether_vtag);
-		if (m == NULL)
-			goto bad;
-	}
-#endif
 
 #if NBPFILTER > 0
 	if_bpf = brifp->if_bpf;
@@ -1640,7 +1700,8 @@ bridge_ipsec(struct ifnet *ifp, struct ether_header *eh, int hassnap,
 
 			ip = mtod(m, struct ip *);
 			if ((af == AF_INET) &&
-			    ip_mtudisc && (ip->ip_off & htons(IP_DF)) &&
+			    atomic_load_int(&ip_mtudisc) &&
+			    (ip->ip_off & htons(IP_DF)) &&
 			    tdb->tdb_mtu && ntohs(ip->ip_len) > tdb->tdb_mtu &&
 			    tdb->tdb_mtutimeout > gettime()) {
 				bridge_send_icmp_err(ifp, eh, m,
@@ -1919,21 +1980,28 @@ bridge_ifenqueue(struct ifnet *brifp, struct ifnet *ifp, struct mbuf *m)
 {
 	int error, len;
 
+	if ((m = bridge_offload(brifp, ifp, m)) == NULL) {
+		error = ENOBUFS;
+		goto err;
+	}
+
 	/* Loop prevention. */
 	m->m_flags |= M_PROTO1;
 
 	len = m->m_pkthdr.len;
 
 	error = if_enqueue(ifp, m);
-	if (error) {
-		brifp->if_oerrors++;
-		return (error);
-	}
+	if (error) 
+		goto err; 
 
 	brifp->if_opackets++;
 	brifp->if_obytes += len;
 
 	return (0);
+
+ err:
+	brifp->if_oerrors++;
+	return (error);
 }
 
 void

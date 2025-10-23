@@ -1,4 +1,4 @@
-/* d19ae032c224863c1527ba44d228cc34b99192c3a4c5a27af1f4e054d45ee031 (2.7.1+)
+/* 28bcd8b1ba7eb595d82822908257fd9c3589b4243e3c922d0369f35bfcd7b506 (2.7.3+)
                             __  __            _
                          ___\ \/ /_ __   __ _| |_
                         / _ \\  /| '_ \ / _` | __|
@@ -41,6 +41,7 @@
    Copyright (c) 2023-2024 Sony Corporation / Snild Dolkow <snild@sony.com>
    Copyright (c) 2024-2025 Berkay Eren Ürün <berkay.ueruen@siemens.com>
    Copyright (c) 2024      Hanno Böck <hanno@gentoo.org>
+   Copyright (c) 2025      Matthew Fernandez <matthew.fernandez@gmail.com>
    Licensed under the MIT license:
 
    Permission is  hereby granted,  free of charge,  to any  person obtaining
@@ -97,7 +98,7 @@
 #include <stddef.h>
 #include <string.h> /* memset(), memcpy() */
 #include <assert.h>
-#include <limits.h> /* UINT_MAX */
+#include <limits.h> /* INT_MAX, UINT_MAX */
 #include <stdio.h>  /* fprintf */
 #include <stdlib.h> /* getenv, rand_s */
 #include <stdint.h> /* uintptr_t */
@@ -632,10 +633,10 @@ static void entityTrackingOnOpen(XML_Parser parser, ENTITY *entity,
                                  int sourceLine);
 static void entityTrackingOnClose(XML_Parser parser, ENTITY *entity,
                                   int sourceLine);
+#endif /* XML_GE == 1 */
 
 static XML_Parser getRootParserOf(XML_Parser parser,
                                   unsigned int *outLevelDiff);
-#endif /* XML_GE == 1 */
 
 static unsigned long getDebugLevel(const char *variableName,
                                    unsigned long defaultDebugLevel);
@@ -843,7 +844,11 @@ expat_heap_increase_tolerable(XML_Parser rootParser, XmlBigCount increase,
   return tolerable;
 }
 
+#  if defined(XML_TESTING)
+void *
+#  else
 static void *
+#  endif
 expat_malloc(XML_Parser parser, size_t size, int sourceLine) {
   // Detect integer overflow
   if (SIZE_MAX - size < sizeof(size_t) + EXPAT_MALLOC_PADDING) {
@@ -893,7 +898,11 @@ expat_malloc(XML_Parser parser, size_t size, int sourceLine) {
   return (char *)mallocedPtr + sizeof(size_t) + EXPAT_MALLOC_PADDING;
 }
 
+#  if defined(XML_TESTING)
+void
+#  else
 static void
+#  endif
 expat_free(XML_Parser parser, void *ptr, int sourceLine) {
   assert(parser != NULL);
 
@@ -925,7 +934,11 @@ expat_free(XML_Parser parser, void *ptr, int sourceLine) {
   parser->m_mem.free_fcn(mallocedPtr);
 }
 
+#  if defined(XML_TESTING)
+void *
+#  else
 static void *
+#  endif
 expat_realloc(XML_Parser parser, void *ptr, size_t size, int sourceLine) {
   assert(parser != NULL);
 
@@ -1038,11 +1051,14 @@ writeRandomBytes_getrandom_nonblock(void *target, size_t count) {
     void *const currentTarget = (void *)((char *)target + bytesWrittenTotal);
     const size_t bytesToWrite = count - bytesWrittenTotal;
 
+    assert(bytesToWrite <= INT_MAX);
+
     const int bytesWrittenMore =
 #    if defined(HAVE_GETRANDOM)
-        getrandom(currentTarget, bytesToWrite, getrandomFlags);
+        (int)getrandom(currentTarget, bytesToWrite, getrandomFlags);
 #    else
-        syscall(SYS_getrandom, currentTarget, bytesToWrite, getrandomFlags);
+        (int)syscall(SYS_getrandom, currentTarget, bytesToWrite,
+                     getrandomFlags);
 #    endif
 
     if (bytesWrittenMore > 0) {
@@ -1229,9 +1245,10 @@ generate_hash_secret_salt(XML_Parser parser) {
 
 static unsigned long
 get_hash_secret_salt(XML_Parser parser) {
-  if (parser->m_parentParser != NULL)
-    return get_hash_secret_salt(parser->m_parentParser);
-  return parser->m_hash_secret_salt;
+  const XML_Parser rootParser = getRootParserOf(parser, NULL);
+  assert(! rootParser->m_parentParser);
+
+  return rootParser->m_hash_secret_salt;
 }
 
 static enum XML_Error
@@ -2304,12 +2321,14 @@ int XMLCALL
 XML_SetHashSalt(XML_Parser parser, unsigned long hash_salt) {
   if (parser == NULL)
     return 0;
-  if (parser->m_parentParser)
-    return XML_SetHashSalt(parser->m_parentParser, hash_salt);
+
+  const XML_Parser rootParser = getRootParserOf(parser, NULL);
+  assert(! rootParser->m_parentParser);
+
   /* block after XML_Parse()/XML_ParseBuffer() has been called */
-  if (parserBusy(parser))
+  if (parserBusy(rootParser))
     return 0;
-  parser->m_hash_secret_salt = hash_salt;
+  rootParser->m_hash_secret_salt = hash_salt;
   return 1;
 }
 
@@ -3026,6 +3045,13 @@ XML_GetFeatureList(void) {
        EXPAT_BILLION_LAUGHS_ATTACK_PROTECTION_ACTIVATION_THRESHOLD_DEFAULT},
       /* Added in Expat 2.6.0. */
       {XML_FEATURE_GE, XML_L("XML_GE"), 0},
+      /* Added in Expat 2.7.2. */
+      {XML_FEATURE_ALLOC_TRACKER_MAXIMUM_AMPLIFICATION_DEFAULT,
+       XML_L("XML_AT_MAX_AMP"),
+       (long int)EXPAT_ALLOC_TRACKER_MAXIMUM_AMPLIFICATION_DEFAULT},
+      {XML_FEATURE_ALLOC_TRACKER_ACTIVATION_THRESHOLD_DEFAULT,
+       XML_L("XML_AT_ACT_THRES"),
+       (long int)EXPAT_ALLOC_TRACKER_ACTIVATION_THRESHOLD_DEFAULT},
 #endif
       {XML_FEATURE_END, NULL, 0}};
 
@@ -3054,6 +3080,29 @@ XML_SetBillionLaughsAttackProtectionActivationThreshold(
   parser->m_accounting.activationThresholdBytes = activationThresholdBytes;
   return XML_TRUE;
 }
+
+XML_Bool XMLCALL
+XML_SetAllocTrackerMaximumAmplification(XML_Parser parser,
+                                        float maximumAmplificationFactor) {
+  if ((parser == NULL) || (parser->m_parentParser != NULL)
+      || isnan(maximumAmplificationFactor)
+      || (maximumAmplificationFactor < 1.0f)) {
+    return XML_FALSE;
+  }
+  parser->m_alloc_tracker.maximumAmplificationFactor
+      = maximumAmplificationFactor;
+  return XML_TRUE;
+}
+
+XML_Bool XMLCALL
+XML_SetAllocTrackerActivationThreshold(
+    XML_Parser parser, unsigned long long activationThresholdBytes) {
+  if ((parser == NULL) || (parser->m_parentParser != NULL)) {
+    return XML_FALSE;
+  }
+  parser->m_alloc_tracker.activationThresholdBytes = activationThresholdBytes;
+  return XML_TRUE;
+}
 #endif /* XML_GE == 1 */
 
 XML_Bool XMLCALL
@@ -3074,8 +3123,8 @@ static XML_Bool
 storeRawNames(XML_Parser parser) {
   TAG *tag = parser->m_tagStack;
   while (tag) {
-    int bufSize;
-    int nameLen = sizeof(XML_Char) * (tag->name.strLen + 1);
+    size_t bufSize;
+    size_t nameLen = sizeof(XML_Char) * (tag->name.strLen + 1);
     size_t rawNameLen;
     char *rawNameBuf = tag->buf + nameLen;
     /* Stop if already stored.  Since m_tagStack is a stack, we can stop
@@ -3092,8 +3141,8 @@ storeRawNames(XML_Parser parser) {
     /* Detect and prevent integer overflow. */
     if (rawNameLen > (size_t)INT_MAX - nameLen)
       return XML_FALSE;
-    bufSize = nameLen + (int)rawNameLen;
-    if (bufSize > tag->bufEnd - tag->buf) {
+    bufSize = nameLen + rawNameLen;
+    if (bufSize > (size_t)(tag->bufEnd - tag->buf)) {
       char *temp = REALLOC(parser, tag->buf, bufSize);
       if (temp == NULL)
         return XML_FALSE;
@@ -3990,7 +4039,7 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
      and clear flags that say whether attributes were specified */
   i = 0;
   if (nPrefixes) {
-    int j; /* hash table index */
+    unsigned int j; /* hash table index */
     unsigned long version = parser->m_nsAttsVersion;
 
     /* Detect and prevent invalid shift */
@@ -4084,7 +4133,7 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
         if (! b)
           return XML_ERROR_UNBOUND_PREFIX;
 
-        for (j = 0; j < b->uriLen; j++) {
+        for (j = 0; j < (unsigned int)b->uriLen; j++) {
           const XML_Char c = b->uri[j];
           if (! poolAppendChar(&parser->m_tempPool, c))
             return XML_ERROR_NO_MEMORY;
@@ -4178,7 +4227,7 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
     return XML_ERROR_NONE;
   prefixLen = 0;
   if (parser->m_ns_triplets && binding->prefix->name) {
-    for (; binding->prefix->name[prefixLen++];)
+    while (binding->prefix->name[prefixLen++])
       ; /* prefixLen includes null terminator */
   }
   tagNamePtr->localPart = localPart;
@@ -6100,7 +6149,7 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
         name = el->name;
         dtd->scaffold[myindex].name = name;
         nameLen = 0;
-        for (; name[nameLen++];)
+        while (name[nameLen++])
           ;
 
         /* Detect and prevent integer overflow */
@@ -6593,7 +6642,7 @@ appendAttributeValue(XML_Parser parser, const ENCODING *enc, XML_Bool isCdata,
     case XML_TOK_ENTITY_REF: {
       const XML_Char *name;
       ENTITY *entity;
-      char checkEntityDecl;
+      bool checkEntityDecl;
       XML_Char ch = (XML_Char)XmlPredefinedEntityName(
           enc, ptr + enc->minBytesPerChar, next - enc->minBytesPerChar);
       if (ch) {
@@ -8178,6 +8227,11 @@ nextScaffoldPart(XML_Parser parser) {
     dtd->scaffIndex[0] = 0;
   }
 
+  // Will casting to int be safe further down?
+  if (dtd->scaffCount > INT_MAX) {
+    return -1;
+  }
+
   if (dtd->scaffCount >= dtd->scaffSize) {
     CONTENT_SCAFFOLD *temp;
     if (dtd->scaffold) {
@@ -8208,7 +8262,7 @@ nextScaffoldPart(XML_Parser parser) {
     }
     dtd->scaffold = temp;
   }
-  next = dtd->scaffCount++;
+  next = (int)dtd->scaffCount++;
   me = &dtd->scaffold[next];
   if (dtd->scaffLevel) {
     CONTENT_SCAFFOLD *parent
@@ -8410,10 +8464,10 @@ accountingGetCurrentAmplification(XML_Parser rootParser) {
         + rootParser->m_accounting.countBytesIndirect;
   const float amplificationFactor
       = rootParser->m_accounting.countBytesDirect
-            ? (countBytesOutput
+            ? ((float)countBytesOutput
                / (float)(rootParser->m_accounting.countBytesDirect))
-            : ((lenOfShortestInclude
-                + rootParser->m_accounting.countBytesIndirect)
+            : ((float)(lenOfShortestInclude
+                       + rootParser->m_accounting.countBytesIndirect)
                / (float)lenOfShortestInclude);
   assert(! rootParser->m_parentParser);
   return amplificationFactor;
@@ -8597,6 +8651,8 @@ entityTrackingOnClose(XML_Parser originParser, ENTITY *entity, int sourceLine) {
   rootParser->m_entity_stats.currentDepth--;
 }
 
+#endif /* XML_GE == 1 */
+
 static XML_Parser
 getRootParserOf(XML_Parser parser, unsigned int *outLevelDiff) {
   XML_Parser rootParser = parser;
@@ -8611,6 +8667,8 @@ getRootParserOf(XML_Parser parser, unsigned int *outLevelDiff) {
   }
   return rootParser;
 }
+
+#if XML_GE == 1
 
 const char *
 unsignedCharToPrintable(unsigned char c) {

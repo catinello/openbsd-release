@@ -1,4 +1,4 @@
-/* $OpenBSD: popup.c,v 1.58 2025/04/02 09:12:05 nicm Exp $ */
+/* $OpenBSD: popup.c,v 1.60 2025/09/01 08:03:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2020 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -349,6 +349,8 @@ popup_make_pane(struct popup_data *pd, enum layout_type type)
 	window_unzoom(w, 1);
 
 	lc = layout_split_pane(wp, type, -1, 0);
+	if (lc == NULL)
+		return;
 	hlimit = options_get_number(s->options, "history-limit");
 	new_wp = window_add_pane(wp->window, NULL, hlimit, 0);
 	layout_assign_pane(lc, new_wp, 0);
@@ -546,6 +548,9 @@ popup_key_cb(struct client *c, void *data, struct key_event *event)
 	if ((((pd->flags & (POPUP_CLOSEEXIT|POPUP_CLOSEEXITZERO)) == 0) ||
 	    pd->job == NULL) &&
 	    (event->key == '\033' || event->key == ('c'|KEYC_CTRL)))
+		return (1);
+	if (pd->job == NULL && (pd->flags & POPUP_CLOSEANYKEY) &&
+            !KEYC_IS_MOUSE(event->key) && !KEYC_IS_PASTE(event->key))
 		return (1);
 	if (pd->job != NULL) {
 		if (KEYC_IS_MOUSE(event->key)) {

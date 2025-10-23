@@ -1,4 +1,4 @@
-/* $OpenBSD: intr.c,v 1.24 2025/03/01 07:42:09 miod Exp $ */
+/* $OpenBSD: intr.c,v 1.27 2025/09/14 15:09:36 kettenis Exp $ */
 /*
  * Copyright (c) 2011 Dale Rahn <drahn@openbsd.org>
  *
@@ -240,10 +240,10 @@ arm_intr_prereg_disestablish_fdt(void *cookie)
 	struct intr_prereg *ip = cookie;
 	struct interrupt_controller *ic = ip->ip_ic;
 
-	if (ip->ip_ic != NULL && ip->ip_ih != NULL)
+	if (ic != NULL && ip->ip_ih != NULL)
 		ic->ic_disestablish(ip->ip_ih);
 
-	if (ip->ip_ic != NULL)
+	if (ic == NULL)
 		LIST_REMOVE(ip, ip_list);
 
 	free(ip, M_DEVBUF, sizeof(*ip));
@@ -520,6 +520,8 @@ arm_intr_establish_fdt_msi_cpu(int node, uint64_t *addr, uint64_t *data,
 
 	val = ic->ic_establish_msi(ic->ic_cookie, addr, data,
 	    level, ci, func, cookie, name);
+	if (val == NULL)
+		return NULL;
 
 	ih = malloc(sizeof(*ih), M_DEVBUF, M_WAITOK);
 	ih->ih_ic = ic;
@@ -723,10 +725,9 @@ arm_do_pending_intr(int pcpl)
 	}
 
 	do {
-		DO_SOFTINT(SI_SOFTTTY, IPL_SOFTTTY);
-		DO_SOFTINT(SI_SOFTNET, IPL_SOFTNET);
-		DO_SOFTINT(SI_SOFTCLOCK, IPL_SOFTCLOCK);
-		DO_SOFTINT(SI_SOFT, IPL_SOFT);
+		DO_SOFTINT(SOFTINTR_TTY, IPL_SOFTTTY);
+		DO_SOFTINT(SOFTINTR_NET, IPL_SOFTNET);
+		DO_SOFTINT(SOFTINTR_CLOCK, IPL_SOFTCLOCK);
 	} while (ci->ci_ipending & arm_smask[pcpl]);
 
 	/* Don't use splx... we are here already! */
@@ -765,14 +766,12 @@ arm_init_smask(void)
 
 	for (i = IPL_NONE; i <= IPL_HIGH; i++)  {
 		arm_smask[i] = 0;
-		if (i < IPL_SOFT)
-			arm_smask[i] |= SI_TO_IRQBIT(SI_SOFT);
 		if (i < IPL_SOFTCLOCK)
-			arm_smask[i] |= SI_TO_IRQBIT(SI_SOFTCLOCK);
+			arm_smask[i] |= SI_TO_IRQBIT(SOFTINTR_CLOCK);
 		if (i < IPL_SOFTNET)
-			arm_smask[i] |= SI_TO_IRQBIT(SI_SOFTNET);
+			arm_smask[i] |= SI_TO_IRQBIT(SOFTINTR_NET);
 		if (i < IPL_SOFTTTY)
-			arm_smask[i] |= SI_TO_IRQBIT(SI_SOFTTTY);
+			arm_smask[i] |= SI_TO_IRQBIT(SOFTINTR_TTY);
 	}
 }
 

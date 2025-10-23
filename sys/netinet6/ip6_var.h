@@ -1,4 +1,4 @@
-/*	$OpenBSD: ip6_var.h,v 1.123 2025/03/02 21:28:32 bluhm Exp $	*/
+/*	$OpenBSD: ip6_var.h,v 1.128 2025/09/16 09:19:16 florian Exp $	*/
 /*	$KAME: ip6_var.h,v 1.33 2000/06/11 14:59:20 jinmei Exp $	*/
 
 /*
@@ -281,7 +281,6 @@ extern int	ip6_forwarding;		/* act as router? */
 extern int	ip6_mforwarding;	/* act as multicast router? */
 extern int	ip6_multipath;		/* use multipath routes */
 extern int	ip6_sendredirect;	/* send ICMPv6 redirect? */
-extern int	ip6_use_deprecated;	/* allow deprecated addr as source */
 extern int	ip6_mcast_pmtu;		/* path MTU discovery for multicast */
 extern int	ip6_neighborgcthresh; /* Threshold # of NDP entries for GC */
 extern int	ip6_maxdynroutes; /* Max # of routes created via redirect */
@@ -290,16 +289,9 @@ extern struct socket *ip6_mrouter[RT_TABLEID_MAX + 1]; /* multicast routing daem
 extern int	ip6_sendredirects;	/* send IP redirects when forwarding? */
 extern int	ip6_maxfragpackets; /* Maximum packets in reassembly queue */
 extern int	ip6_maxfrags;	/* Maximum fragments in reassembly queue */
-extern int	ip6_log_interval;
-extern time_t	ip6_log_time;
 extern int	ip6_hdrnestlimit; /* upper limit of # of extension headers */
 extern int	ip6_dad_count;		/* DupAddrDetectionTransmits */
 extern int	ip6_dad_pending;	/* number of currently running DADs */
-
-extern int ip6_auto_flowlabel;
-
-#define	IP6_SOIIKEY_LEN 16
-extern uint8_t	ip6_soiikey[IP6_SOIIKEY_LEN];
 
 extern const struct pr_usrreqs rip6_usrreqs;
 
@@ -366,9 +358,9 @@ int	rip6_sysctl(int *, u_int, void *, size_t *, void *, size_t);
 
 int	dest6_input(struct mbuf **, int *, int, int, struct netstack *);
 
-int	in6_pcbselsrc(const struct in6_addr **, struct sockaddr_in6 *,
+int	in6_pcbselsrc(const struct in6_addr **, const struct sockaddr_in6 *,
 	    struct inpcb *, struct ip6_pktopts *);
-int	in6_selectsrc(const struct in6_addr **, struct sockaddr_in6 *,
+int	in6_selectsrc(const struct in6_addr **, const struct sockaddr_in6 *,
 	    struct ip6_moptions *, unsigned int);
 struct rtentry *in6_selectroute(const struct in6_addr *, struct ip6_pktopts *,
 	    struct route *, unsigned int rtableid);

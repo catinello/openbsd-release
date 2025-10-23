@@ -1,6 +1,6 @@
 #	$OpenBSD: Makefile,v 1.19 2024/02/07 21:24:58 millert Exp $
 
-# DATAFORM selects the data format.  OpenBSD always uses "main".
+# DATAFORM selects the data format.  OpenBSD always uses "main"
 # Available formats represent essentially the same data, albeit
 # possibly with minor discrepancies that users are not likely to notice.
 # To get new features and the best data right away, use:

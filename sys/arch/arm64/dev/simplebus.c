@@ -1,4 +1,4 @@
-/* $OpenBSD: simplebus.c,v 1.18 2023/09/22 01:10:43 jsg Exp $ */
+/* $OpenBSD: simplebus.c,v 1.21 2025/08/21 12:09:47 kettenis Exp $ */
 /*
  * Copyright (c) 2016 Patrick Wildt <patrick@blueri.se>
  *
@@ -26,7 +26,6 @@
 #include <dev/ofw/fdt.h>
 #include <dev/ofw/ofw_misc.h>
 
-#include <machine/fdt.h>
 #include <machine/simplebusvar.h>
 
 int simplebus_match(struct device *, void *, void *);
@@ -319,8 +318,11 @@ simplebus_bs_map(bus_space_tag_t t, bus_addr_t bpa, bus_size_t size,
 
 		/* All good, extract to address and translate. */
 		rto = range[sc->sc_acells];
-		if (sc->sc_pacells == 2)
+		if (sc->sc_pacells > 1)
 			rto = (rto << 32) + range[sc->sc_acells + 1];
+		/* Quietly drop the "flags" part of PCI addresses. */
+		if (sc->sc_pacells > 2)
+			rto = (rto << 32) + range[sc->sc_acells + 2];
 
 		addr -= rfrom;
 		addr += rto;
@@ -370,8 +372,11 @@ simplebus_bs_mmap(bus_space_tag_t t, bus_addr_t bpa, off_t off,
 
 		/* All good, extract to address and translate. */
 		rto = range[sc->sc_acells];
-		if (sc->sc_pacells == 2)
+		if (sc->sc_pacells > 1)
 			rto = (rto << 32) + range[sc->sc_acells + 1];
+		/* Quietly drop the "flags" part of PCI addresses. */
+		if (sc->sc_pacells > 2)
+			rto = (rto << 32) + range[sc->sc_acells + 2];
 
 		addr -= rfrom;
 		addr += rto;
@@ -388,10 +393,13 @@ simplebus_dmamap_load_buffer(bus_dma_tag_t t, bus_dmamap_t map, void *buf,
     int *segp, int first)
 {
 	struct simplebus_softc *sc = t->_cookie;
-	int rlen, rone, seg;
+	paddr_t lastaddr = *lastaddrp;
+	bus_size_t lastlen;
 	int firstseg = *segp;
+	int rlen, rone, seg;
 	int error;
 
+	lastlen = map->dm_segs[firstseg].ds_len;
 	error = sc->sc_dmat->_dmamap_load_buffer(sc->sc_dmat, map, buf, buflen,
 	    p, flags, lastaddrp, segp, first);
 	if (error)
@@ -399,6 +407,10 @@ simplebus_dmamap_load_buffer(bus_dma_tag_t t, bus_dmamap_t map, void *buf,
 
 	if (sc->sc_dmaranges == NULL)
 		return 0;
+
+	/* If we already translated the first segment, don't do it again! */
+	if (!first && lastaddr == map->dm_segs[firstseg]._ds_paddr + lastlen)
+		firstseg++;
 
 	rlen = sc->sc_dmarangeslen / sizeof(uint32_t);
 	rone = sc->sc_pacells + sc->sc_acells + sc->sc_scells;
@@ -416,8 +428,11 @@ simplebus_dmamap_load_buffer(bus_dma_tag_t t, bus_dmamap_t map, void *buf,
 		     rlen -= rone, range += rone) {
 			/* Extract from and size, so we can see if we fit. */
 			rfrom = range[sc->sc_acells];
-			if (sc->sc_pacells == 2)
+			if (sc->sc_pacells > 1)
 				rfrom = (rfrom << 32) + range[sc->sc_acells + 1];
+			/* Quietly drop the "flags" part of PCI addresses. */
+			if (sc->sc_pacells > 2)
+				rfrom = (rfrom << 32) + range[sc->sc_acells + 2];
 
 			rsize = range[sc->sc_acells + sc->sc_pacells];
 			if (sc->sc_scells == 2)
@@ -474,8 +489,11 @@ simplebus_dmamap_load_raw(bus_dma_tag_t t, bus_dmamap_t map,
 		     rlen -= rone, range += rone) {
 			/* Extract from and size, so we can see if we fit. */
 			rfrom = range[sc->sc_acells];
-			if (sc->sc_pacells == 2)
+			if (sc->sc_pacells > 1)
 				rfrom = (rfrom << 32) + range[sc->sc_acells + 1];
+			/* Quietly drop the "flags" part of PCI addresses. */
+			if (sc->sc_pacells > 2)
+				rfrom = (rfrom << 32) + range[sc->sc_acells + 2];
 
 			rsize = range[sc->sc_acells + sc->sc_pacells];
 			if (sc->sc_scells == 2)

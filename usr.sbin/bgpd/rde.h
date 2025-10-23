@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.314 2025/02/20 19:47:31 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.317 2025/09/24 14:04:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -73,11 +73,9 @@ struct rib {
 RB_HEAD(peer_tree, rde_peer);
 RB_HEAD(prefix_tree, prefix);
 RB_HEAD(prefix_index, prefix);
-struct iq;
 
 struct rde_peer {
 	RB_ENTRY(rde_peer)		 entry;
-	SIMPLEQ_HEAD(, iq)		 imsg_queue;
 	struct peer_config		 conf;
 	struct rde_peer_stats		 stats;
 	struct bgpd_addr		 remote_addr;
@@ -89,6 +87,7 @@ struct rde_peer {
 	struct prefix_tree		 updates[AID_MAX];
 	struct prefix_tree		 withdraws[AID_MAX];
 	struct filter_head		*out_rules;
+	struct ibufqueue		*ibufq;
 	monotime_t			 staletime[AID_MAX];
 	uint32_t			 remote_bgpid;
 	uint32_t			 path_id_tx;
@@ -710,8 +709,9 @@ void		 up_generate_addpath_all(struct rde_peer *, struct rib_entry *,
 		    struct prefix *, struct prefix *);
 void		 up_generate_default(struct rde_peer *, uint8_t);
 int		 up_is_eor(struct rde_peer *, uint8_t);
-struct ibuf	*up_dump_withdraws(struct rde_peer *, uint8_t);
-struct ibuf	*up_dump_update(struct rde_peer *, uint8_t);
+void		 up_dump_withdraws(struct imsgbuf *, struct rde_peer *,
+		    uint8_t);
+void		 up_dump_update(struct imsgbuf *, struct rde_peer *, uint8_t);
 
 /* rde_aspa.c */
 void		 aspa_validation(struct rde_aspa *, struct aspath *,

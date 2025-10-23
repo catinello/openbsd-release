@@ -1,4 +1,4 @@
-/* $OpenBSD: acpi_x86.c,v 1.32 2024/09/21 19:06:06 deraadt Exp $ */
+/* $OpenBSD: acpi_x86.c,v 1.35 2025/09/20 17:43:28 kettenis Exp $ */
 /*
  * Copyright (c) 2005 Thorsten Lockert <tholo@sigmasoft.com>
  * Copyright (c) 2005 Jordan Hargrave <jordan@openbsd.org>
@@ -27,6 +27,8 @@
 
 #include <machine/apmvar.h>
 
+#include <ddb/db_var.h>
+
 int
 sleep_showstate(void *v, int sleepmode)
 {
@@ -41,6 +43,10 @@ sleep_showstate(void *v, int sleepmode)
 		if (lid_action == -1)
 			sc->sc_state = ACPI_STATE_S0;
 		fallback_state = ACPI_STATE_S0; /* No S3, use S0 */
+#endif
+#ifdef DDB
+		if (db_suspend)
+			sc->sc_state = ACPI_STATE_S0;
 #endif
 		break;
 	case SLEEP_HIBERNATE:
@@ -141,8 +147,6 @@ sleep_resume(void *v)
 {
 	struct acpi_softc *sc = v;
 
-	sc->sc_resume_time = getuptime();
-
 	acpibtn_disable_psw();		/* disable _LID for wakeup */
 
 	/* 3rd resume AML step: _TTS(runstate) */
@@ -185,11 +189,15 @@ suspend_finish(void *v)
 	case -2:
 		printf("SLPTN\n");
 		break;
+	case -3:
+		printf("GPIO 0x%x\n", sc->sc_wakegpio);
+		break;
 	default:
 		printf("GPE 0x%x\n", sc->sc_wakegpe);
 		break;
 	}
 	sc->sc_wakegpe = 0;
+	sc->sc_wakegpio = 0;
 
 	acpi_record_event(sc, APM_NORMAL_RESUME);
 	acpi_indicator(sc, ACPI_SST_WORKING);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: vfs_subr.c,v 1.328 2025/03/27 23:30:54 tedu Exp $	*/
+/*	$OpenBSD: vfs_subr.c,v 1.332 2025/09/25 09:05:47 mpi Exp $	*/
 /*	$NetBSD: vfs_subr.c,v 1.53 1996/04/22 01:39:13 christos Exp $	*/
 
 /*
@@ -67,7 +67,6 @@
 
 #include <netinet/in.h>
 
-#include <uvm/uvm_extern.h>
 #include <uvm/uvm_vnode.h>
 
 #include "softraid.h"
@@ -90,7 +89,6 @@ int	vttoif_tab[9] = {
 };
 
 int prtactive = 0;	/* 1 => print out reclaim of active vnodes */
-int suid_clear = 1;	/* [a] 1 => clear SUID / SGID on owner change */
 
 /*
  * Insq/Remq for the vnode usage lists.
@@ -130,7 +128,6 @@ void printlockedvnodes(void);
 #endif
 
 struct pool vnode_pool;
-struct pool uvm_vnode_pool;
 
 static inline int rb_buf_compare(const struct buf *b1, const struct buf *b2);
 RBT_GENERATE(buf_rb_bufs, buf, b_rbbufs, rb_buf_compare);
@@ -155,8 +152,6 @@ vntblinit(void)
 	maxvnodes = 2 * initialvnodes;
 	pool_init(&vnode_pool, sizeof(struct vnode), 0, IPL_NONE,
 	    PR_WAITOK, "vnodes", NULL);
-	pool_init(&uvm_vnode_pool, sizeof(struct uvm_vnode), 0, IPL_NONE,
-	    PR_WAITOK, "uvmvnodes", NULL);
 	TAILQ_INIT(&vnode_hold_list);
 	TAILQ_INIT(&vnode_free_list);
 	TAILQ_INIT(&mountlist);
@@ -285,7 +280,7 @@ vfs_rootmountalloc(char *fstypename, char *devname, struct mount **mpp)
 	vfsp = vfs_byname(fstypename);
 	if (vfsp == NULL)
 		return (ENODEV);
-	mp = vfs_mount_alloc(NULLVP, vfsp);
+	mp = vfs_mount_alloc(NULL, vfsp);
 	mp->mnt_flag |= MNT_RDONLY;
 	mp->mnt_stat.f_mntonname[0] = '/';
 	strlcpy(mp->mnt_stat.f_mntfromname, devname, MNAMELEN);
@@ -425,9 +420,7 @@ getnewvnode(enum vtagtype tag, struct mount *mp, const struct vops *vops,
 	    ((TAILQ_FIRST(listhd = &vnode_hold_list) == NULL) || toggle))) {
 		splx(s);
 		vp = pool_get(&vnode_pool, PR_WAITOK | PR_ZERO);
-		vp->v_uvm = pool_get(&uvm_vnode_pool, PR_WAITOK | PR_ZERO);
-		vp->v_uvm->u_vnode = vp;
-		uvm_obj_init(&vp->v_uvm->u_obj, &uvm_vnodeops, 0);
+		uvm_vnp_obj_alloc(vp);
 		RBT_INIT(buf_rb_bufs, &vp->v_bufs_tree);
 		cache_tree_init(&vp->v_nc_tree);
 		TAILQ_INIT(&vp->v_cache_dst);
@@ -538,12 +531,12 @@ getdevvp(dev_t dev, struct vnode **vpp, enum vtype type)
 	int error;
 
 	if (dev == NODEV) {
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (0);
 	}
 	error = getnewvnode(VT_NON, NULL, &spec_vops, &nvp);
 	if (error) {
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (error);
 	}
 	vp = nvp;
@@ -574,7 +567,7 @@ checkalias(struct vnode *nvp, dev_t nvp_rdev, struct mount *mp)
 	struct vnodechain *vchain;
 
 	if (nvp->v_type != VBLK && nvp->v_type != VCHR)
-		return (NULLVP);
+		return (NULL);
 
 	vchain = &speclisth[SPECHASH(nvp_rdev)];
 loop:
@@ -609,19 +602,19 @@ loop:
 		if (nvp->v_type == VCHR &&
 		    (cdevsw[major(nvp_rdev)].d_flags & D_CLONE) &&
 		    (minor(nvp_rdev) >> CLONE_SHIFT == 0)) {
-			if (vp != NULLVP)
+			if (vp != NULL)
 				nvp->v_specbitmap = vp->v_specbitmap;
 			else
 				nvp->v_specbitmap = malloc(CLONE_MAPSZ,
 				    M_VNODE, M_WAITOK | M_ZERO);
 		}
 		SLIST_INSERT_HEAD(vchain, nvp, v_specnext);
-		if (vp != NULLVP) {
+		if (vp != NULL) {
 			nvp->v_flag |= VALIASED;
 			vp->v_flag |= VALIASED;
 			vput(vp);
 		}
-		return (NULLVP);
+		return (NULL);
 	}
 
 	/*
@@ -1383,6 +1376,7 @@ printlockedvnodes(void)
 }
 #endif
 
+#ifndef SMALL_KERNEL
 /*
  * Top level filesystem related information gathering.
  */
@@ -1435,6 +1429,7 @@ vfs_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
 	}
 	return (EOPNOTSUPP);
 }
+#endif /* SMALL_KERNEL */
 
 /*
  * Check to see if a filesystem is mounted on a block device.
@@ -1874,46 +1869,6 @@ vfs_syncwait(struct proc *p, int verbose)
 	}
 
 	return nbusy;
-}
-
-/*
- * posix file system related system variables.
- */
-int
-fs_posix_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
-    void *newp, size_t newlen, struct proc *p)
-{
-	/* all sysctl names at this level are terminal */
-	if (namelen != 1)
-		return (ENOTDIR);
-
-	switch (name[0]) {
-	case FS_POSIX_SETUID:
-		return (sysctl_securelevel_int(oldp, oldlenp, newp, newlen,
-		    &suid_clear));
-	default:
-		return (EOPNOTSUPP);
-	}
-	/* NOTREACHED */
-}
-
-/*
- * file system related system variables.
- */
-int
-fs_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp,
-    size_t newlen, struct proc *p)
-{
-	sysctlfn *fn;
-
-	switch (name[0]) {
-	case FS_POSIX:
-		fn = fs_posix_sysctl;
-		break;
-	default:
-		return (EOPNOTSUPP);
-	}
-	return (*fn)(name + 1, namelen - 1, oldp, oldlenp, newp, newlen, p);
 }
 
 

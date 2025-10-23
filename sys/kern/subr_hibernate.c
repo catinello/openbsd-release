@@ -1,4 +1,4 @@
-/*	$OpenBSD: subr_hibernate.c,v 1.152 2025/01/24 18:13:29 krw Exp $	*/
+/*	$OpenBSD: subr_hibernate.c,v 1.154 2025/09/15 14:15:54 krw Exp $	*/
 
 /*
  * Copyright (c) 2011 Ariane van der Steldt <ariane@stack.nl>
@@ -513,23 +513,6 @@ uvm_pmr_alloc_piglet(vaddr_t *va, paddr_t *pa, vsize_t sz, paddr_t align)
 }
 
 /*
- * Free a piglet area.
- */
-void
-uvm_pmr_free_piglet(vaddr_t va, vsize_t sz)
-{
-	/*
-	 * Fix parameters.
-	 */
-	sz = round_page(sz);
-
-	/*
-	 * Free the physical and virtual memory.
-	 */
-	km_free((void *)va, sz, &kv_any, &kp_dma_contig);
-}
-
-/*
  * Physmem RLE compression support.
  *
  * Given a physical page address, return the number of pages starting at the
@@ -572,7 +555,7 @@ uvm_page_rle(paddr_t addr)
 int
 get_hibernate_info(union hibernate_info *hib, int suspend)
 {
-	struct disklabel dl;
+	struct disklabel *dl;
 	char err_string[128], *dl_ret;
 	int part;
 	SHA2_CTX ctx;
@@ -592,7 +575,8 @@ get_hibernate_info(union hibernate_info *hib, int suspend)
 	hib->dev = swdevt[0];
 
 	/* Read disklabel (used to calculate signature and image offsets) */
-	dl_ret = disk_readlabel(&dl, hib->dev, err_string, sizeof(err_string));
+	dl = malloc(sizeof(*dl), M_DEVBUF, M_WAITOK);
+	dl_ret = disk_readlabel(dl, hib->dev, err_string, sizeof(err_string));
 
 	if (dl_ret) {
 		printf("Hibernate error reading disklabel: %s\n", dl_ret);
@@ -601,19 +585,19 @@ get_hibernate_info(union hibernate_info *hib, int suspend)
 
 	/* Make sure we have a swap partition. */
 	part = DISKPART(hib->dev);
-	if (dl.d_npartitions <= part ||
-	    dl.d_secsize > sizeof(union hibernate_info) ||
-	    dl.d_partitions[part].p_fstype != FS_SWAP ||
-	    DL_GETPSIZE(&dl.d_partitions[part]) == 0)
+	if (dl->d_npartitions <= part ||
+	    dl->d_secsize > sizeof(union hibernate_info) ||
+	    dl->d_partitions[part].p_fstype != FS_SWAP ||
+	    DL_GETPSIZE(&dl->d_partitions[part]) == 0)
 		return (1);
 
 	/* Magic number */
 	hib->magic = HIBERNATE_MAGIC;
 
 	/* Calculate signature block location */
-	hib->sec_size = dl.d_secsize;
-	hib->sig_offset = DL_GETPSIZE(&dl.d_partitions[part]) - 1;
-	hib->sig_offset = DL_SECTOBLK(&dl, hib->sig_offset);
+	hib->sec_size = dl->d_secsize;
+	hib->sig_offset = DL_GETPSIZE(&dl->d_partitions[part]) - 1;
+	hib->sig_offset = DL_SECTOBLK(dl, hib->sig_offset);
 
 	SHA256Init(&ctx);
 	SHA256Update(&ctx, version, strlen(version));
@@ -642,9 +626,9 @@ get_hibernate_info(union hibernate_info *hib, int suspend)
 		 * completed.
 		 */
 		if (hib->io_func(hib->dev,
-		    DL_SECTOBLK(&dl, DL_GETPOFFSET(&dl.d_partitions[part])),
+		    DL_SECTOBLK(dl, DL_GETPOFFSET(&dl->d_partitions[part])),
 		    (vaddr_t)NULL,
-		    DL_SECTOBLK(&dl, DL_GETPSIZE(&dl.d_partitions[part])),
+		    DL_SECTOBLK(dl, DL_GETPSIZE(&dl->d_partitions[part])),
 		    HIB_INIT, hib->io_page))
 			goto fail;
 
@@ -662,9 +646,11 @@ get_hibernate_info(union hibernate_info *hib, int suspend)
 	if (get_hibernate_info_md(hib))
 		goto fail;
 
+	free(dl, M_DEVBUF, sizeof(*dl));
 	return (0);
 
 fail:
+	free(dl, M_DEVBUF, sizeof(*dl));
 	return (1);
 }
 
@@ -1986,17 +1972,17 @@ hibernate_suspend(void)
 int
 hibernate_alloc(void)
 {
-	KASSERT(global_piglet_va == 0);
 	KASSERT(hibernate_temp_page == 0);
+
+	/*
+	 * If we weren't able to early allocate a piglet, don't proceed
+	 */
+	if (global_piglet_va == 0)
+		return (ENOMEM);
 
 	pmap_activate(curproc);
 	pmap_kenter_pa(HIBERNATE_HIBALLOC_PAGE, HIBERNATE_HIBALLOC_PAGE,
 	    PROT_READ | PROT_WRITE);
-
-	/* Allocate a piglet, store its addresses in the supplied globals */
-	if (uvm_pmr_alloc_piglet(&global_piglet_va, &global_piglet_pa,
-	    HIBERNATE_CHUNK_SIZE * 4, HIBERNATE_CHUNK_SIZE))
-		goto unmap;
 
 	/*
 	 * Allocate VA for the temp page.
@@ -2007,11 +1993,9 @@ hibernate_alloc(void)
 	 */
 	hibernate_temp_page = (vaddr_t)km_alloc(PAGE_SIZE, &kv_any,
 	    &kp_none, &kd_nowait);
-	if (!hibernate_temp_page) {
-		uvm_pmr_free_piglet(global_piglet_va, 4 * HIBERNATE_CHUNK_SIZE);
-		global_piglet_va = 0;
+	if (!hibernate_temp_page)
 		goto unmap;
-	}
+
 	return (0);
 unmap:
 	pmap_kremove(HIBERNATE_HIBALLOC_PAGE, PAGE_SIZE);
@@ -2027,18 +2011,28 @@ hibernate_free(void)
 {
 	pmap_activate(curproc);
 
-	if (global_piglet_va)
-		uvm_pmr_free_piglet(global_piglet_va,
-		    4 * HIBERNATE_CHUNK_SIZE);
-
 	if (hibernate_temp_page) {
 		pmap_kremove(hibernate_temp_page, PAGE_SIZE);
 		km_free((void *)hibernate_temp_page, PAGE_SIZE,
 		    &kv_any, &kp_none);
 	}
 
-	global_piglet_va = 0;
 	hibernate_temp_page = 0;
 	pmap_kremove(HIBERNATE_HIBALLOC_PAGE, PAGE_SIZE);
 	pmap_update(pmap_kernel());
+}
+
+void
+preallocate_hibernate_memory(void)
+{
+	/* Preallocate a piglet */
+	if (ptoa((psize_t)physmem) > HIBERNATE_MIN_MEMORY) {
+		if (uvm_pmr_alloc_piglet(&global_piglet_va, &global_piglet_pa,
+		    HIBERNATE_CHUNK_SIZE * 4, HIBERNATE_CHUNK_SIZE)) {
+			DPRINTF("%s: failed to preallocate hibernate mem\n",
+			    __func__);
+			global_piglet_va = 0;
+			global_piglet_pa = 0;
+		}
+	}
 }

@@ -1,4 +1,4 @@
-$OpenBSD: pcidevs,v 1.2099 2025/03/07 15:06:58 deraadt Exp $
+$OpenBSD: pcidevs,v 1.2111 2025/09/19 00:39:59 kevlo Exp $
 /*	$NetBSD: pcidevs,v 1.30 1997/06/24 06:20:24 thorpej Exp $	*/
 
 /*
@@ -352,6 +352,7 @@ vendor	AQUANTIA	0x1d6a	Aquantia
 vendor	ROCKCHIP	0x1d87	Rockchip
 vendor	LONGSYS		0x1d97	Longsys
 vendor	TEKRAM2		0x1de1	Tekram
+vendor	RPI		0x1de4	Raspberry Pi
 vendor	AMPERE		0x1def	Ampere
 vendor	KIOXIA		0x1e0f	Kioxia
 vendor	YMTC		0x1e49	YMTC
@@ -922,6 +923,8 @@ product AMD 19_4X_XHCI_1	0x161d	19h/4xh xHCI
 product AMD 19_4X_XHCI_2	0x161e	19h/4xh xHCI
 product AMD 19_4X_XHCI_3	0x161f	19h/4xh xHCI
 product AMD 17_90_XHCI_1	0x162c	17h/90h xHCI
+product AMD 19_4X_USB4_1	0x162e	19h/4xh USB4
+product AMD 19_4X_USB4_2	0x162f	19h/4xh USB4
 product AMD 17_6X_RC		0x1630	17h/6xh Root Complex
 product AMD 17_6X_IOMMU		0x1631	17h/6xh IOMMU
 product AMD 17_6X_HB		0x1632	17h/6xh Host
@@ -2185,6 +2188,7 @@ product ATI BEIGE_GOBY_6	0x743f	Navi 24
 product ATI NAVI31_2		0x7448	Navi 31
 product ATI NAVI31_5		0x7449	Navi 31
 product ATI NAVI31_4		0x744a	Navi 31
+product ATI NAVI31_6		0x744b	Navi 31
 product ATI NAVI31_1		0x744c	Navi 31
 product ATI NAVI31_3		0x745e	Navi 31
 product ATI NAVI32_3		0x7460	Navi 32
@@ -2197,7 +2201,9 @@ product ATI NAVI33_3		0x7489	Navi 33
 product ATI NAVI33_4		0x7499	Navi 33
 product ATI MI300A		0x74a0	MI300A
 product ATI MI300X		0x74a1	MI300X
-product ATI NAVI48		0x7550	Navi 48
+product ATI NAVI48_1		0x7550	Navi 48
+product ATI NAVI48_2		0x7551	Navi 48
+product ATI NAVI44		0x7590	Navi 44
 product ATI RADEON_9000IGP	0x7834	Radeon 9000/9100 IGP
 product ATI RADEON_RS350IGP	0x7835	Radeon RS350IGP
 product ATI RS690_HB		0x7910	RS690 Host
@@ -2691,6 +2697,7 @@ product BROADCOM BCM5903F	0x170f	BCM5903F
 product BROADCOM BCM5906	0x1712	BCM5906
 product BROADCOM BCM5906M	0x1713	BCM5906M
 product BROADCOM BCM2711	0x2711	BCM2711
+product BROADCOM BCM2712	0x2712	BCM2712
 product BROADCOM BCM4303	0x4301	BCM4303
 product BROADCOM BCM4307	0x4307	BCM4307
 product BROADCOM BCM4311	0x4311	BCM4311
@@ -4100,6 +4107,9 @@ product INTEL 82437MX		0x1235	82437MX
 product INTEL 82441FX		0x1237	82441FX
 product INTEL 82380AB		0x123c	82380AB Mobile ISA
 product INTEL 82380FB		0x124b	82380FB Mobile
+product INTEL E823_L_SFP	0x124d	E823-L SFP
+product INTEL E823_L_10G	0x124e	E823-L/X557-AT
+product INTEL E823_L_1G		0x124f	E823-L 1GbE
 product INTEL 82439HX		0x1250	82439HX
 product INTEL I226_LM		0x125b	I226-LM
 product INTEL I226_V		0x125c	I226-V
@@ -4130,6 +4140,7 @@ product INTEL 82580_COPPER_DUAL	0x1516	82580
 product INTEL 82599_KR		0x1517	82599
 product INTEL 82576_NS_SERDES	0x1518	82576NS
 product INTEL 82599_T3_LOM	0x151c	82599 T3
+product INTEL E823_L_QSFP	0x151d	E823-L QSFP
 product INTEL I350_COPPER	0x1521	I350
 product INTEL I350_FIBER	0x1522	I350 Fiber
 product INTEL I350_SERDES	0x1523	I350 SerDes
@@ -4183,8 +4194,10 @@ product INTEL XL710_20G_BP_2	0x1588	XL710 20GbE Backplane
 product INTEL X710_T4_10G	0x1589	X710-T4 10GbaseT
 product INTEL XXV710_25G_BP	0x158a	XXV710 25GbE Backplane
 product INTEL XXV710_25G_SFP28	0x158b	XXV710 SFP28
-product INTEL E810_XXV_QSFP	0x159a  E810 XXV QSFP
-product INTEL E810_XXV_SFP	0x159b  E810 XXV SFP
+product INTEL E810_C_QSFP	0x1592	E810-C QSFP	
+product INTEL E810_C_SFP	0x1593	E810-C SFP
+product INTEL E810_XXV_QSFP	0x159a  E810-XXV QSFP
+product INTEL E810_XXV_SFP	0x159b  E810-XXV SFP
 product INTEL I218_LM_2		0x15a0	I218-LM
 product INTEL I218_V_2		0x15a1	I218-V
 product INTEL I218_LM_3		0x15a2	I218-LM
@@ -6326,6 +6339,56 @@ product INTEL 82440BX		0x71a0	82440BX AGP
 product INTEL 82440BX_AGP	0x71a1	82440BX AGP
 product INTEL 82443GX		0x71a2	82443GX
 product INTEL 82372FB_IDE	0x7601	82372FB IDE
+product INTEL ARL_H_ESPI	0x7702	Core Ultra eSPI
+product INTEL ARL_U_ESPI	0x7703	Core Ultra eSPI
+product INTEL ARL_U_P2SB_SOC	0x7720	Core Ultra P2SB
+product INTEL ARL_U_PMC_SOC	0x7721	Core Ultra PMC
+product INTEL ARL_U_SMB		0x7722	Core Ultra SMBus
+product INTEL ARL_U_SPI		0x7723	Core Ultra SPI
+product INTEL ARL_U_TH		0x7724	Core Ultra TH
+product INTEL ARL_U_UART_0	0x7725	Core Ultra UART
+product INTEL ARL_U_UART_1	0x7726	Core Ultra UART
+product INTEL ARL_U_GSPI_0	0x7727	Core Ultra GSPI
+product INTEL ARL_U_HDA		0x7728	Core Ultra HD Audio
+product INTEL ARL_U_GSPI_1	0x7730	Core Ultra GSPI
+product INTEL ARL_U_PCIE_1	0x7738	Core Ultra PCIE
+product INTEL ARL_U_PCIE_2	0x7739	Core Ultra PCIE
+product INTEL ARL_U_PCIE_3	0x773a	Core Ultra PCIE
+product INTEL ARL_U_PCIE_4	0x773b	Core Ultra PCIE
+product INTEL ARL_U_PCIE_5	0x773c	Core Ultra PCIE
+product INTEL ARL_U_PCIE_6	0x773d	Core Ultra PCIE
+product INTEL ARL_U_PCIE_7	0x773e	Core Ultra PCIE
+product INTEL ARL_U_PCIE_8	0x773f	Core Ultra PCIE
+product INTEL ARL_U_ISH		0x7745	Core Ultra ISH
+product INTEL ARL_U_GSPI_2	0x7746	Core Ultra GSPI
+product INTEL ARL_U_THC_0_1	0x7748	Core Ultra THC
+product INTEL ARL_U_THC_0_2	0x7749	Core Ultra THC
+product INTEL ARL_U_THC_1_1	0x774a	Core Ultra THC
+product INTEL ARL_U_THC_1_2	0x774b	Core Ultra THC
+product INTEL ARL_U_GNA		0x774c	Core Ultra GNA
+product INTEL ARL_U_PCIE_9	0x774d	Core Ultra PCIE
+product INTEL ARL_U_I2C_4	0x7750	Core Ultra I2C
+product INTEL ARL_U_I2C_5	0x7751	Core Ultra I2C
+product INTEL ARL_U_UART_2	0x7752	Core Ultra UART
+product INTEL ARL_U_HECI_1	0x7758	Core Ultra HECI
+product INTEL ARL_U_HECI_2	0x7759	Core Ultra HECI
+product INTEL ARL_U_HECI_3	0x775a	Core Ultra HECI
+product INTEL ARL_U_AHCI	0x7763	Core Ultra AHCI
+product INTEL ARL_U_RAID	0x7767	Core Ultra RAID
+product INTEL ARL_U_HECI_4	0x7770	Core Ultra HECI
+product INTEL ARL_U_HECI_5	0x7771	Core Ultra HECI
+product INTEL ARL_U_IDER	0x7772	Core Ultra IDE-R
+product INTEL ARL_U_KT		0x7773	Core Ultra KT
+product INTEL ARL_U_HECI_6	0x7774	Core Ultra HECI
+product INTEL ARL_U_HECI_7	0x7775	Core Ultra HECI
+product INTEL ARL_U_I2C_0	0x7778	Core Ultra I2C
+product INTEL ARL_U_I2C_1	0x7779	Core Ultra I2C
+product INTEL ARL_U_I2C_2	0x777a	Core Ultra I2C
+product INTEL ARL_U_I2C_3	0x777b	Core Ultra I2C
+product INTEL ARL_U_I3C		0x777c	Core Ultra I3C
+product INTEL ARL_U_XHCI	0x777d	Core Ultra xHCI
+product INTEL ARL_U_XDCI	0x777e	Core Ultra xDCI
+product INTEL ARL_U_SRAM	0x777f	Core Ultra SRAM
 product INTEL 82740		0x7800	82740 AGP
 product INTEL Z790_ESPI		0x7a04	Z790 eSPI
 product INTEL H770_ESPI		0x7a05	H770 eSPI
@@ -6457,12 +6520,14 @@ product INTEL MTL_U4_HB		0x7d00	Core Ultra Host
 product INTEL MTL_H_HB_2	0x7d01	Core Ultra Host
 product INTEL MTL_U_HB_2	0x7d02	Core Ultra Host
 product INTEL MTL_DTT		0x7d03	Core Ultra DTT
+product INTEL ARL_H_HB		0x7d06	Core Ultra Host
 product INTEL MTL_VMD		0x7d0b	Core Ultra VMD
 product INTEL MTL_PMT		0x7d0d	Core Ultra PMT
 product INTEL MTL_H_HB_1	0x7d14	Core Ultra Host
 product INTEL MTL_U_HB_1	0x7d16	Core Ultra Host
 product INTEL MTL_IPU		0x7d19	Core Ultra IPU
 product INTEL MTL_NPU		0x7d1d	Core Ultra NPU
+product INTEL ARL_U_HB		0x7d30	Core Ultra Host
 product INTEL MTL_U4_GT_1	0x7d40	Graphics
 product INTEL ARL_U_GT_1	0x7d41	Graphics
 product INTEL MTL_U_GT_1	0x7d45	Graphics
@@ -7306,6 +7371,7 @@ product INTEL RPL_U_GT_5	0xa7ad	Graphics
 product INTEL LNL_ESPI		0xa807	Core Ultra eSPI
 product INTEL LNL_P2SB_1	0xa820	Core Ultra P2SB
 product INTEL LNL_PMC		0xa821	Core Ultra PMC
+product INTEL LNL_SMB		0xa822	Core Ultra SMBus
 product INTEL LNL_SPI		0xa823	Core Ultra SPI
 product INTEL LNL_TH		0xa824	Core Ultra TH
 product INTEL LNL_UART_0	0xa825	Core Ultra UART
@@ -7818,7 +7884,9 @@ product NETMOS NM9820		0x9820	Nm9820
 product NETMOS NM9835		0x9835	Nm9835
 product NETMOS NM9845		0x9845	Nm9845
 product NETMOS NM9865		0x9865	Nm9865
+product NETMOS NM9900		0x9900	Nm9900
 product NETMOS NM9901		0x9901	Nm9901
+product NETMOS NM9912		0x9912	Nm9912
 product NETMOS NM9922		0x9922	Nm9922
 
 /* Netoctave */
@@ -8898,6 +8966,7 @@ product REALTEK RT8029		0x8029	8029
 product REALTEK RT8139D		0x8039	8139D
 product REALTEK RTL8125		0x8125	RTL8125
 product REALTEK RTL8126		0x8126	RTL8126
+product REALTEK RTL8127		0x8127	RTL8127
 product REALTEK RT8129		0x8129	8129
 product REALTEK RT8101E		0x8136	8101E
 product REALTEK RT8138		0x8138	8138
@@ -8991,6 +9060,9 @@ product ROCKCHIP RK3588		0x3588	RK3588
 
 /* Rockwell products */
 product ROCKWELL RS56SP_PCI11P1	0x2005	RS56/SP-PCI11P1 Modem
+
+/* Raspberry Pi products */
+product RPI RP1			0x0001	RP1
 
 /* S3 products */
 product S3 VIRGE		0x5631	ViRGE

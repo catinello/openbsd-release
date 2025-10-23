@@ -1,4 +1,4 @@
-/*	$OpenBSD: output.c,v 1.40 2025/04/03 14:29:44 tb Exp $ */
+/*	$OpenBSD: output.c,v 1.42 2025/08/23 09:13:14 job Exp $ */
 /*
  * Copyright (c) 2019 Theo de Raadt <deraadt@openbsd.org>
  *
@@ -63,15 +63,14 @@ static char	 output_name[PATH_MAX];
 static const struct outputs {
 	int	 format;
 	char	*name;
-	int	(*fn)(FILE *, struct vrp_tree *, struct brk_tree *,
-		    struct vap_tree *, struct vsp_tree *, struct nca_tree *,
-		    struct stats *);
+	int	(*fn)(FILE *, struct validation_data *, struct stats *);
 } outputs[] = {
 	{ FORMAT_OPENBGPD, "openbgpd", output_bgpd },
 	{ FORMAT_BIRD, "bird", output_bird },
 	{ FORMAT_CSV, "csv", output_csv },
 	{ FORMAT_JSON, "json", output_json },
 	{ FORMAT_OMETRIC, "metrics", output_ometric },
+	{ FORMAT_CCR, "rpki.ccr", output_ccr_der },
 	{ 0, NULL, NULL }
 };
 
@@ -124,8 +123,7 @@ prune_as0_tals(struct vrp_tree *vrps)
 }
 
 int
-outputfiles(struct vrp_tree *v, struct brk_tree *b, struct vap_tree *a,
-    struct vsp_tree *p, struct nca_tree *ncas, struct stats *st)
+outputfiles(struct validation_data *vd, struct stats *st)
 {
 	int i, rc = 0;
 
@@ -133,7 +131,7 @@ outputfiles(struct vrp_tree *v, struct brk_tree *b, struct vap_tree *a,
 	set_signal_handler();
 
 	if (excludeas0)
-		prune_as0_tals(v);
+		prune_as0_tals(&vd->vrps);
 
 	for (i = 0; outputs[i].name; i++) {
 		FILE *fout;
@@ -147,7 +145,7 @@ outputfiles(struct vrp_tree *v, struct brk_tree *b, struct vap_tree *a,
 			rc = 1;
 			continue;
 		}
-		if ((*outputs[i].fn)(fout, v, b, a, p, ncas, st) != 0) {
+		if ((*outputs[i].fn)(fout, vd, st) != 0) {
 			warn("output for %s format failed", outputs[i].name);
 			fclose(fout);
 			output_cleantmp();
@@ -241,7 +239,7 @@ set_signal_handler(void)
 }
 
 int
-outputheader(FILE *out, struct stats *st)
+outputheader(FILE *out, struct validation_data *vd, struct stats *st)
 {
 	char		hn[NI_MAXHOST], tbuf[80];
 	struct tm	*tp;
@@ -257,11 +255,15 @@ outputheader(FILE *out, struct stats *st)
 	if (fprintf(out,
 	    "# Generated on host %s at %s\n"
 	    "# Processing time %lld seconds (%llds user, %llds system)\n"
+	    "# CCR manifest hash: %s\n"
+	    "# CCR validated ROA payloads hash: %s\n"
+	    "# CCR validated ASPA payloads hash: %s\n"
 	    "# Route Origin Authorizations: %u (%u failed parse, %u invalid)\n"
 	    "# BGPsec Router Certificates: %u\n"
 	    "# Certificates: %u (%u invalid, %u non-functional)\n",
 	    hn, tbuf, (long long)st->elapsed_time.tv_sec,
 	    (long long)st->user_time.tv_sec, (long long)st->system_time.tv_sec,
+	    vd->ccr.mfts_hash, vd->ccr.vrps_hash, vd->ccr.vaps_hash,
 	    st->repo_tal_stats.roas, st->repo_tal_stats.roas_fail,
 	    st->repo_tal_stats.roas_invalid, st->repo_tal_stats.brks,
 	    st->repo_tal_stats.certs, st->repo_tal_stats.certs_fail,
