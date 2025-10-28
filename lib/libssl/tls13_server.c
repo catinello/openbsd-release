@@ -437,8 +437,6 @@ tls13_server_engage_record_protection(struct tls13_ctx *ctx)
 int
 tls13_server_hello_retry_request_send(struct tls13_ctx *ctx, CBB *cbb)
 {
-	int nid;
-
 	ctx->hs->tls13.hrr = 1;
 
 	if (!tls13_synthetic_handshake_message(ctx))
@@ -446,9 +444,7 @@ tls13_server_hello_retry_request_send(struct tls13_ctx *ctx, CBB *cbb)
 
 	if (ctx->hs->key_share != NULL)
 		return 0;
-	if (!tls1_get_supported_group(ctx->ssl, &nid))
-		return 0;
-	if (!tls1_ec_nid2group_id(nid, &ctx->hs->tls13.server_group))
+	if (ctx->hs->tls13.server_group == 0)
 		return 0;
 
 	if (!tls13_server_hello_build(ctx, cbb, 1))
@@ -510,8 +506,6 @@ tls13_server_hello_send(struct tls13_ctx *ctx, CBB *cbb)
 		return 0;
 	if (!tls13_servername_process(ctx))
 		return 0;
-
-	ctx->hs->tls13.server_group = 0;
 
 	if (!tls13_server_hello_build(ctx, cbb, 0))
 		return 0;

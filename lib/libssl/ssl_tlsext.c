@@ -1554,6 +1554,7 @@ tlsext_keyshare_server_process(SSL *s, uint16_t msg_type, CBS *cbs, int *alert)
 		for (j = 0; j < server_groups_len; j++) {
 			if (server_groups[j] == client_groups[i]) {
 				client_preferred_group = client_groups[i];
+				s->s3->hs.tls13.server_group = client_preferred_group;
 				preferred_group_found = 1;
 				break;
 			}
