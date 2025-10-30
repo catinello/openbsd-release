@@ -144,6 +144,14 @@ mproc_dispatch(int fd, short event, void *arg)
 
 		switch (n) {
 		case -1:
+			if (smtpd_process == PROC_CONTROL &&
+			    p->proc == PROC_CLIENT) {
+				log_warnx("warn: client sent invalid imsg "
+				    "over control socket");
+				p->handler(p, NULL);
+				return;
+			}
+
 			log_warn("warn: %s -> %s: imsgbuf_read",
 			    proc_name(smtpd_process),  p->name);
 			fatal("exiting");
