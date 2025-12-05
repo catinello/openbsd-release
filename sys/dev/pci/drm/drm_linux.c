@@ -126,7 +126,7 @@ __set_current_state(int state)
 	SCHED_LOCK();
 	unsleep(p);
 	p->p_stat = SONPROC;
-	atomic_clearbits_int(&p->p_flag, P_INSCHED);
+	atomic_clearbits_int(&p->p_flag, P_INSCHED|P_SINTR);
 	SCHED_UNLOCK();
 }
 
