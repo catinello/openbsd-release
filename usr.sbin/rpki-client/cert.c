@@ -1352,6 +1352,15 @@ cert_as_inherit(const struct cert *cert)
 	return cert->ases[0].type == CERT_AS_INHERIT;
 }
 
+static int
+cert_has_one_as(const struct cert *cert)
+{
+	if (cert->num_ases != 1)
+		return 0;
+
+	return cert->ases[0].type == CERT_AS_ID;
+}
+
 int
 sbgp_parse_assysnum(const char *fn, const ASIdentifiers *asidentifiers,
     struct cert_as **out_as, size_t *out_num_ases)
@@ -1744,6 +1753,12 @@ cert_parse_extensions(const char *fn, struct cert *cert)
 		if (cert_as_inherit(cert)) {
 			warnx("%s: RFC 8209, 3.1.3.5: BGPsec Router cert "
 			    "with inherit element", fn);
+			goto out;
+		}
+
+		if (!cert_has_one_as(cert)) {
+			warnx("%s: BGPsec Router certs with more than one "
+			    "AS number are not supported", fn);
 			goto out;
 		}
 	}

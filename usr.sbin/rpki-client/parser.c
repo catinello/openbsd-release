@@ -589,6 +589,13 @@ proc_parser_cert(char *file, const unsigned char *der, size_t len,
 	if (cert == NULL)
 		goto out;
 
+	if (cert->purpose != CERT_PURPOSE_CA &&
+	    cert->purpose != CERT_PURPOSE_BGPSEC_ROUTER) {
+		warnx("%s: %s not allowed in a manifest", file,
+		    purpose2str(cert->purpose));
+		goto out;
+	}
+
 	a = find_issuer(file, entp->certid, cert->aki, entp->mftaki);
 	if (a == NULL)
 		goto out;
