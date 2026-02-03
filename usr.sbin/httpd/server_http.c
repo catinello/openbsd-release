@@ -660,7 +660,8 @@ server_read_httpchunks(struct bufferevent *bev, void *arg)
 		goto done;
 	if (EVBUFFER_LENGTH(src))
 		bev->readcb(bev, arg);
-	bufferevent_enable(bev, EV_READ);
+	else
+		bufferevent_enable(bev, EV_READ);
 	return;
 
  done:
