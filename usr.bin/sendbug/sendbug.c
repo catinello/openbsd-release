@@ -86,7 +86,7 @@ main(int argc, char *argv[])
 	time_t mtime;
 	FILE *fp;
 
-	if (pledge("stdio rpath wpath cpath tmppath getpw proc exec", NULL) == -1)
+	if (pledge("stdio rpath wpath cpath getpw proc exec", NULL) == -1)
 		err(1, "pledge");
 
 	while ((ch = getopt(argc, argv, "DEP")) != -1)

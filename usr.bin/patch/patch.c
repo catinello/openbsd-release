@@ -152,7 +152,7 @@ main(int argc, char *argv[])
 	const	char *tmpdir;
 	char	*v;
 
-	if (pledge("stdio rpath wpath cpath tmppath fattr unveil", NULL) == -1) {
+	if (pledge("stdio rpath wpath cpath fattr unveil", NULL) == -1) {
 		perror("pledge");
 		my_exit(2);
 	}
@@ -252,7 +252,7 @@ main(int argc, char *argv[])
 			perror("unveil");
 			my_exit(2);
 		}
-	if (pledge("stdio rpath wpath cpath tmppath fattr", NULL) == -1) {
+	if (pledge("stdio rpath wpath cpath fattr", NULL) == -1) {
 		perror("pledge");
 		my_exit(2);
 	}

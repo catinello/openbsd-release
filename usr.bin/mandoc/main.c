@@ -153,11 +153,6 @@ main(int argc, char *argv[])
 	    strcmp(progname, BINM_MAKEWHATIS) == 0)
 		return mandocdb(argc, argv);
 
-	if (pledge("stdio rpath wpath cpath tmppath tty proc exec", NULL) == -1) {
-		mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
-		return mandoc_msg_getrc();
-	}
-
 	/* Search options. */
 
 	memset(&conf, 0, sizeof(conf));
@@ -361,6 +356,39 @@ main(int argc, char *argv[])
 	     isatty(STDOUT_FILENO) == 0))
 		outst.use_pager = 0;
 
+	if (unveil("/tmp", "rwc") == -1) {
+		mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
+		return mandoc_msg_getrc();
+	}
+	if (conf.output.outfilename) {
+		if (unveil(".", "rwc") == -1) {
+			mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
+			return mandoc_msg_getrc();
+		}
+		if (unveil(conf.output.outfilename, "rwc") == -1) {
+			mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
+			return mandoc_msg_getrc();
+		}
+	}
+	if (conf.output.tagfilename) {
+		if (unveil(".", "rwc") == -1) {
+			mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
+			return mandoc_msg_getrc();
+		}
+		if (unveil(conf.output.tagfilename, "rwc") == -1) {
+			mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
+			return mandoc_msg_getrc();
+		}
+	}
+	if (unveil("/", "rx") == -1) {
+		mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
+		return mandoc_msg_getrc();
+	}
+	if (pledge("stdio rpath wpath cpath tty proc exec", NULL) == -1) {
+		mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
+		return mandoc_msg_getrc();
+	}
+
 	if (outst.use_pager &&
 	    (conf.output.width == 0 || conf.output.indent == 0) &&
 	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != -1 &&
@@ -377,7 +405,7 @@ main(int argc, char *argv[])
 	    conf.output.tagfilename != NULL)
 		c = pledge("stdio rpath wpath cpath", NULL);
 	else
-		c = pledge("stdio rpath tmppath tty proc exec", NULL);
+		c = pledge("stdio rpath wpath cpath tty proc exec", NULL);
 	if (c == -1) {
 		mandoc_msg(MANDOCERR_PLEDGE, 0, 0, "%s", strerror(errno));
 		return mandoc_msg_getrc();
@@ -859,7 +887,7 @@ process_onefile(struct mparse *mp, struct manpage *resp,
 		    conf->output.tagfilename);
 		if ((conf->output.outfilename != NULL ||
 		     conf->output.tagfilename != NULL) &&
-		    pledge("stdio rpath cpath", NULL) == -1) {
+		    pledge("stdio rpath wpath cpath", NULL) == -1) {
 			mandoc_msg(MANDOCERR_PLEDGE, 0, 0,
 			    "%s", strerror(errno));
 			exit(mandoc_msg_getrc());
@@ -1295,7 +1323,7 @@ spawn_pager(struct outstate *outst, char *tag_target)
 			free(argv[--argc]);
 		(void)setpgid(pager_pid, 0);
 		(void)tcsetpgrp(STDOUT_FILENO, pager_pid);
-		if (pledge("stdio rpath tmppath tty proc", NULL) == -1) {
+		if (pledge("stdio rpath wpath cpath tty proc", NULL) == -1) {
 			mandoc_msg(MANDOCERR_PLEDGE, 0, 0,
 			    "%s", strerror(errno));
 			exit(mandoc_msg_getrc());

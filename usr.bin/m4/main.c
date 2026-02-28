@@ -170,7 +170,7 @@ main(int argc, char *argv[])
 	int n;
 	char *p;
 
-	if (pledge("stdio rpath wpath cpath tmppath proc exec", NULL) == -1)
+	if (pledge("stdio rpath wpath cpath proc exec", NULL) == -1)
 		err(1, "pledge");
 
 	if (signal(SIGINT, SIG_IGN) != SIG_IGN)

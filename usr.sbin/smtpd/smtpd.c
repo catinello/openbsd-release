@@ -1080,7 +1080,7 @@ smtpd(void) {
 
 	purge_task();
 
-	if (pledge("stdio rpath wpath cpath fattr tmppath "
+	if (pledge("stdio rpath wpath cpath fattr "
 	    "getpw sendfd proc exec id inet chown unix", NULL) == -1)
 		fatal("pledge");
 

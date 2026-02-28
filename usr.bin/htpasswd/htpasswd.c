@@ -78,7 +78,7 @@ main(int argc, char** argv)
 		if (unveil("/tmp", "rwc") == -1)
 			err(1, "unveil /tmp");
 	}
-	if (pledge("stdio rpath wpath cpath flock tmppath tty", NULL) == -1)
+	if (pledge("stdio rpath wpath cpath flock tty", NULL) == -1)
 		err(1, "pledge");
 
 	if (batch) {

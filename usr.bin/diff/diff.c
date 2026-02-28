@@ -211,7 +211,11 @@ main(int argc, char **argv)
 	argc -= optind;
 	argv += optind;
 
-	if (pledge("stdio rpath tmppath", NULL) == -1)
+	if (unveil("/tmp", "rwc") == -1)
+		err(2, "unveil /tmp");
+	if (unveil("/", "r") == -1)
+		err(2, "unveil /");
+	if (pledge("stdio rpath wpath cpath", NULL) == -1)
 		err(2, "pledge");
 
 	/*

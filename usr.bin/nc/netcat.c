@@ -381,6 +381,8 @@ main(int argc, char *argv[])
 		 */
 	} else {
 		if (family == AF_UNIX) {
+			if (unveil("/tmp", "rwc") == -1)
+				err(1, "unveil /tmp");
 			if (unveil(host, "rwc") == -1)
 				err(1, "unveil %s", host);
 			if (uflag && !kflag) {
@@ -400,7 +402,7 @@ main(int argc, char *argv[])
 	}
 
 	if (family == AF_UNIX) {
-		if (pledge("stdio rpath wpath cpath tmppath unix", NULL) == -1)
+		if (pledge("stdio rpath wpath cpath unix", NULL) == -1)
 			err(1, "pledge");
 	} else if (Fflag && Pflag) {
 		if (pledge("stdio inet dns sendfd tty", NULL) == -1)

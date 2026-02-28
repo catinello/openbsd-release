@@ -126,8 +126,12 @@ main(int argc, char *argv[])
 		usage();
 
 	if (doall) {
-		if (pledge("stdio rpath tmppath fattr getpw id proc exec", NULL)
-		    == -1)
+		if (unveil("/tmp", "rwc") == -1)
+			err(1, "unveil /tmp");
+		if (unveil("/", "r") == -1)
+			err(1, "unveil /");
+		if (pledge("stdio rpath wpath cpath fattr getpw id proc exec",
+		    NULL) == -1)
 			err(1, "pledge");
 	} else {
 		if (pledge("stdio rpath proc exec", NULL) == -1)

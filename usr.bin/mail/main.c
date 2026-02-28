@@ -108,7 +108,7 @@ main(int argc, char **argv)
 	char *rc;
 	extern const char version[];
 
-	if (pledge("stdio rpath wpath cpath getpw tmppath fattr tty flock proc exec",
+	if (pledge("stdio rpath wpath cpath getpw fattr tty flock proc exec",
 	    NULL) == -1)
 		err(1, "pledge");
 

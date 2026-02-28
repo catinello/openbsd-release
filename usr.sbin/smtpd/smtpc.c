@@ -245,7 +245,9 @@ main(int argc, char **argv)
 	} else
 		tls_config_verify(tls_config);
 
-	if (pledge("stdio inet dns tmppath", NULL) == -1)
+	if (unveil("/tmp", "rwc") == -1)
+		fatal("unveil /tmp");
+	if (pledge("stdio inet dns rpath wpath cpath", NULL) == -1)
 		fatal("pledge");
 
 	if (!noaction)
