@@ -94,7 +94,7 @@ main(int argc, char *argv[])
 	int i, c;
 	int rval = 0;
 
-	if (pledge("stdio rpath wpath cpath tmppath fattr", NULL) == -1)
+	if (pledge("stdio rpath wpath cpath fattr", NULL) == -1)
 		err(1, "pledge");
 
 	while ((c = getopt(argc, argv, "DmPrRsSUv")) != -1) {
