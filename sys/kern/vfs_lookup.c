@@ -536,6 +536,7 @@ dirloop:
 	 */
 	if (cnp->cn_flags & ISDOTDOT) {
 		for (;;) {
+			unveil_check_component(curproc, ndp, dp);
 			if (dp == ndp->ni_rootdir || dp == rootvnode) {
 				ndp->ni_dvp = dp;
 				ndp->ni_vp = dp;
