@@ -743,7 +743,7 @@ pledge_recvfd(struct proc *p, struct file *fp)
 		if (vp->v_type != VDIR)
 			return (0);
 	}
-	return pledge_fail(p, EINVAL, PLEDGE_RECVFD);
+	return (EPERM);
 }
 
 /*
