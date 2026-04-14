@@ -1380,9 +1380,14 @@ http_parse_header(struct http_connection *conn, char *buf)
 
 	cp = buf;
 	/* empty line, end of header */
-	if (*cp == '\0')
+	if (*cp == '\0') {
+		/* check consistency of header fields */
+		if (http_isredirect(conn) && conn->redir_uri == NULL) {
+			warnx("%s: redirect with no location", conn->req->uri);
+			return -1;
+		}
 		return 0;
-	else if (strncasecmp(cp, CONTENTLEN, sizeof(CONTENTLEN) - 1) == 0) {
+	} else if (strncasecmp(cp, CONTENTLEN, sizeof(CONTENTLEN) - 1) == 0) {
 		cp += sizeof(CONTENTLEN) - 1;
 		cp += strspn(cp, " \t");
 		conn->iosz = strtonum(cp, 0, MAX_CONTENTLEN, &errstr);

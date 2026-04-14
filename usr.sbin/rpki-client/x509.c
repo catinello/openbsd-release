@@ -308,8 +308,8 @@ x509_get_time(const ASN1_TIME *at, time_t *t)
 		return 0;
 	if (!ASN1_TIME_to_tm(at, &tm))
 		return 0;
-	if ((*t = timegm(&tm)) == -1)
-		errx(1, "timegm failed");
+	if ((*t = timegm(&tm)) < 0)
+		return 0;
 	return 1;
 }
 
