@@ -541,6 +541,8 @@ parse_rs(struct imsg_ra_rs *rs)
 	while ((size_t)len >= sizeof(struct nd_opt_hdr)) {
 		struct nd_opt_hdr *nd_opt_hdr = (struct nd_opt_hdr *)p;
 
+		if (nd_opt_hdr->nd_opt_len == 0)
+			return;
 		len -= sizeof(struct nd_opt_hdr);
 		p += sizeof(struct nd_opt_hdr);
 
