@@ -236,6 +236,7 @@ process_new(struct proc *p, struct process *parent, int flags)
 
 	/* post-copy fixups */
 	pr->ps_pptr = parent;
+	pr->ps_pgrp = NULL;
 	pr->ps_ppid = parent->ps_pid;
 
 	WITNESS_SETCHILD(&pr->ps_mtx.mtx_lock_obj,
@@ -457,6 +458,7 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
 	LIST_INSERT_HEAD(TIDHASH(p->p_tid), p, p_hash);
 	LIST_INSERT_HEAD(PIDHASH(pr->ps_pid), pr, ps_hash);
 	LIST_INSERT_AFTER(curpr, pr, ps_pglist);
+	pr->ps_pgrp = curpr->ps_pgrp;
 	LIST_INSERT_HEAD(&curpr->ps_children, pr, ps_sibling);
 
 	mtx_enter(&pr->ps_mtx);
