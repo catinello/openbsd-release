@@ -2085,7 +2085,7 @@ update_iface_ra_rdns(struct slaacd_iface *iface, struct radv *ra)
 	LIST_FOREACH(radv_rdns, &ra->rdns_servers, entries) {
 		memcpy(&rdns[rdns_count++],
 		    &radv_rdns->rdns, sizeof(struct in6_addr));
-		if (rdns_proposal->rdns_count == MAX_RDNS_COUNT)
+		if (rdns_count == MAX_RDNS_COUNT)
 			break;
 	}
 
