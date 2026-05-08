@@ -2427,17 +2427,24 @@ nfsrv_readdir(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 	}
 	off = toff;
 	cnt = fxdr_unsigned(int, *tl);
-	xfer = NFS_SRVMAXDATA(nfsd);
-	if (cnt > xfer || cnt < 0)
-		cnt = xfer;
-	siz = ((cnt + DIRBLKSIZ - 1) & ~(DIRBLKSIZ - 1));
-	if (siz > xfer)
-		siz = xfer;
-	fullsiz = siz;
-	error = nfsrv_fhtovp(fhp, 1, &vp, cred, slp, nam, &rdonly);
-	if (!error && vp->v_type != VDIR) {
-		error = ENOTDIR;
-		vput(vp);
+	if (cnt == 0) {
+		if (info.nmi_v3)
+			error = NFSERR_TOOSMALL;
+		else
+			error = EBADRPC;
+	} else {
+		xfer = NFS_SRVMAXDATA(nfsd);
+		if (cnt > xfer || cnt < 0)
+			cnt = xfer;
+		siz = ((cnt + DIRBLKSIZ - 1) & ~(DIRBLKSIZ - 1));
+		if (siz > xfer || siz <= 0)
+			siz = xfer;
+		fullsiz = siz;
+		error = nfsrv_fhtovp(fhp, 1, &vp, cred, slp, nam, &rdonly);
+		if (!error && vp->v_type != VDIR) {
+			error = ENOTDIR;
+			vput(vp);
+		}
 	}
 	if (error) {
 		if (nfsm_reply(&info, nfsd, slp, mrq, error,
@@ -2649,17 +2656,21 @@ nfsrv_readdirplus(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 	tl += 2;
 	siz = fxdr_unsigned(int, *tl++);
 	cnt = fxdr_unsigned(int, *tl);
-	xfer = NFS_SRVMAXDATA(nfsd);
-	if (cnt > xfer || cnt < 0)
-		cnt = xfer;
-	siz = ((siz + DIRBLKSIZ - 1) & ~(DIRBLKSIZ - 1));
-	if (siz > xfer)
-		siz = xfer;
-	fullsiz = siz;
-	error = nfsrv_fhtovp(fhp, 1, &vp, cred, slp, nam, &rdonly);
-	if (!error && vp->v_type != VDIR) {
-		error = ENOTDIR;
-		vput(vp);
+	if (siz == 0 || cnt == 0) {
+		error = NFSERR_TOOSMALL;
+	} else {
+		xfer = NFS_SRVMAXDATA(nfsd);
+		if (cnt > xfer || cnt < 0)
+			cnt = xfer;
+		siz = ((siz + DIRBLKSIZ - 1) & ~(DIRBLKSIZ - 1));
+		if (siz > xfer || siz <= 0)
+			siz = xfer;
+		fullsiz = siz;
+		error = nfsrv_fhtovp(fhp, 1, &vp, cred, slp, nam, &rdonly);
+		if (!error && vp->v_type != VDIR) {
+			error = ENOTDIR;
+			vput(vp);
+		}
 	}
 	if (error) {
 		if (nfsm_reply(&info, nfsd, slp, mrq, error,
